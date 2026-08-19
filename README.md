@@ -24,16 +24,20 @@ agent ──(MCP)──▶ gencad server ──▶ freecadcmd (FreeCAD headless)
     visually verified before anything is printed
 - **`tools/render_section.py`** — the renderer itself; also usable standalone
   inside `freecadcmd`
-- **`text-to-cad/`** — [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)
-  as a submodule, pinned to its `main` releases: a library of agent skills for
-  CAD, CAE and CAM (CAD generation with STEP/STL/3MF export, a local CAD
+- **`text-to-cad/`** — vendored from
+  [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)
+  (release 0.4.19, upstream commit `16e90db6`, MIT — see its bundled
+  `LICENSE`), which gencad builds on as its base: a library of agent skills
+  for CAD, CAE and CAM (CAD generation with STEP/STL/3MF export, a local CAD
   Viewer, DXF drawings, URDF/SRDF/SDF robot descriptions, G-code slicing,
   off-the-shelf STEP part sourcing, and more). It complements the MCP loop
   above: gencad closes the build/render/inspect cycle, text-to-cad supplies
-  the surrounding fabrication and hand-off workflows. Install its skills into
-  an agent with `npx skills add earthtojake/text-to-cad`, or point the skills
-  CLI at the checked-out `text-to-cad/skills/` directory. Update the pin with
-  `git submodule update --remote text-to-cad`.
+  the surrounding fabrication and hand-off workflows. Full credit to
+  [@earthtojake](https://github.com/earthtojake) and the text-to-cad
+  contributors. Local changes on top of upstream are marked with
+  `gencad patch` comments (currently: the Viewer header's community links
+  are hidden; upstream demo GIF LFS assets and LFS config were dropped in
+  vendoring).
 - **`scan2cad/`** — the scan side of the loop: a screen-reader-native
   describe-and-draft CLI. A phone-scanned mesh goes in; out come a
   plain-language geometry report, an editable build123d script with named,
@@ -44,10 +48,6 @@ agent ──(MCP)──▶ gencad server ──▶ freecadcmd (FreeCAD headless)
   `scan2cad/tools/photogrammetry-cli/`.
 
 ## Setup
-
-Clone with `git clone --recurse-submodules` (or run
-`git submodule update --init` in an existing checkout) to pull in
-`text-to-cad/`.
 
 1. Install [FreeCAD](https://www.freecad.org) (the app bundles Python with
    numpy + matplotlib — no pip installs needed).
@@ -65,6 +65,24 @@ Clone with `git clone --recurse-submodules` (or run
 ```
 
 If `freecadcmd` isn't at the macOS default path, set `GENCAD_FREECADCMD`.
+
+### CAD Viewer
+
+The vendored Viewer serves browser previews of STEP/STL/GLB/URDF and friends
+on port 3245. Its CAD backend needs a Python with OCP + build123d + cadgen —
+one-time setup, then launch:
+
+```bash
+uv venv --python 3.12 .venv-viewer
+uv pip install --python .venv-viewer/bin/python cadgen==0.4.19
+
+cd text-to-cad/skills/cad-viewer
+VIEWER_CAD_PYTHON=$PWD/../../../.venv-viewer/bin/python \
+  npm --prefix scripts/viewer run start -- --host 127.0.0.1
+```
+
+Then open `http://127.0.0.1:3245/<absolute model dir>?file=<model>` — e.g.
+`http://127.0.0.1:3245/Users/you/gencad/models?file=part.step`.
 
 ## Built with this loop: the claude-pet case
 

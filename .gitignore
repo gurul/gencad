@@ -4,3 +4,4 @@ __pycache__/
 *.stl
 *.step
 *.3mf
+.venv-viewer/

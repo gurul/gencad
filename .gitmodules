@@ -1,4 +1,0 @@
-[submodule "text-to-cad"]
-	path = text-to-cad
-	url = https://github.com/earthtojake/text-to-cad.git
-	branch = main

@@ -1,0 +1,39 @@
+name: Set up dependencies
+description: >-
+  Set up Python and Node.js with dependency caching, then install the repo
+  Python and Node dependencies used by tests and production bundling.
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+        cache: pip
+        cache-dependency-path: requirements-dev.txt
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: "22"
+        cache: npm
+        cache-dependency-path: |
+          packages/cadjs/package-lock.json
+          packages/implicitjs/package-lock.json
+          viewer/package-lock.json
+          docs/package-lock.json
+
+    - name: Install Python dependencies
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install -r requirements-dev.txt
+
+    - name: Install Node dependencies
+      shell: bash
+      run: |
+        npm ci --prefix packages/cadjs
+        npm ci --prefix packages/implicitjs
+        npm ci --prefix viewer
+        npm ci --prefix docs

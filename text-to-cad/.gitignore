@@ -1,0 +1,66 @@
+# macOS
+.DS_Store
+.vscode
+
+# Python
+__pycache__/
+*.py[cod]
+# Per-folder cadgen output home written beside CAD sources: component-GLB render
+# packages (assembly.json + components/*.glb), drawing packages, binary BREP scene
+# caches, and generation locks. Rebuilt on demand; never committed.
+__cadgen__/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.python-version
+
+# Local environments and caches
+.venv
+.cache
+.agents/
+.vite
+node_modules
+dist
+coverage
+
+# Production CAD Viewer runtime dist is committed on main. On dev,
+# skills/cad-viewer/scripts/viewer must stay a symlink to viewer/.
+!skills/cad-viewer/scripts/viewer/dist/
+!skills/cad-viewer/scripts/viewer/dist/**
+
+# Temporary files
+*.tmp
+*.swp
+*.step.glb.lock
+*.stp.glb.lock
+tmp/
+
+# Review media rendered next to a fixture. models/ holds CAD/robot sources,
+# generated 3D and fabrication outputs, and docs only; see models/README.md.
+models/**/*.png
+models/**/*.jpg
+models/**/*.jpeg
+models/**/*.gif
+models/**/*.webp
+models/**/*.avif
+models/**/*.bmp
+models/**/*.tif
+models/**/*.tiff
+models/**/*.svg
+models/**/*.mp4
+models/**/*.mov
+models/**/*.webm
+models/**/*.mkv
+
+# Local printer credentials
+/bambu-printers.json
+
+# Component-GLB render packages are regenerated on demand; never committed.
+.*.step.glb/
+.*.step.glb
+.*.stp.glb/
+.*.stp.glb
