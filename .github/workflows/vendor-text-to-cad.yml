@@ -1,0 +1,24 @@
+name: vendor-text-to-cad
+on:
+  schedule:
+    - cron: "17 6 * * 1"   # weekly, Monday morning UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Open update PR if upstream moved
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          bash scripts/pull-text-to-cad.sh
