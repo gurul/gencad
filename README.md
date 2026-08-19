@@ -24,6 +24,16 @@ agent ──(MCP)──▶ gencad server ──▶ freecadcmd (FreeCAD headless)
     visually verified before anything is printed
 - **`tools/render_section.py`** — the renderer itself; also usable standalone
   inside `freecadcmd`
+- **`text-to-cad/`** — [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)
+  as a submodule, pinned to its `main` releases: a library of agent skills for
+  CAD, CAE and CAM (CAD generation with STEP/STL/3MF export, a local CAD
+  Viewer, DXF drawings, URDF/SRDF/SDF robot descriptions, G-code slicing,
+  off-the-shelf STEP part sourcing, and more). It complements the MCP loop
+  above: gencad closes the build/render/inspect cycle, text-to-cad supplies
+  the surrounding fabrication and hand-off workflows. Install its skills into
+  an agent with `npx skills add earthtojake/text-to-cad`, or point the skills
+  CLI at the checked-out `text-to-cad/skills/` directory. Update the pin with
+  `git submodule update --remote text-to-cad`.
 - **`scan2cad/`** — the scan side of the loop: a screen-reader-native
   describe-and-draft CLI. A phone-scanned mesh goes in; out come a
   plain-language geometry report, an editable build123d script with named,
