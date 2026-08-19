@@ -96,12 +96,18 @@ def _bracket_scene() -> SceneModel:
             rms_mm=0.2,
         )
     ]
+    # The axis record uses frame.py's own convention, which is what the report
+    # actually receives: `raw` is the angle between the fitted axis and the
+    # frame axis it was pulled onto, so it is near zero and `snapped` is zero.
+    # An earlier version of this fixture stored the angle to the plane instead,
+    # which let the report print a parallel's number on a perpendicular's line
+    # without any test noticing.
     snaps = [
         SnapRecord(
             dim_name="cyl_bore_1_axis",
-            raw=89.2,
-            snapped=90.0,
-            deviation=0.8,
+            raw=0.8,
+            snapped=0.0,
+            deviation=-0.8,
             rule="axis-align 5deg",
         ),
         SnapRecord(
@@ -177,9 +183,9 @@ def test_every_dimension_line_matches_the_gate_regex() -> None:
 
 
 def test_every_dimension_line_ends_with_its_uncertainty_tag() -> None:
-    """No dimension may be spoken without its residual and its point count."""
+    """No dimension may be spoken without its residual, its count and "draft"."""
     for line in _dimension_lines(_bracket_report()):
-        assert re.search(r"RMS [0-9.]+ mm, [0-9]+ points\.$", line), line
+        assert re.search(r"RMS [0-9.]+ mm, [0-9]+ points, draft\.$", line), line
 
 
 def test_no_tables_and_no_ascii_art() -> None:
@@ -225,16 +231,70 @@ def test_gap_uncertainty_combines_both_planes() -> None:
         line for line in _dimension_lines(_bracket_report()) if line.startswith("height")
     )
     # sqrt(0.30^2 + 0.28^2) = 0.410..., 7300 + 6900 = 14200
-    assert line.endswith("RMS 0.4 mm, 14200 points.")
+    assert line.endswith("RMS 0.4 mm, 14200 points, draft.")
 
 
 def test_relations_name_the_snap_that_produced_them() -> None:
+    """The angle spoken is the angle of the relation being spoken.
+
+    The record says the axis moved 0.8 degrees onto the frame axis, so before
+    the snap it stood at 89.2 degrees to the plane it is now perpendicular to.
+    That is the sentence PLAN.md WI-5 specifies, and it is the one a listener
+    can act on; printing the record's own 0.8 next to the word "perpendicular"
+    would state a parallel's number.
+    """
     text = _bracket_report()
     assert (
         "cyl_bore_1 axis is perpendicular to plane_bottom, snapped from 89.2 degrees, "
         "deviation 0.8 degrees." in text
     )
     assert "cyl_bore_1 center is 15.1 mm from plane_left and 20.0 mm from plane_front." in text
+
+
+def test_a_snap_too_small_to_print_is_said_in_words() -> None:
+    """One decimal is the rule; "0.0 degrees" on a real move is not honest."""
+    scene = _bracket_scene()
+    tiny = SceneModel(
+        frame=scene.frame,
+        planes=scene.planes,
+        cylinders=scene.cylinders,
+        snaps=[
+            SnapRecord(
+                dim_name="cyl_bore_1_axis",
+                raw=0.00143556,
+                snapped=0.0,
+                deviation=-0.00143556,
+                rule="axis-align 5deg",
+            )
+        ],
+        provenance="synthetic",
+    )
+    text = render_report(tiny, regime=COARSE)
+    assert (
+        "cyl_bore_1 axis is perpendicular to plane_bottom, snapped from 90.0 degrees, "
+        "deviation less than 0.05 degrees." in text
+    )
+    assert "0.00143556 degrees" not in text
+
+
+def test_the_snap_log_order_does_not_depend_on_discovery_order() -> None:
+    """The fitter's order is unseeded; the report's may not inherit it."""
+    scene = _bracket_scene()
+    shuffled = SceneModel(
+        frame=scene.frame,
+        planes=scene.planes,
+        cylinders=scene.cylinders,
+        snaps=list(reversed(scene.snaps)),
+        provenance=scene.provenance,
+    )
+    assert render_report(shuffled, regime=COARSE) == render_report(scene, regime=COARSE)
+
+
+def test_caveats_warn_that_reruns_differ() -> None:
+    """A listener who reruns and hears different digits must know that is expected."""
+    text = _bracket_report()
+    assert "Running the same command twice on the same file can give slightly" in text
+    assert "cannot seed" in text
 
 
 def test_snap_log_is_verbatim_and_unrounded() -> None:

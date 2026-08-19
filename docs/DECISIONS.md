@@ -205,7 +205,12 @@ depth, correlated warp, pose drift or intrinsics jitter.
 
 These sentences may not appear in the report, in the emitted script, in
 out/MORNING_REPORT.md, in the README, or in any commit message.
-This list is reproduced from docs/PLAN.md section 7 and is binding.
+This list is restated in screen-reader form from docs/PLAN.md section 7 and is
+binding. Restated, not quoted: PLAN.md writes each item as one long line, and
+the screen-reader rule in docs/SYNTHESIS.md ruling 7 asks for one fact per
+line, so each item below is the same prohibition broken into short sentences.
+Every item of the PLAN list is present. Where the two differ in wording they do
+not differ in meaning, and PLAN.md section 7 is the authority.
 
 No sentence of the form "the pipeline achieves plus or minus X millimetres".
 Synthetic numbers are plumbing verification only.

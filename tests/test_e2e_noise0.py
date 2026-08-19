@@ -56,6 +56,7 @@ this file. It is a gate, not a unit test.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import re
@@ -495,12 +496,35 @@ def test_skeleton_ran_and_wrote_a_step(
     assert run.skeleton.isascii()
     assert "VERIFY WITH CALIPER" in run.skeleton
     assert "NAMED DIMENSIONS" in run.skeleton
-    # Ground rule 5: assembly hints are comments, never executed solids.
-    for line in run.skeleton.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            continue
-        assert not stripped.startswith("part = "), f"executed solid: {line!r}"
+    # Ground rule 5 and WI-6(f): assembly hints are comments, and no solid is
+    # constructed anywhere in the executable part of the file -- not even as
+    # scaffolding whose faces are harvested afterwards. Reading the parsed tree
+    # rather than the line prefixes is the point: a line-prefix check passes
+    # happily on `_solid_x = Solid.make_cylinder(...)`.
+    tree = ast.parse(run.skeleton)
+    used: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            used.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            used.add(node.attr)
+        elif isinstance(node, ast.alias):
+            used.add(node.asname or node.name)
+    forbidden = {
+        "Box",
+        "Cylinder",
+        "Solid",
+        "Part",
+        "make_box",
+        "make_cylinder",
+        "extrude",
+        "loft",
+        "revolve",
+        "cut",
+        "fuse",
+        "intersect",
+    }
+    assert not used & forbidden, f"{model}: executed solid geometry {sorted(used & forbidden)}"
 
     assert run.step_path.is_file(), f"{model}: no STEP file was written"
     head = run.step_path.read_text(encoding="latin-1")[:120]

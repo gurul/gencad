@@ -344,7 +344,11 @@ def _method_lines(case_count: int, run_count: int) -> list[str]:
         "A stated error of zero therefore means agreement after that rounding, "
         "not an exact fit.",
         "CGAL's Efficient RANSAC draws from a generator this project cannot seed.",
-        "The sampling is reproducible; the fit is not.",
+        "The sampling is reproducible; the fit is not reproducible digit for "
+        "digit.",
+        "On the three noiseless synthetic parts the primitive count is stable "
+        "across repeats; see out/gate_repeat.txt.",
+        "Under noise, both the count and the digits can move.",
         "Rerunning this sweep moves the pass counts by a few runs either way.",
         "Read the rates as approximate.",
         "Read a single failed run as one draw, not as a verdict.",

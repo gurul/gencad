@@ -8,7 +8,11 @@ rules, not style preferences (SYNTHESIS.md section 7, PLAN.md WI-5):
   - ASCII only; no unicode symbols beyond plain punctuation
   - millimetres printed with one decimal, angles in degrees with one decimal
   - stable ordering: planes by frame axis then position along it, cylinders by
-    radius, so two runs of the same scene read in the same order
+    radius, snap records by the name of the dimension they moved, so two runs
+    of the same scene read in the same order. Discovery order is deliberately
+    not used anywhere: the shape fitter's discovery order comes out of an
+    unseeded generator (docs/STACK_NOTES.md), so printing in it would make the
+    same command read differently twice in a row.
   - every dimension line ends with its uncertainty tag (RMS and point count)
   - every SnapRecord is printed verbatim; nothing is snapped silently
 
@@ -45,6 +49,12 @@ __all__ = ["render_report", "DIMENSION_LINE_RE"]
 # A dimension line is recognisable by this pattern; the e2e gate greps for it.
 DIMENSION_LINE_RE = re.compile(r"= [0-9.]+ mm.*RMS")
 
+# The last word of every dimension line. The overview and the caveats already
+# say that nothing here is a measurement, but a listener who tabs into the
+# middle of section 2 hears only the line, so the line carries it too. One word
+# rather than a sentence, because it is repeated on every dimension.
+DRAFT_TAG = "draft"
+
 # Fallback frame used when a SceneModel carries no usable triad, so that a
 # report can still be produced for a scene the frame stage refused to align.
 _WORLD_ORIGIN: Vec3 = (0.0, 0.0, 0.0)
@@ -66,6 +76,12 @@ _CAVEATS: tuple[str, ...] = (
     "No press-fit, mating-fit, or sub-millimetre claim is made here, ever.",
     "This tool competes with silence, not with the accuracy of CAD tools.",
     "Failures on degraded meshes are reported as findings, not hidden.",
+    "Running the same command twice on the same file can give slightly "
+    "different numbers.",
+    "The shape fitter draws random samples from a generator this project "
+    "cannot seed.",
+    "The wording and the order of this report do not change; the last digits "
+    "of a fit can.",
 )
 
 
@@ -342,19 +358,21 @@ def _dimension_lines(
         points = first.inlier_count + second.inlier_count
         lines.append(
             f"{name} = {_mm(gap)} mm, gap between {first.name} and {second.name}, "
-            f"RMS {_mm(rms)} mm, {points} points."
+            f"RMS {_mm(rms)} mm, {points} points, {DRAFT_TAG}."
         )
     for cylinder in cylinders:
         lines.append(
             f"{cylinder.name}_diameter = {_mm(2.0 * cylinder.radius_mm)} mm, "
-            f"across the fitted surface of {cylinder.name}, "
-            f"RMS {_mm(cylinder.rms_mm)} mm, {cylinder.inlier_count} points."
+            f"across the fitted surface, "
+            f"RMS {_mm(cylinder.rms_mm)} mm, {cylinder.inlier_count} points, "
+            f"{DRAFT_TAG}."
         )
         span = cylinder.extent_mm[1] - cylinder.extent_mm[0]
         lines.append(
             f"{cylinder.name}_length = {_mm(abs(span))} mm, "
-            f"{cylinder.name} measured along its own axis, "
-            f"RMS {_mm(cylinder.rms_mm)} mm, {cylinder.inlier_count} points."
+            f"measured along its own axis, "
+            f"RMS {_mm(cylinder.rms_mm)} mm, {cylinder.inlier_count} points, "
+            f"{DRAFT_TAG}."
         )
     if not lines:
         lines.append("No dimensions could be derived from the fitted primitives.")
@@ -416,10 +434,7 @@ def _relation_lines(
         for index, (relation, plane_name) in enumerate(found):
             line = f"{cylinder.name} axis is {relation} {plane_name}"
             if snap is not None and index == carrier:
-                line += (
-                    f", snapped from {_raw(snap.raw)} degrees, "
-                    f"deviation {_raw(snap.deviation)} degrees"
-                )
+                line += _snap_phrase(snap, relation.startswith("perp"))
             lines.append(line + ".")
 
         offsets = _center_offsets(cylinder, planes, axes, tol_deg)
@@ -452,6 +467,31 @@ def _relation_lines(
     if not lines:
         lines.append("No relations could be derived from the fitted primitives.")
     return lines
+
+
+def _snap_phrase(snap: SnapRecord, perpendicular: bool) -> str:
+    """Say what the axis snap did to THIS relation, in this relation's terms.
+
+    An axis SnapRecord from `frame.py` measures the angle between the fitted
+    axis and the frame axis it was pulled onto, so its `raw` is near zero. Read
+    onto a perpendicularity sentence unchanged, that says "perpendicular,
+    snapped from 0.0014 degrees", which is the number a parallel would carry
+    and is simply wrong for a perpendicular.
+
+    So the angle is restated against the relation being spoken: for a
+    perpendicular, the axis stood at 90 minus that deviation from the plane
+    before the snap; for a parallel it stood at the deviation itself. Angles
+    print to one decimal like every other angle in the report, and a move too
+    small to show at one decimal is said in words rather than printed as zero.
+    """
+    magnitude = abs(snap.raw)
+    before = 90.0 - magnitude if perpendicular else magnitude
+    if magnitude < 0.05:
+        return (
+            f", snapped from {_deg(before)} degrees, "
+            "deviation less than 0.05 degrees"
+        )
+    return f", snapped from {_deg(before)} degrees, deviation {_deg(magnitude)} degrees"
 
 
 def _center_offsets(
@@ -503,13 +543,23 @@ def _axis_offset_mm(first: CylinderFit, second: CylinderFit) -> float:
 
 
 def _snap_lines(snaps: Sequence[SnapRecord]) -> list[str]:
-    """Every SnapRecord, verbatim, in the order the pipeline emitted it."""
+    """Every SnapRecord, verbatim, ordered by the name of what it moved.
+
+    Not in pipeline order. The snapping stages run over primitives in the order
+    the fitter discovered them, and that order comes from an unseeded
+    generator, so two runs of the same command on the same file printed the six
+    face snaps in two different orders. The dimension names are stable, so
+    sorting on them makes the section stable; ties break on the rule text and
+    then on the raw value, which never happens in practice but keeps the sort
+    total.
+    """
     if not snaps:
         return ["No values were snapped."]
+    ordered = sorted(snaps, key=lambda snap: (snap.dim_name, snap.rule, snap.raw))
     return [
         f"{snap.dim_name}: raw {_raw(snap.raw)}, snapped {_raw(snap.snapped)}, "
         f"deviation {_raw(snap.deviation)}, rule {snap.rule}."
-        for snap in snaps
+        for snap in ordered
     ]
 
 

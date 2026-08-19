@@ -20,11 +20,29 @@ would give. So the parsed parameters are used only as a seed and a sanity check:
 this module recomputes every plane and every cylinder from its inlier set in
 numpy, and the returned numbers, residuals and extents all come from that refit.
 
-This also supplies the determinism the noise-zero end-to-end gate needs. CGAL's
-RANSAC draws from an unseeded generator, so the *seed* fits wobble run to run.
-The inlier partition of a clean synthetic part does not, and a least-squares
-refit of a fixed inlier set is exactly reproducible. Determinism here is a
-property of the refit, not of CGAL.
+What is and is not reproducible
+------------------------------
+Say this exactly, because an overstated claim here would be a claim about the
+one assertion the CI gate rests on. CGAL's Efficient RANSAC draws from a
+generator this project cannot seed. Its seed fits wobble run to run, and so
+does its inlier partition: on the noiseless synthetic L-bracket, repeated
+identical calls were measured returning 8 planes and 2 cylinders, 7 and 3, and
+6 and 5 (WI-10 diagnosis, 2026-08-19). Nothing in this module makes CGAL
+deterministic and nothing claims to.
+
+What this module does instead is remove the difference between those partitions
+before anything downstream sees them. A least-squares refit of a fixed inlier
+set is exactly reproducible, and the consolidation pass below converts the
+partitions that differ into the same answer -- because every one of those
+differences was a shape the points did not support. After it, 60 repeated fits
+of each of the three synthetic models, read through the PLY and the normal
+estimator exactly as the gate reads them, returned the construction counts
+every time, and the whole measurement was then repeated: 360 fits, 360
+matches. `scripts/gate_repeat.py` is that measurement, `out/gate_repeat.txt` is
+its output, and `tests/test_ransac_cgal.py` reruns a short version of it.
+That is evidence about three synthetic parts, not a guarantee, and the report's
+caveats tell the user in plain words that the last digits of a fit can move
+between runs.
 
 Units and conventions
 ---------------------
@@ -44,22 +62,33 @@ not depend on the emitter; `tests/test_ransac_cgal.py` asserts the two agree.
 the axis, measured relative to `axis_point`, and `axis_point` is placed at the
 projection of the inlier centroid onto the axis, so the span straddles zero.
 
-Consolidation: two shapes CGAL reports that are not findings
-------------------------------------------------------------
+Consolidation: shapes CGAL reports that are not findings
+--------------------------------------------------------
 Efficient RANSAC scores a hypothesis by inlier count, not by how much of the
-surface it explains, so on a boxy part it sometimes returns two shapes that are
-not features of the object at all. Both were measured on the noiseless
-synthetic bracket (WI-10 diagnosis, 2026-08-19) and both are removed here by a
-consolidation pass whose only inputs are the frozen RANSAC parameters:
+surface it explains, so on a boxy part it sometimes returns shapes that are not
+features of the object at all. Every case below was measured on the noiseless
+synthetic parts (WI-10 diagnosis, 2026-08-19) and each is removed here by a
+consolidation pass whose only inputs are the frozen RANSAC parameters and the
+shapes' own residuals:
 
-  1. A flat face comes back as a cylinder of enormous radius -- 69,334 mm and
-     44,135 mm were observed on a 60 mm part, in 2 runs out of 6. Such a
-     "cylinder" bends away from its own tangent plane by about 0.003 mm across
-     the face it covers, which is 150 times below the RANSAC epsilon of 0.5 mm:
-     the points cannot tell the two hypotheses apart, so calling it a cylinder
-     is not a reading of the data. `_observed_sagitta_mm` measures that bend
-     over the arc the inliers actually cover, and any cylinder that bends less
-     than epsilon is refitted as a plane.
+  1. A flat face comes back as a cylinder. Two shapes of this kind were
+     measured. One is enormous -- 69,334 mm and 44,135 mm radius on a 60 mm
+     part, in 2 runs out of 6 -- and bends away from its own tangent plane by
+     about 0.003 mm across the face it covers, 150 times below the RANSAC
+     epsilon of 0.5 mm: the points cannot tell the two hypotheses apart, so
+     calling it a cylinder is not a reading of the data. `_observed_sagitta_mm`
+     measures that bend over the arc the inliers actually cover, and any
+     cylinder that bends less than epsilon is refitted as a plane.
+
+     The other is small and simply wrong: the L-bracket's 50 by 4 mm top strip
+     came back as a cylinder of radius 1.0 mm lying in the strip, whose own
+     inliers sat 0.57 mm from it on average -- further than the 0.5 mm epsilon
+     that admitted them. So the plane hypothesis is refitted from the same
+     inliers and compared, and the plane wins any tie: a shape is not called
+     curved when a flat reading of the same points fits them at least as well.
+     Both hypotheses see the same noise, so this stays correct on a noisy cloud
+     and cannot quietly flatten a real bore, whose full wrap no plane can
+     follow.
 
   2. A sliver shape appears along a sharp edge -- radius 0.736 mm, 356 points,
      spanning the full 40 mm depth. `io_mesh` estimates normals over a
@@ -71,16 +100,25 @@ consolidation pass whose only inputs are the frozen RANSAC parameters:
      reason recorded in `dropped`.
 
   3. One flat face comes back as two shapes. RANSAC has no global view, and on
-     the synthetic L-bracket it splits the single 50 by 34 mm front face into
-     an upper and a lower strip in about one run in three, which would report
-     nine faces on an eight-faced part. Plane shapes that are the same plane to
-     within epsilon and whose footprints touch within the cluster epsilon are
-     merged and refitted as one face.
+     the synthetic L-bracket it splits a single face into two strips in about
+     one run in three, which would report nine faces on an eight-faced part.
+     Plane shapes that face the same way, that lie within epsilon of each
+     other, and whose footprints touch within the cluster epsilon, are merged
+     and refitted as one face. See `_same_plane` for why the coplanarity test
+     compares the two fitted surfaces rather than every point against the other
+     surface.
 
 No rule introduces a tunable number: they compare against `ransac_epsilon_mm`
-and `ransac_cluster_epsilon_mm`, both frozen in `thresholds.py`. Rule 1 is
-skipped when the caller asked for cylinders without planes, since there is then
-no plane hypothesis to prefer.
+and `ransac_cluster_epsilon_mm`, both frozen in `thresholds.py`, or against the
+residual of the competing hypothesis on the same points. Rule 1 is skipped when
+the caller asked for cylinders without planes, since there is then no plane
+hypothesis to prefer.
+
+These rules were written after watching the fitter fail, which is the honest
+order to write them in; what SYNTHESIS.md ruling 6 forbids is moving a frozen
+number to make a run pass, and no threshold has been touched since the freeze.
+Every removal is disclosed in `RansacResult.notes` or `RansacResult.dropped`
+and reaches the user's report.
 """
 
 from __future__ import annotations
@@ -145,6 +183,11 @@ class RansacResult:
     dropped: list[str]
     params_echo: str
     notes: list[str] = field(default_factory=list)
+    # Points that ended up inside a returned primitive. This is at most
+    # `assigned_point_count`, and is smaller whenever a shape was dropped by the
+    # consolidation rules. The gap between the two is how many points CGAL
+    # claimed for a shape that this module would not report.
+    fitted_point_count: int = 0
 
     @property
     def primitive_count(self) -> int:
@@ -600,22 +643,37 @@ def _is_already_explained(
 
 def _same_plane(
     first: PlaneFit,
-    first_points: np.ndarray,
     second: PlaneFit,
     second_points: np.ndarray,
     thresholds: Thresholds,
 ) -> bool:
     """True when two plane shapes are one surface reported twice.
 
-    Assumes each array holds its own plane's inliers. Two conditions must both
-    hold, and both are read off the frozen RANSAC parameters rather than from a
+    Assumes `second_points` holds the second plane's own inliers. Three conditions must all
+    hold, and each is read off the frozen RANSAC parameters rather than off a
     new tolerance of this module's invention:
 
-      coplanar    every inlier of each plane lies within `ransac_epsilon_mm` of
-                  the other plane, which is the same distance the fitter used to
-                  decide those points belonged to their own plane. Testing the
-                  points rather than comparing normals and offsets means a large
-                  face and a small one are held to the same physical bound.
+      same side   the two outward normals agree to within the frozen
+                  `ransac_normal_threshold`, the same bound the fitter uses to
+                  decide two normals point the same way. Plane normals are
+                  oriented from their inlier normals, so the two faces of a
+                  4 mm plate face opposite ways and can never be merged into
+                  one face no matter how close together they are.
+
+      coplanar    each plane's reference point is within `ransac_epsilon_mm` of
+                  the other plane. This compares the two fitted surfaces, not
+                  their point clouds, and that is deliberate. An earlier version
+                  asked whether every inlier of each shape lay within epsilon of
+                  the other plane, which sounds stricter and is in fact useless:
+                  CGAL admits an inlier when it is within epsilon of a
+                  minimal-sample seed, and a tilted seed leaves a handful of
+                  points far outside epsilon of the least-squares refit -- 2.7 mm
+                  out, against an epsilon of 0.5 mm, on an L-bracket end face of
+                  1980 points whose RMS was 0.08 mm. One such wild point was
+                  enough to stop the two halves of that face merging, and the
+                  part came back with nine faces instead of eight. A
+                  least-squares plane is not moved by two wild points; a
+                  maximum over its points is nothing but those two points.
 
       adjacent    some inlier of the second plane falls inside the first plane's
                   observed footprint grown by `ransac_cluster_epsilon_mm`, the
@@ -624,9 +682,16 @@ def _same_plane(
                   of a part are left alone.
     """
     epsilon = thresholds.ransac_epsilon_mm
-    if float(np.abs(_surface_distance_mm(first, second_points, np.inf)).max()) > epsilon:
+    normal_a = np.asarray(first.normal, dtype=np.float64)
+    normal_b = np.asarray(second.normal, dtype=np.float64)
+    if float(np.dot(normal_a, normal_b)) < thresholds.ransac_normal_threshold:
         return False
-    if float(np.abs(_surface_distance_mm(second, first_points, np.inf)).max()) > epsilon:
+    between = np.asarray(second.point, dtype=np.float64) - np.asarray(
+        first.point, dtype=np.float64
+    )
+    if abs(float(np.dot(between, normal_a))) > epsilon:
+        return False
+    if abs(float(np.dot(between, normal_b))) > epsilon:
         return False
     touching = _surface_distance_mm(
         first, second_points, thresholds.ransac_cluster_epsilon_mm
@@ -662,9 +727,7 @@ def _merge_coplanar_planes(
                 second, second_points, second_normals = entries[j]
                 if not isinstance(second, PlaneFit):
                     continue
-                if not _same_plane(
-                    first, first_points, second, second_points, thresholds
-                ):
+                if not _same_plane(first, second, second_points, thresholds):
                     continue
                 points = np.vstack([first_points, second_points])
                 normals = np.vstack([first_normals, second_normals])
@@ -827,8 +890,14 @@ def fit_primitives(
                 dropped.append(f"Cylinder shape {index} could not be refitted: {exc}")
                 continue
 
-            # Rule 1: a cylinder the points cannot tell from a plane is a plane.
+            # Rule 1: a cylinder the points cannot tell from a plane is a plane,
+            # and so is a cylinder a plane simply describes better.
             if detect_planes and count >= MIN_PLANE_INLIERS:
+                alternative = refit_plane(
+                    _plane_seed_from(fit, inlier_normals),
+                    inlier_points,
+                    inlier_normals,
+                )
                 sagitta = _observed_sagitta_mm(fit, inlier_points)
                 if sagitta < thresholds.ransac_epsilon_mm:
                     notes.append(
@@ -838,11 +907,17 @@ def fit_primitives(
                         f"less than the {thresholds.ransac_epsilon_mm} mm "
                         "fitting tolerance, so it was refitted as a plane."
                     )
-                    fit = refit_plane(
-                        _plane_seed_from(fit, inlier_normals),
-                        inlier_points,
-                        inlier_normals,
+                    fit = alternative
+                elif alternative.rms_mm <= fit.rms_mm:
+                    notes.append(
+                        f"Shape {index} was reported as a cylinder of radius "
+                        f"{fit.radius_mm:.2f} mm, whose own points sit "
+                        f"{fit.rms_mm:.4f} mm from it on average, while a plane "
+                        f"through the same points sits {alternative.rms_mm:.4f} mm "
+                        "from them. The flat reading is the better one, so it "
+                        "was refitted as a plane."
                     )
+                    fit = alternative
 
         # Rule 2: a shape whose every point is already on an accepted surface
         # is a second description of that surface, not a new feature.
@@ -875,6 +950,7 @@ def fit_primitives(
         cylinders=cylinders,
         point_count=int(pts.shape[0]),
         assigned_point_count=int(np.count_nonzero(assignment != UNASSIGNED)),
+        fitted_point_count=sum(fit.inlier_count for fit in [*planes, *cylinders]),
         dropped=dropped,
         params_echo=_params_echo(
             thresholds, probability, detect_planes, detect_cylinders

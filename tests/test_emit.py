@@ -183,18 +183,179 @@ def test_snap_dimension_inherits_the_residual_of_the_primitive_it_names(
 
 
 def test_no_executed_solid_or_boolean(bracket_text: str) -> None:
-    """Solids, extrudes and Booleans may appear only inside comments."""
+    """Solids, extrudes and Booleans may appear only inside comments.
+
+    PLAN.md WI-6(f) says "never executed code for solids or Booleans", with no
+    exemption for scaffolding that is discarded afterwards. So this looks at
+    every executable name in the parsed tree, not just at the head of a call:
+    `Solid.make_cylinder(...).faces()` builds a solid at run time even though
+    the object that reaches the STEP is a face, and an earlier version of the
+    emitter did exactly that.
+    """
     tree = ast.parse(bracket_text)
-    called = {
-        node.func.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    used: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            used.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            used.add(node.attr)
+        elif isinstance(node, ast.alias):
+            used.add(node.asname or node.name)
+    forbidden = {
+        "Box",
+        "Cylinder",
+        "Solid",
+        "Part",
+        "make_box",
+        "make_cylinder",
+        "extrude",
+        "loft",
+        "revolve",
+        "sweep_solid",
+        "cut",
+        "fuse",
+        "intersect",
     }
-    forbidden = {"Box", "Cylinder", "extrude", "Part", "loft", "revolve"}
-    assert not (called & forbidden), f"emitted executable solid geometry: {called & forbidden}"
-    # Solid.make_cylinder is allowed: it is scaffolding for the lateral face,
-    # and the compound that reaches STEP holds faces only.
+    offenders = used & forbidden
+    assert not offenders, f"emitted executable solid geometry: {sorted(offenders)}"
     assert "reference_surfaces = Compound(children=reference_faces)" in bracket_text
+
+
+def test_cylindrical_faces_are_built_as_faces(bracket_text: str) -> None:
+    """The lateral face comes from a swept circle, not from slicing a solid."""
+    assert "Face.sweep(circle_cyl_bore_1, path_cyl_bore_1)" in bracket_text
+    assert "Solid" not in bracket_text.split('"""')[2]
+
+
+def test_named_dimensions_state_their_unit_and_whether_they_are_live(
+    bracket_text: str,
+) -> None:
+    """A listener must be able to tell degrees from millimetres, and live from inert."""
+    lines = bracket_text.splitlines()
+    assert "# LENGTHS, in millimetres. Edit a live one and rerun this file." in lines
+    angle_heading = next(i for i, l in enumerate(lines) if l.startswith("# ANGLES, in degrees"))
+    length_heading = lines.index(
+        "# LENGTHS, in millimetres. Edit a live one and rerun this file."
+    )
+    assert length_heading < angle_heading, "lengths come first"
+
+    axis_line = next(l for l in lines if l.startswith("cyl_bore_1_axis = "))
+    assert lines.index(axis_line) > angle_heading, "an angle sits under the angle heading"
+    assert "fitted 89.2 degrees" in axis_line
+    assert "reference only." in axis_line
+
+    radius_line = next(l for l in lines if l.startswith("cyl_bore_1_radius = "))
+    assert lines.index(radius_line) < angle_heading, "a length sits under the length heading"
+    assert radius_line.startswith("cyl_bore_1_radius = 6.25  # used by the geometry below.")
+    assert "cyl_bore_1_radius" in bracket_text.split("REFERENCE SURFACES")[1]
+
+
+def test_a_snap_overtaken_by_a_later_stage_emits_the_final_value() -> None:
+    """The emitted dimension and the emitted geometry may never disagree.
+
+    frame.py snaps in stages: a radius pulled onto a cluster mean can then be
+    moved again when the diameter is rounded, which leaves the radius
+    SnapRecord holding an intermediate number. Binding that number would make
+    `cyl_radius` contradict `cyl_diameter` in the same file, and would build
+    the reference surface from the contradiction.
+    """
+    cylinder = CylinderFit(
+        name="cylinder_1",
+        axis_point=(0.0, 0.0, 0.0),
+        axis_dir=(0.0, 0.0, 1.0),
+        radius_mm=6.25,
+        extent_mm=(0.0, 20.0),
+        inlier_count=3000,
+        rms_mm=0.05,
+    )
+    scene = SceneModel(
+        frame=(),
+        planes=[],
+        cylinders=[cylinder],
+        snaps=[
+            SnapRecord("cylinder_1_radius", 6.2372, 6.24458, 0.00738, "radius-cluster 2xRMS"),
+            SnapRecord("cylinder_1_diameter", 12.489, 12.5, 0.011, "length-round 0.1mm"),
+        ],
+        provenance="synthetic",
+    )
+    text = emit_script(scene)
+    radius = next(l for l in text.splitlines() if l.startswith("cylinder_1_radius = "))
+    diameter = next(l for l in text.splitlines() if l.startswith("cylinder_1_diameter = "))
+    assert radius.startswith("cylinder_1_radius = 6.25  #")
+    assert diameter.startswith("cylinder_1_diameter = 12.5  #")
+    assert "6.24458" in radius, "the intermediate value is still disclosed"
+    assert "superseded by a later stage" in radius
+    assert "# NOTE: cylinder_1_radius was snapped to 6.24458 mm" in text
+    # And the geometry is built from the corrected radius.
+    assert "Edge.make_circle(\n    cylinder_1_radius," in text
+
+
+def test_a_cylinder_bigger_than_the_part_is_flagged() -> None:
+    """A radius that exceeds the whole part is labelled, not quietly emitted."""
+    scene = SceneModel(
+        frame=(),
+        planes=[
+            _plane("plane_top", (30.0, 20.0, 20.0), (0.0, 0.0, 1.0), half_u=30.0, half_v=20.0)
+        ],
+        cylinders=[
+            CylinderFit(
+                name="cylinder_0",
+                axis_point=(0.0, 0.0, 0.0),
+                axis_dir=(0.0, 0.0, 1.0),
+                radius_mm=11481.7,
+                extent_mm=(0.0, 40.0),
+                inlier_count=900,
+                rms_mm=0.09,
+            )
+        ],
+        snaps=[],
+        provenance="synthetic",
+    )
+    text = emit_script(scene)
+    radius = next(l for l in text.splitlines() if l.startswith("cylinder_0_radius = "))
+    assert "IMPLAUSIBLE:" in radius
+    assert "times the whole fitted part" in radius
+    assert any("IMPLAUSIBLE:" in l and "HINT" not in l for l in text.splitlines())
+    # The fit itself is untouched: labelling is not editing.
+    assert radius.startswith("cylinder_0_radius = 11481.7  #")
+
+
+def test_a_believable_cylinder_is_not_flagged(bracket_text: str) -> None:
+    assert "IMPLAUSIBLE" not in bracket_text
+
+
+def test_a_snap_that_moved_a_huge_number_still_shows_the_move() -> None:
+    """Six significant figures hide a 0.005 mm move on a 22963 mm diameter."""
+    scene = SceneModel(
+        frame=(),
+        planes=[],
+        cylinders=[
+            CylinderFit(
+                name="cylinder_0",
+                axis_point=(0.0, 0.0, 0.0),
+                axis_dir=(0.0, 0.0, 1.0),
+                radius_mm=11481.7,
+                extent_mm=(0.0, 40.0),
+                inlier_count=900,
+                rms_mm=0.09,
+            )
+        ],
+        snaps=[
+            SnapRecord("cylinder_0_diameter", 22963.40551, 22963.4, -0.00551, "length-round")
+        ],
+        provenance="synthetic",
+    )
+    line = next(
+        l for l in emit_script(scene).splitlines() if l.startswith("cylinder_0_diameter = ")
+    )
+    fitted = re.search(r"fitted (\S+) mm, snapped (\S+) mm", line)
+    assert fitted is not None, line
+    assert fitted.group(1) != fitted.group(2), f"the snap log hides its own change: {line}"
+
+
+def test_singular_and_plural_counts_in_the_header(bracket_text: str) -> None:
+    """One cylinder is "1 cylinder"; the report says it the same way."""
+    assert "Fitted primitives: 6 planes and 1 cylinder." in bracket_text
 
 
 def test_assembly_hints_are_comments_only(bracket_text: str) -> None:

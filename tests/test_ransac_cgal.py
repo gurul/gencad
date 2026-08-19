@@ -18,7 +18,10 @@ All geometry here is in millimetres, matching the rest of the project.
 
 from __future__ import annotations
 
+import importlib.util
 import math
+import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -28,6 +31,7 @@ from scan2cad.ransac_cgal import (
     DEFAULT_PROBABILITY,
     FitError,
     RansacResult,
+    _same_plane,
     fit_primitives,
     plane_uv_basis,
     refit_cylinder,
@@ -36,6 +40,24 @@ from scan2cad.ransac_cgal import (
 from scan2cad.thresholds import COARSE
 
 SEED = 1337
+
+GENERATOR = Path(__file__).resolve().parent.parent / "tools" / "make_synthetic.py"
+
+
+def _load_synthetic_generator():
+    """Import tools/make_synthetic.py by path; tools/ is not a package.
+
+    Registered in sys.modules before it executes, because it defines frozen
+    dataclasses and dataclasses resolves a class's module by name while
+    building it.
+    """
+    spec = importlib.util.spec_from_file_location("make_synthetic", GENERATOR)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
 
 # The acceptance case named in PLAN.md WI-3.
 ACCEPT_RADIUS_MM = 12.5
@@ -518,8 +540,174 @@ def test_block_point_accounting(block_result: RansacResult) -> None:
     assigned = sum(
         fit.inlier_count for fit in [*block_result.planes, *block_result.cylinders]
     )
-    assert assigned == block_result.assigned_point_count
-    assert 0 < block_result.assigned_point_count <= block_result.point_count
+    assert assigned == block_result.fitted_point_count
+    assert 0 < block_result.fitted_point_count <= block_result.assigned_point_count
+    assert block_result.assigned_point_count <= block_result.point_count
+
+
+def test_repeated_fits_of_the_same_part_return_the_same_primitive_count(
+    tmp_path: Path,
+) -> None:
+    """The claim the noise-zero gate rests on, measured rather than assumed.
+
+    CGAL's Efficient RANSAC is unseeded, and before the consolidation pass this
+    exact call returned 8 planes and 2 cylinders, 7 and 3, and 6 and 5 on
+    repeats of one fixed cloud. The gate asserts an exact count, so the
+    stability of that count is itself a thing to test. Five repeats here;
+    `scripts/gate_repeat.py` runs thirty across all three models and writes
+    out/gate_repeat.txt.
+
+    The L-bracket is the model that broke: its two 50 by 4 mm strips are the
+    shapes RANSAC misread as small cylinders, and its end faces are the ones it
+    split in two.
+
+    The cloud goes out to a PLY and comes back through the normal estimator,
+    because that is the path the gate takes and the two paths do not behave the
+    same: with the generator's exact normals this was already stable while the
+    file path was not.
+    """
+    pytest.importorskip("CGAL.CGAL_Shape_detection")
+    pytest.importorskip("open3d")
+    from scan2cad.sources import FileMeshSource
+
+    generator = _load_synthetic_generator()
+    params = generator.SamplerParams(n_points=80_000, sigma_mm=0.0, seed=SEED)
+    points, normals, truth = generator.make_model("lbracket", params)
+    ply = tmp_path / "lbracket.ply"
+    generator.write_ply(ply, points, normals)
+    cloud = FileMeshSource(
+        str(ply),
+        units="mm",
+        provenance="synthetic",
+        seed=SEED,
+        sample_count=80_000,
+    ).load_cloud()
+    expected = (int(truth["n_planes"]), int(truth["n_cylinders"]))
+    seen = []
+    for _ in range(5):
+        result = fit_primitives(cloud.points, cloud.normals, thresholds=COARSE)
+        seen.append((len(result.planes), len(result.cylinders)))
+    assert seen == [expected] * 5, (
+        f"the fitter returned {seen} across five identical calls; the gate "
+        f"asserts exactly {expected}"
+    )
+
+
+def test_a_flat_strip_read_as_a_cylinder_comes_back_as_a_plane() -> None:
+    """A shape a plane describes better is a plane, whatever RANSAC called it.
+
+    Built directly, with no CGAL: the 50 by 4 mm strip that Efficient RANSAC
+    reported as a radius 1.0 mm cylinder lying inside the strip. The cylinder
+    refit of those points leaves them 0.57 mm away on average, further than the
+    0.5 mm epsilon that admitted them, while a plane fits them exactly.
+    """
+    rng = np.random.default_rng(SEED)
+    x = rng.uniform(0.0, 50.0, 2000)
+    z = rng.uniform(0.0, 4.0, 2000)
+    points = np.column_stack([x, np.full_like(x, 30.0), z])
+    normals = np.tile(np.array([0.0, 1.0, 0.0]), (points.shape[0], 1))
+    seed_cylinder = CylinderFit(
+        name="cylinder_seed",
+        axis_point=(25.0, 30.0, 2.0),
+        axis_dir=(1.0, 0.0, 0.0),
+        radius_mm=1.0,
+        extent_mm=(-25.0, 25.0),
+        inlier_count=points.shape[0],
+        rms_mm=0.6,
+    )
+    as_cylinder = refit_cylinder(seed_cylinder, points, normals)
+    as_plane = refit_plane(
+        PlaneFit(
+            name="plane_seed",
+            point=(25.0, 30.0, 2.0),
+            normal=(0.0, 1.0, 0.0),
+            inlier_count=points.shape[0],
+            rms_mm=0.0,
+            extent=(-25.0, 25.0, -2.0, 2.0),
+        ),
+        points,
+        normals,
+    )
+    assert as_plane.rms_mm <= as_cylinder.rms_mm, (
+        "the comparison the consolidation rule makes must prefer the plane on "
+        "these points; if it does not, the rule cannot fire"
+    )
+    assert as_cylinder.rms_mm > COARSE.ransac_epsilon_mm, (
+        "this fixture is meant to reproduce a cylinder that does not even hold "
+        "its own inliers inside the fitting tolerance"
+    )
+
+
+def _strip_plane(name: str, z: float, v_range: tuple[float, float]) -> tuple:
+    """A +z facing plane at height `z` spanning `v_range` in its v direction."""
+    v_min, v_max = v_range
+    return PlaneFit(
+        name=name,
+        point=(0.0, 0.5 * (v_min + v_max), z),
+        normal=(0.0, 0.0, 1.0),
+        inlier_count=1000,
+        rms_mm=0.01,
+        extent=(-25.0, 25.0, v_min - 0.5 * (v_min + v_max), v_max - 0.5 * (v_min + v_max)),
+    )
+
+
+def test_two_halves_of_one_face_merge_even_with_a_stray_inlier() -> None:
+    """Rule 3 must not be defeated by the two worst points in a shape.
+
+    CGAL admits a point when it is within epsilon of a minimal-sample seed, so a
+    handful of a shape's inliers can sit far outside epsilon of the
+    least-squares refit. On the L-bracket that was 2.7 mm against an epsilon of
+    0.5 mm, and it was enough to report nine faces on an eight-faced part.
+    """
+    lower = _strip_plane("plane_lower", 34.0, (0.0, 20.0))
+    upper = _strip_plane("plane_upper", 34.0, (20.0, 40.0))
+    rng = np.random.default_rng(SEED)
+    upper_points = np.column_stack(
+        [
+            rng.uniform(-25.0, 25.0, 500),
+            rng.uniform(20.0, 40.0, 500),
+            np.full(500, 34.0),
+        ]
+    )
+    upper_points[0, 2] = 36.7  # the stray: 2.7 mm off its own plane
+    assert _same_plane(lower, upper, upper_points, COARSE)
+
+
+def test_two_stacked_faces_never_merge() -> None:
+    """A boss top 6 mm above a box top is a second face, not the same face."""
+    box_top = _strip_plane("plane_top", 25.0, (0.0, 40.0))
+    boss_top = _strip_plane("plane_boss_top", 31.0, (10.0, 20.0))
+    rng = np.random.default_rng(SEED)
+    boss_points = np.column_stack(
+        [
+            rng.uniform(-4.0, 4.0, 300),
+            rng.uniform(10.0, 20.0, 300),
+            np.full(300, 31.0),
+        ]
+    )
+    assert not _same_plane(box_top, boss_top, boss_points, COARSE)
+
+
+def test_opposite_faces_of_a_thin_plate_never_merge() -> None:
+    """Two faces 4 mm apart that look at each other are two faces."""
+    front = _strip_plane("plane_front", 0.0, (0.0, 40.0))
+    back = PlaneFit(
+        name="plane_back",
+        point=(0.0, 20.0, 4.0),
+        normal=(0.0, 0.0, -1.0),
+        inlier_count=1000,
+        rms_mm=0.01,
+        extent=(-25.0, 25.0, -20.0, 20.0),
+    )
+    rng = np.random.default_rng(SEED)
+    back_points = np.column_stack(
+        [
+            rng.uniform(-25.0, 25.0, 300),
+            rng.uniform(0.0, 40.0, 300),
+            np.full(300, 4.0),
+        ]
+    )
+    assert not _same_plane(front, back, back_points, COARSE)
 
 
 def test_fitting_is_reproducible_on_the_same_cloud() -> None:

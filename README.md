@@ -28,8 +28,17 @@ It does not compete with CAD tools on precision. It competes with silence.
 
 It does not do silent snapping. Every changed number is logged.
 It does not build solids, run Booleans, or trim and sew surfaces.
+The emitted script does not build one either, not even as scaffolding it
+throws away: a cylindrical reference face is a circle swept along its axis.
 Assembly suggestions are emitted as commented-out hints only.
 It fits planes and cylinders. That is the whole primitive vocabulary.
+
+It does not give byte-identical numbers on a rerun. The shape fitter draws
+random samples from a generator this project cannot seed, so the last digits
+of a fit can move between runs of the same command on the same file. What does
+not move is the wording, the ordering and, on the three synthetic parts,
+the primitive count; scripts/gate_repeat.py is the measurement of that and
+out/gate_repeat.txt is its output.
 
 ## Quickstart
 

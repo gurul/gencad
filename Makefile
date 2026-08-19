@@ -8,7 +8,7 @@ PY      := .venv/bin/python
 PYTEST  := .venv/bin/pytest
 FREECAD := /Applications/FreeCAD.app/Contents/Resources/bin/freecadcmd
 
-.PHONY: venv smoke test gate sweep sweep-degraded demo clean
+.PHONY: venv smoke test gate gate-repeat sweep sweep-degraded demo clean
 
 ## venv: create .venv with uv and install the frozen wheel set
 venv:
@@ -28,6 +28,12 @@ test:
 ## gate: the noise-zero end-to-end gate on its own, the one test never dropped
 gate:
 	$(PYTEST) tests/test_e2e_noise0.py -q
+
+## gate-repeat: evidence that the gate's primitive counts are stable; writes
+## out/gate_repeat.txt. Run after any change to ransac_cgal.py.
+gate-repeat:
+	mkdir -p out
+	$(PY) scripts/gate_repeat.py --repeats 30
 
 ## sweep: characterisation run; writes out/sweep_report.txt. Not a test.
 sweep:

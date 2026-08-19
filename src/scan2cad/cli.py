@@ -413,7 +413,8 @@ def _too_few_message(fit: RansacResult, thresholds: Thresholds) -> str:
         f"scan2cad: only {fit.primitive_count} primitives were found, and at "
         f"least {MIN_PRIMITIVES} are needed to describe an object.",
         f"The scan had {fit.point_count} points, of which "
-        f"{fit.assigned_point_count} joined a shape.",
+        f"{fit.assigned_point_count} joined a shape and "
+        f"{fit.fitted_point_count} survived into a fitted surface.",
     ]
     for reason in fit.dropped:
         lines.append(f"Dropped shape: {reason}")

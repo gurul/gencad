@@ -38,9 +38,13 @@ The gate.
 Morning evidence that stock camera bursts with automatic exposure and
 automatic focus locked actually break the reconstruction, or blow the error
 budget.
-Concretely, step 11 of docs/MORNING_PROTOCOL.md: the reconstruction visibly
-fails, or the step 8 errors are clearly attributable to focus or exposure
-hunting rather than to scale or to coverage.
+Concretely, step 11 of docs/MORNING_PROTOCOL.md, whose two halves are both
+machine readable and neither of which needs sight: the reconstruction failed,
+evidenced by a non zero exit, an error message, an OBJ with almost no vertices
+or faces, or scan2cad reporting fewer than two primitives; and the failure is
+attributable to focus or exposure hunting rather than to scale or to coverage,
+evidenced by tools/frame_sharpness.py naming a third or more of the session as
+far below its median sharpness.
 
 Cost if opened.
 Roughly 200 lines of Swift over an existing Apple sample, plus a device build.
