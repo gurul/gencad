@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "gencad": {
+      "command": "python3",
+      "args": ["/absolute/path/to/gencad/server/gencad_mcp.py"],
+      "env": {
+        "GENCAD_FREECADCMD": "/Applications/FreeCAD.app/Contents/Resources/bin/freecadcmd"
+      }
+    }
+  }
+}
