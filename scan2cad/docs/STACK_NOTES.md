@@ -6,8 +6,8 @@ If something here disagrees with a plan document, this file is what actually run
 
 ## Environment
 
-Repo: /Users/gurucharan/Documents/personal/scan2cad
-Virtual environment: /Users/gurucharan/Documents/personal/scan2cad/.venv
+Repo: /Users/gurucharan/Documents/personal/gencad/scan2cad
+Virtual environment: /Users/gurucharan/Documents/personal/gencad/scan2cad/.venv
 Created with: uv venv --python 3.12 .venv
 uv version: 0.11.27
 Python: 3.12.13

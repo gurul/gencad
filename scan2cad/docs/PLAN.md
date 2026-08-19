@@ -13,7 +13,7 @@
 7. **Synthetic results are claim-limited.** They prove the code path runs and isn't knife-edge fragile. They never prove iPhone accuracy. Thresholds are frozen before the noise sweep and may not be re-tuned to make it pass.
 8. **No sensor-realistic simulators** (LiDAR hallucination, TrueDepth warp, VIO drift, OIS jitter). Named TODO comments only; do not create stub files for killed stages.
 
-## 1. Repo layout (new directory `~/Documents/personal/scan2cad`)
+## 1. Repo layout (new directory `~/Documents/personal/gencad/scan2cad`)
 
 ```
 scan2cad/
@@ -56,7 +56,7 @@ scan2cad/
 ## 2. venv recipe
 
 ```bash
-mkdir -p ~/Documents/personal/scan2cad && cd ~/Documents/personal/scan2cad
+mkdir -p ~/Documents/personal/gencad/scan2cad && cd ~/Documents/personal/gencad/scan2cad
 python3.12 -m venv .venv
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install numpy "open3d==0.19.*" "cgal==6.0.1.*" \

@@ -22,7 +22,7 @@ and the rebuild plan (docs/PLAN.md). Where they conflict, THIS file wins, then P
    Freeze requirements.txt from the venv that passes the smoke gate. The smoke gate
    (PLAN.md section 2) blocks everything.
 
-4. Directory is ~/Documents/personal/scan2cad (this repo, git). Never touch
+4. Directory is ~/Documents/personal/gencad/scan2cad (this repo, git). Never touch
    ~/Documents/personal/leap-input (its .venv is SDK-pinned) or gencad except read-only.
 
 5. WI-14 (Apple PhotogrammetrySession Mac CLI build) runs last, timeboxed 45 min,

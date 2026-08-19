@@ -32,7 +32,7 @@ It does not compete with Backflip. It competes with silence: no incumbent produc
 
 ## What was built and verified
 
-The repo is at ~/Documents/personal/scan2cad. Four commits. 284 tests, all passing, re-run and confirmed after the build agents finished.
+The repo is at ~/Documents/personal/gencad/scan2cad. Four commits. 284 tests, all passing, re-run and confirmed after the build agents finished.
 
 The pipeline: mesh or point cloud, then CGAL Efficient RANSAC for planes and cylinders, then dominant-frame fitting and snapping with a full audit log, then the report and the build123d skeleton and STEP.
 The noise-zero gate: all three synthetic parts recovered exactly, every dimension within max of 0.05 mm and 0.1 percent, declared before any run.

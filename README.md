@@ -24,6 +24,14 @@ agent ──(MCP)──▶ gencad server ──▶ freecadcmd (FreeCAD headless)
     visually verified before anything is printed
 - **`tools/render_section.py`** — the renderer itself; also usable standalone
   inside `freecadcmd`
+- **`scan2cad/`** — the scan side of the loop: a screen-reader-native
+  describe-and-draft CLI. A phone-scanned mesh goes in; out come a
+  plain-language geometry report, an editable build123d script with named,
+  uncertainty-tagged dimensions, and STEP reference surfaces. The scan is the
+  draft, the caliper is the truth. Own venv (Python 3.12 only), own README,
+  morning capture protocol in `scan2cad/docs/MORNING_PROTOCOL.md`, and a
+  zero-dependency Mac PhotogrammetrySession CLI in
+  `scan2cad/tools/photogrammetry-cli/`.
 
 ## Setup
 

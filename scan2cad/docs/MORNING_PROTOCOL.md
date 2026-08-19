@@ -9,7 +9,7 @@ Everything scan2cad prints is a draft, plus or minus the residual it states.
 The caliper and the datasheet are the only trusted numbers in this project.
 
 Run every command from the repo root, which is
-/Users/gurucharan/Documents/personal/scan2cad.
+/Users/gurucharan/Documents/personal/gencad/scan2cad.
 Always use the venv interpreter, .venv/bin/python, never a bare python3.
 
 Steps 2, 5, 6, 7 and 8 are the spine of the morning.
