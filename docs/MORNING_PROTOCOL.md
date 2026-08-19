@@ -83,18 +83,31 @@ To reprint the model or reprint the sheet, run:
 
 ## Step 3. Build the photogrammetry command line app
 
-Status as this document was written: the binary was NOT built overnight. That
-item was timeboxed to 45 minutes and skippable, and it was skipped.
+Status as this document was written: the binary WAS built overnight, and it
+reconstructed Apple's 36 image sample set end to end in about 20 seconds.
+There is nothing to do in this step unless the binary is missing.
 
-If it was built after this line was written, it lives at
-out/photogrammetry/HelloPhotogrammetry. One command settles it:
-ls out/photogrammetry/HelloPhotogrammetry
-If that prints a path, skip this step. If it errors, do the step.
+The tool is our own, not Apple's sample. It lives at
+tools/photogrammetry-cli. It is a plain Swift package with no external
+dependencies, so it builds with no network access.
 
-Then, to build it, open Apple's sample project named
-Creating a Photogrammetry Command Line App in Xcode and press Build.
-There is no signing step and no device involved. It is a Mac command line tool.
-This takes a couple of minutes and needs no code changes.
+One command settles whether you need this step:
+ls tools/photogrammetry-cli/.build/release/photogrammetry-cli
+
+If that prints a path, skip the rest of this step.
+
+If it errors, rebuild it. It takes a few seconds:
+cd tools/photogrammetry-cli
+swift build -c release
+
+Confirm it runs:
+./.build/release/photogrammetry-cli --help
+
+If swift itself is missing, run this once and try again:
+sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+
+There is no signing step and no device involved. It is a Mac command line
+tool. It needs Apple silicon; it refuses to run otherwise and says so.
 
 ## Step 4. Install Stray Scanner
 
@@ -144,18 +157,24 @@ Put them in one folder with nothing else in it.
 
 Run the photogrammetry command line app on the photo folder.
 
-Apple's sample decides the output format from the extension of the output path
-you give it, so ask for OBJ by naming the output mesh.obj:
-out/photogrammetry/HelloPhotogrammetry PHOTOS mesh.obj --detail medium
+Replace PHOTOS with the folder holding your photographs. Give the output its
+own empty folder, because OBJ output writes three files side by side:
 
-If your build writes USDZ regardless, convert it. Either of these works, and
-neither is installed by default, so use whichever you already have:
-usdcat mesh.usdz -o mesh.obj
-blender --background --python-expr "import bpy,sys; bpy.ops.wm.usd_import(filepath='mesh.usdz'); bpy.ops.wm.obj_export(filepath='mesh.obj')"
+tools/photogrammetry-cli/.build/release/photogrammetry-cli PHOTOS out/scan/mesh.obj --detail medium
 
-If you have neither, keep the USDZ and stop here: scan2cad reads PLY, OBJ and
-STL only. Getting a converter is a five minute task, not a morning task, and
-the rest of the morning depends on this file.
+You do not need a separate converter. RealityKit itself writes USDZ only, so
+the tool reconstructs to mesh.usdz and then converts that to mesh.obj for you.
+You end up with mesh.usdz, mesh.obj and mesh.mtl. scan2cad reads the OBJ.
+
+Useful options, none of them required:
+--detail preview is the fastest and is the right choice for a first look.
+--detail medium is the default and the one to trust.
+--sensitivity high helps on matte objects with little surface texture.
+--ordering sequential is a speed hint, correct only for one steady orbit.
+
+The tool speaks as it works: it prints progress every ten percent, names each
+file it writes, and reports skipped photographs. If it fails it prints one
+line starting with the word error and exits non zero.
 
 Expect a metric scaled mesh whose units are metres.
 
