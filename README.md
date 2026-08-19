@@ -39,8 +39,11 @@ agent ──(MCP)──▶ gencad server ──▶ freecadcmd (FreeCAD headless)
   are hidden; upstream demo GIF LFS assets and LFS config were dropped in
   vendoring). Upstream additions keep flowing in as review PRs:
   `scripts/pull-text-to-cad.sh` diffs upstream `main` against the commit
-  recorded in `text-to-cad/.upstream-commit` and opens one (3-way apply, so
-  local patches survive); a weekly GitHub Action runs it automatically.
+  recorded in `text-to-cad/.upstream-commit` and opens one; a weekly GitHub
+  Action runs it automatically. Local patches live in the idempotent
+  `scripts/apply-gencad-patches.sh`, which the pull wraps as
+  revert → apply upstream → re-apply, so they never conflict with upstream
+  churn — add future patches to vendored files there, not inline.
 - **`scan2cad/`** — the scan side of the loop: a screen-reader-native
   describe-and-draft CLI. A phone-scanned mesh goes in; out come a
   plain-language geometry report, an editable build123d script with named,

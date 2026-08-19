@@ -25,6 +25,11 @@ fi
 
 git switch -c "$BRANCH"
 
+# Lift gencad's local patches so the upstream diff applies onto a pristine
+# tree — they are re-applied below, which is what keeps them from ever
+# conflicting with upstream churn around the same lines.
+bash scripts/apply-gencad-patches.sh --revert
+
 # Excludes mirror what vendoring dropped (demo LFS assets, LFS config).
 # Patterns appear with and without the text-to-cad/ prefix because git-apply
 # matches them against the post---directory pathname on some versions.
@@ -35,6 +40,7 @@ git diff --binary "$OLD" "$NEW" | git apply --directory=text-to-cad --3way \
     --exclude='.gitattributes' --exclude='text-to-cad/.gitattributes' \
   || CONFLICTS=1
 
+bash scripts/apply-gencad-patches.sh
 echo "$NEW" > "$REC"
 git add -A text-to-cad
 git commit -m "vendor: pull text-to-cad ${OLD:0:8}..${NEW:0:8}"
