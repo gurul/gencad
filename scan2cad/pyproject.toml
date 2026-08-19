@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scan2cad"
+version = "0.1.0"
+description = "Screen-reader-native describe-and-draft tool: mesh in, plain-language geometry report and editable build123d script out."
+requires-python = ">=3.12"
+dependencies = [
+    "numpy",
+    "open3d==0.19.*",
+    "cgal",
+    "opencv-python>=4.13,<5",
+    "scipy",
+    "trimesh",
+    "build123d==0.11.*",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+scan2cad = "scan2cad.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+# Tests import the package straight from src/ so the suite runs in a bare venv,
+# with or without an editable install of scan2cad.
+pythonpath = ["src"]
+testpaths = ["tests"]
