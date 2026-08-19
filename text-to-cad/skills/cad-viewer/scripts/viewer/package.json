@@ -2,7 +2,7 @@
   "name": "cad-viewer-runtime",
   "private": true,
   "type": "module",
-  "version": "0.4.19",
+  "version": "0.4.20",
   "scripts": {
     "start": "node scripts/start-viewer.mjs",
     "serve": "python3 -m server_py.server",

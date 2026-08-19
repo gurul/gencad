@@ -1,2 +1,2 @@
-cadgen==0.4.19
+cadgen==0.4.20
 playwright
