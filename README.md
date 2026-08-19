@@ -1,5 +1,7 @@
 # gencad
 
+![gencad — parametric CAD from a prompt](docs/assets/hero.png)
+
 **Parametric CAD from a prompt** — headless FreeCAD wired to a coding agent
 over MCP, plus the render tooling that lets the agent *see* what it modeled.
 
@@ -26,32 +28,17 @@ agent ──(MCP)──▶ gencad server ──▶ freecadcmd (FreeCAD headless)
   inside `freecadcmd`
 - **`text-to-cad/`** — vendored from
   [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)
-  (release 0.4.19, upstream commit `16e90db6`, MIT — see its bundled
-  `LICENSE`), which gencad builds on as its base: a library of agent skills
-  for CAD, CAE and CAM (CAD generation with STEP/STL/3MF export, a local CAD
-  Viewer, DXF drawings, URDF/SRDF/SDF robot descriptions, G-code slicing,
-  off-the-shelf STEP part sourcing, and more). It complements the MCP loop
-  above: gencad closes the build/render/inspect cycle, text-to-cad supplies
-  the surrounding fabrication and hand-off workflows. Full credit to
-  [@earthtojake](https://github.com/earthtojake) and the text-to-cad
-  contributors. Local changes on top of upstream are marked with
-  `gencad patch` comments (currently: the Viewer header's community links
-  are hidden; upstream demo GIF LFS assets and LFS config were dropped in
-  vendoring). Upstream additions keep flowing in as review PRs:
-  `scripts/pull-text-to-cad.sh` diffs upstream `main` against the commit
-  recorded in `text-to-cad/.upstream-commit` and opens one; a weekly GitHub
-  Action runs it automatically. Local patches live in the idempotent
-  `scripts/apply-gencad-patches.sh`, which the pull wraps as
-  revert → apply upstream → re-apply, so they never conflict with upstream
-  churn — add future patches to vendored files there, not inline.
+  (release 0.4.19, MIT), which gencad builds on as its base: a library of
+  agent skills for CAD, CAE and CAM — generation with STEP/STL/3MF export, a
+  local CAD Viewer, DXF drawings, robot descriptions, G-code slicing, part
+  sourcing, and more. How the vendoring, upstream sync, and local patches
+  work: [docs/vendoring.md](docs/vendoring.md)
 - **`scan2cad/`** — the scan side of the loop: a screen-reader-native
   describe-and-draft CLI. A phone-scanned mesh goes in; out come a
   plain-language geometry report, an editable build123d script with named,
   uncertainty-tagged dimensions, and STEP reference surfaces. The scan is the
-  draft, the caliper is the truth. Own venv (Python 3.12 only), own README,
-  morning capture protocol in `scan2cad/docs/MORNING_PROTOCOL.md`, and a
-  zero-dependency Mac PhotogrammetrySession CLI in
-  `scan2cad/tools/photogrammetry-cli/`.
+  draft, the caliper is the truth. Own venv and own README:
+  [scan2cad/](scan2cad/)
 
 ## Setup
 
