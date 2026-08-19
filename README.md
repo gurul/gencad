@@ -45,6 +45,10 @@ agent ──(MCP)──▶ gencad server ──▶ freecadcmd (FreeCAD headless)
 
 ## Setup
 
+Clone with `git clone --recurse-submodules` (or run
+`git submodule update --init` in an existing checkout) to pull in
+`text-to-cad/`.
+
 1. Install [FreeCAD](https://www.freecad.org) (the app bundles Python with
    numpy + matplotlib — no pip installs needed).
 2. Register the server with your agent. For Claude Code, add to `.mcp.json`:
