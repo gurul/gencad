@@ -8,7 +8,7 @@ PY      := .venv/bin/python
 PYTEST  := .venv/bin/pytest
 FREECAD := /Applications/FreeCAD.app/Contents/Resources/bin/freecadcmd
 
-.PHONY: venv smoke test sweep demo clean
+.PHONY: venv smoke test gate sweep sweep-degraded demo clean
 
 ## venv: create .venv with uv and install the frozen wheel set
 venv:
@@ -25,16 +25,25 @@ smoke:
 test:
 	$(PYTEST) -q
 
+## gate: the noise-zero end-to-end gate on its own, the one test never dropped
+gate:
+	$(PYTEST) tests/test_e2e_noise0.py -q
+
 ## sweep: characterisation run; writes out/sweep_report.txt. Not a test.
 sweep:
 	mkdir -p out
 	$(PY) scripts/sweep_noise.py
 
+## sweep-degraded: degradation smoke; writes out/sweep_report_degraded.txt
+sweep-degraded:
+	mkdir -p out
+	$(PY) scripts/sweep_noise.py --degraded
+
 ## demo: synthetic bracket end to end, report to stdout, skeleton and STEP to out/
 demo:
 	mkdir -p out
 	$(PY) tools/make_synthetic.py --model bracket --seed 1337 --out out/bracket.ply
-	$(PY) -m scan2cad.cli draft out/bracket.ply -o out/bracket_skeleton.py --step out/bracket_ref.step
+	$(PY) -m scan2cad.cli draft out/bracket.ply --provenance synthetic -o out/bracket_skeleton.py --step out/bracket_ref.step
 
 clean:
 	rm -rf out .pytest_cache

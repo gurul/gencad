@@ -115,3 +115,84 @@ FreeCAD version 1.1.3, libs 1.1.3R20260725.
 FreeCADCmd runs on its own bundled Python, not the project venv.
 Scripts for it live in scripts/ and must not import scan2cad.
 scripts/check_freecad_smoke.py is the liveness check, wired into make smoke.
+
+## Addendum from WI-1, 2026-08-19: plane sign convention
+
+Appended by the WI-1 agent (params.py). This corrects a reading of the plane
+string above that WI-3 would otherwise get backwards.
+
+The plane text reads "(n)x - D= 0" but the actual convention is
+
+    n dot x + D = 0
+
+so the signed offset along the printed normal is -D, and the plane point
+closest to the origin is -D times n.
+
+Evidence, from exact noise-free synthetic planes run through this wheel:
+
+    plane through z = +5, normal +z   ->  Type: plane (0, 0, -1)x - 5= 0
+    plane through z = -5, normal +z   ->  Type: plane (0, 0, -1)x - -5= 0
+    plane through (0,0,10), n=(0.6,0,0.8) -> Type: plane (0.6, -3.68087e-15, 0.8)x - -8= 0
+
+The third case settles it: 0.8 * 10 = 8, and the printed scalar is -8.
+Reading the text at face value would put every plane on the wrong side of the
+origin, which is a silent geometry error, so params.py owns this conversion
+and nothing downstream should re-derive it.
+
+Two further facts WI-3 needs.
+
+The printed normal sign is arbitrary. CGAL flips it relative to the input
+normals as it pleases, so orientation must come from the inlier normals, not
+from the string.
+
+The shapes are minimal-sample fits, not least-squares refits. A 600-point
+plane at z = 5 with 0.05 mm noise came back at 4.937 mm, an error far larger
+than a least-squares fit of 600 points would give, and the normal was tilted
+by 0.003 rad. WI-3 should treat the parsed parameters as a seed and recompute
+plane and cylinder parameters from the inliers before reporting RMS.
+
+Other shape kinds, captured for the parser's rejection tests:
+
+    Type: sphere center: (1, 2, 3) radius:10 #Pts: 600
+    Type: cone apex: (...) axis: (...) angle:0.523599 #Pts: 800
+    Type: torus center(...) axis(...) major radius = 20 minor radius = 5 #Pts: 998
+
+Note the torus string has no colon after "center" and "axis".
+
+## Addendum from WI-3, 2026-08-19: shape map, refits, shared plane basis
+
+Appended by the WI-3 agent (ransac_cgal.py). Three facts downstream work items
+need and must not re-derive.
+
+1. The shape map is read by point index and holds -1 for unassigned points.
+
+       shape_map.get(i) for i in range(point_set.size())
+
+   The value is the position of that point's shape in the returned info list,
+   so info index and shape index are the same number. Verified live: a run over
+   800 plane points plus 300 random junk points gave Counter({0: 800, -1: 300}).
+
+2. The reported primitive parameters are NOT CGAL's. CGAL returns minimal-sample
+   fits, so ransac_cgal.py recomputes every plane (total least squares from the
+   inlier covariance) and every cylinder (geometric Gauss-Newton over axis
+   direction, axis position and radius, seeded from the inlier normals and an
+   algebraic circle fit) from the inlier set in numpy. Measured on the WI-3
+   acceptance case, a 4000-point 12.5 mm cylinder at 0.1 mm noise: radius error
+   0.0006 to 0.014 percent over eight seeds, against CGAL's own 0.17 percent.
+   The noise-zero gate's reproducibility comes from this refit, not from CGAL,
+   whose generator is unseeded.
+
+3. The (u, v) plane basis is a shared convention, duplicated on purpose in
+   ransac_cgal.plane_uv_basis and emit_build123d.plane_uv_basis so the fitter
+   does not import the emitter. tests/test_ransac_cgal.py asserts the two agree
+   for six normals. The rule: helper is the world axis least aligned with the
+   normal, u = normalize(helper cross normal), v = normal cross u.
+
+   PlaneFit.extent is measured relative to PlaneFit.point, which is the inlier
+   centroid, so the four numbers straddle zero and are not world coordinates.
+   CylinderFit.extent_mm is likewise relative to axis_point, which sits at the
+   projection of the inlier centroid onto the axis.
+
+   Cylinder axis sign is arbitrary in CGAL, so ransac_cgal canonicalises it:
+   the component of largest magnitude is made positive. Plane normal sign is
+   taken from the mean inlier normal, so a closed scan gets outward normals.

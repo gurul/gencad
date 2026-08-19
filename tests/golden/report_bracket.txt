@@ -1,0 +1,43 @@
+scan2cad geometry report.
+
+Section 1. Overview.
+Object bounding box 60.1 by 40.0 by 20.2 mm.
+Found 6 planes and 1 cylinder.
+Provenance: synthetic.
+Measurements are given along the fitted object frame, axes x then y then z.
+Units assumption: input read as millimetres.
+Threshold regime: coarse.
+Angular snap tolerance 5.0 degrees.
+No threshold overrides were used.
+All dimensions are scan drafts, plus or minus the stated residual.
+Verify them with a caliper or a datasheet.
+
+Section 2. Dimensions.
+width = 60.1 mm, gap between plane_left and plane_right, RMS 0.4 mm, 8150 points.
+depth = 40.0 mm, gap between plane_front and plane_back, RMS 0.4 mm, 10300 points.
+height = 20.2 mm, gap between plane_bottom and plane_top, RMS 0.4 mm, 14200 points.
+cyl_bore_1_diameter = 12.5 mm, across the fitted surface of cyl_bore_1, RMS 0.2 mm, 3100 points.
+cyl_bore_1_length = 20.2 mm, cyl_bore_1 measured along its own axis, RMS 0.2 mm, 3100 points.
+
+Section 3. Relations.
+cyl_bore_1 axis is parallel to plane_left.
+cyl_bore_1 axis is parallel to plane_right.
+cyl_bore_1 axis is parallel to plane_front.
+cyl_bore_1 axis is parallel to plane_back.
+cyl_bore_1 axis is perpendicular to plane_bottom, snapped from 89.2 degrees, deviation 0.8 degrees.
+cyl_bore_1 axis is perpendicular to plane_top.
+cyl_bore_1 center is 15.1 mm from plane_left and 20.0 mm from plane_front.
+
+Section 4. Snap log.
+cyl_bore_1_axis: raw 89.2, snapped 90.0, deviation 0.8, rule axis-align 5deg.
+height: raw 20.23, snapped 20.2, deviation -0.03, rule length-round 0.1mm within 2xRMS.
+cyl_bore_1_radius: raw 6.2372, snapped 6.25, deviation 0.0128, rule radius-cluster 2xRMS.
+
+Section 5. Caveats.
+This report is a scan draft, not a measurement record.
+Verify every dimension against a caliper or a datasheet before you cut, print, or order anything.
+No accuracy claim of the form plus or minus X millimetres is made or implied.
+Synthetic results verify plumbing only. They say nothing about phone-scan accuracy.
+No press-fit, mating-fit, or sub-millimetre claim is made here, ever.
+This tool competes with silence, not with the accuracy of CAD tools.
+Failures on degraded meshes are reported as findings, not hidden.

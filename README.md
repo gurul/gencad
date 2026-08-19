@@ -55,6 +55,8 @@ Draft a script and a STEP file from a mesh.
 
 Photogrammetry meshes arrive in metres, so pass --units m for them.
 Synthetic meshes are in millimetres.
+For a file from tools/make_synthetic.py, pass --provenance synthetic.
+That defaults the units to millimetres and marks the report as synthetic.
 The report always prints which assumption it used.
 
 ## Layout
