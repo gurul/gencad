@@ -26,6 +26,11 @@ agent ──(MCP)──▶ gencad server ──▶ freecadcmd (FreeCAD headless)
     visually verified before anything is printed
 - **`tools/render_section.py`** — the renderer itself; also usable standalone
   inside `freecadcmd`
+- **`tools/render_iso.py`** — shaded isometric renders: tessellates named
+  solids from a `.FCStd` and paints them with matplotlib (lambert shading,
+  global painter sort, back-face culling). Per-object `translate` offsets make
+  exploded views a JSON edit. Driven by `$GENCAD_ISO_ARGS`, same pattern as
+  the section renderer.
 - **`text-to-cad/`** — vendored from
   [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)
   (release 0.4.19, MIT), which gencad builds on as its base: a library of
@@ -76,6 +81,19 @@ VIEWER_CAD_PYTHON=$PWD/../../../.venv-viewer/bin/python \
 
 Then open `http://127.0.0.1:3245/<absolute model dir>?file=<model>` — e.g.
 `http://127.0.0.1:3245/Users/you/gencad/models?file=part.step`.
+
+### chili3d
+
+[chili3d](https://github.com/xiangechen/chili3d) is a full browser CAD app
+(TypeScript + WebAssembly OpenCascade) that makes a great zero-install
+inspection stop for gencad output: the hosted app at
+[chili3d.com](https://chili3d.com) imports the exported `.step` directly
+(New Document → Import), giving you a real B-rep view with orbit, measure,
+section and even boolean edits — no local server, no Python env. Where the
+vendored Viewer is the scripted preview in the agent loop, chili3d is the
+human-in-the-loop end of the same pipeline: hand it to whoever needs to poke
+at the part without installing FreeCAD. Details and an agent-driven import
+recipe: [docs/chili3d.md](docs/chili3d.md).
 
 ## Built with this loop: the claude-pet case
 
