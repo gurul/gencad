@@ -56,10 +56,48 @@ window.showOpenFilePicker = undefined;  // block the FS Access API path too
 Click Import, find the captured input by id, upload the `.step` to it —
 chili3d's change handler fires and the model loads.
 
+## Running it locally
+
+`chili3d/` is a **git submodule** pointing at
+[xiangechen/chili3d](https://github.com/xiangechen/chili3d), pinned at
+`c5b8047c` (v0.7.0 line, `0.2.0-679-gc5b8047c`). AGPL-3.0 — see its bundled
+`LICENSE`. Credit to [@xiangechen](https://github.com/xiangechen) and the
+chili3d contributors.
+
+The hosted app at [chili3d.com](https://chili3d.com) stays the fast path — no
+install, no server. The checkout is for when you want a pinned version that
+does not move under you, offline work, or a build with local modifications.
+
+```bash
+# fresh clone of gencad — populate the submodules
+git submodule update --init --recursive
+
+cd chili3d
+npm install
+npm run dev        # http://localhost:8080
+```
+
+The prebuilt WebAssembly OpenCascade module ships in the repo, so `npm run
+build:wasm` (CMake, emsdk) is only needed to rebuild the kernel from source.
+Everything above — import flow, automation workaround — applies unchanged to
+the local server; only the URL differs.
+
+To move the pin:
+
+```bash
+git -C chili3d fetch origin && git -C chili3d checkout origin/main
+git add chili3d && git commit -m "Bump chili3d pin"
+```
+
 ## Notes
 
 - chili3d is a young project (v0.7 at time of writing); it is a viewer and
   light editor here, not the source of truth. The parametric build script
   stays canonical.
-- Self-hosting is straightforward (`npm install && npm run dev` in the
-  chili3d repo) if the hosted app is unavailable.
+- Submodule rather than vendored, for the same reasons as
+  [geofield-bracket](geofield-bracket.md): no local patches to preserve, and
+  it keeps the AGPL-3.0 tree distinct from gencad's MIT one. Contrast
+  [vendoring.md](vendoring.md), where `text-to-cad/` *is* patched and so is
+  copied in.
+- gencad's setup installs none of this. The submodule has its own npm
+  dependency tree; `npm install` inside `chili3d/` is opt-in.
