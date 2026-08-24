@@ -44,6 +44,13 @@ agent ──(MCP)──▶ gencad server ──▶ freecadcmd (FreeCAD headless)
   uncertainty-tagged dimensions, and STEP reference surfaces. The scan is the
   draft, the caliper is the truth. Own venv and own README:
   [scan2cad/](scan2cad/)
+- **`chili3d/`** — a git submodule pointing at
+  [xiangechen/chili3d](https://github.com/xiangechen/chili3d) (AGPL-3.0): a
+  full browser CAD app on TypeScript + a WebAssembly OpenCascade — the same
+  kernel FreeCAD uses, so an exported `.step` opens as the *same* B-rep. The
+  human's eyes at the end of the loop, where the render tools are the
+  agent's. Hosted at [chili3d.com](https://chili3d.com); pinned here for
+  offline or version-stable use: [docs/chili3d.md](docs/chili3d.md)
 - **`geofield-bracket/`** — a git submodule pointing at
   [connorkapoor/geofield-bracket](https://github.com/connorkapoor/geofield-bracket)
   (AGPL-3.0): give it a box and a load, get a solver-certified shelf bracket —
@@ -100,8 +107,16 @@ inspection stop for gencad output: the hosted app at
 section and even boolean edits — no local server, no Python env. Where the
 vendored Viewer is the scripted preview in the agent loop, chili3d is the
 human-in-the-loop end of the same pipeline: hand it to whoever needs to poke
-at the part without installing FreeCAD. Details and an agent-driven import
-recipe: [docs/chili3d.md](docs/chili3d.md).
+at the part without installing FreeCAD. It is also checked in as the
+`chili3d/` submodule, pinned, for offline or version-stable use:
+
+```bash
+git submodule update --init --recursive
+cd chili3d && npm install && npm run dev   # http://localhost:8080
+```
+
+Details, the local-build notes and an agent-driven import recipe:
+[docs/chili3d.md](docs/chili3d.md).
 
 ## Built with this loop: the claude-pet case
 

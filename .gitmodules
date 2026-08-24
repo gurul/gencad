@@ -1,3 +1,6 @@
 [submodule "geofield-bracket"]
 	path = geofield-bracket
 	url = https://github.com/connorkapoor/geofield-bracket.git
+[submodule "chili3d"]
+	path = chili3d
+	url = https://github.com/xiangechen/chili3d.git
