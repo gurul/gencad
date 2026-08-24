@@ -1,0 +1,3 @@
+[submodule "geofield-bracket"]
+	path = geofield-bracket
+	url = https://github.com/connorkapoor/geofield-bracket.git

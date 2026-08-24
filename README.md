@@ -44,6 +44,14 @@ agent ──(MCP)──▶ gencad server ──▶ freecadcmd (FreeCAD headless)
   uncertainty-tagged dimensions, and STEP reference surfaces. The scan is the
   draft, the caliper is the truth. Own venv and own README:
   [scan2cad/](scan2cad/)
+- **`geofield-bracket/`** — a git submodule pointing at
+  [connorkapoor/geofield-bracket](https://github.com/connorkapoor/geofield-bracket)
+  (AGPL-3.0): give it a box and a load, get a solver-certified shelf bracket —
+  an SE(3)-equivariant field model over a single latent encoding geometry,
+  physics and manufacturability, with immersed FEA and a live 3D designer. It
+  is the generative-design counterpart to gencad's scripted loop. Submodule,
+  not vendored — how it is pinned and updated:
+  [docs/geofield-bracket.md](docs/geofield-bracket.md)
 
 ## Setup
 
