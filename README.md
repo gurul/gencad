@@ -118,6 +118,26 @@ cd chili3d && npm install && npm run dev   # http://localhost:8080
 Details, the local-build notes and an agent-driven import recipe:
 [docs/chili3d.md](docs/chili3d.md).
 
+### pcb / Zener — the electrical side
+
+[diodeinc/pcb](https://github.com/diodeinc/pcb) (MIT) brings the same loop to
+circuit boards: schematics are code — Zener, a Starlark-based language — that
+`pcb build` validates headlessly and `pcb layout` turns into KiCad layout
+files. Where gencad scripts the enclosure, pcb scripts the board inside it,
+so both halves of a fit like the claude-pet case's PCB-derived bosses and
+hole-grid gauge plate can come from reviewable source. It is an installed
+CLI with its own versioned toolchain manager (like FreeCAD/KiCad, not a
+submodule):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/diodeinc/pcb/main/install.sh | bash
+pcb build blinky.zen     # validate a design (no KiCad needed)
+pcb layout blinky.zen    # generate the KiCad layout (KiCad 10.x)
+```
+
+Install options, the quick-start blinky, and the command reference:
+[docs/pcb.md](docs/pcb.md).
+
 ## Built with this loop: the claude-pet case
 
 The enclosure for [claude-pet](https://github.com/gurul/claude-pet) — an
