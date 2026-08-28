@@ -107,3 +107,11 @@ pcb import <KICAD_SCH|KICAD_PRO> <OUTPUT_DIR> # import a KiCad schematic or proj
 A **board repository** holds one board plus its local modules/components; a
 **registry repository** holds reusable packages and no board. `pcb help`
 covers the rest.
+
+## After `pcb layout`: closing the loop headlessly
+
+`pcb layout` hands you a KiCad project; gencad's
+[`pcbtools/`](../pcbtools/README.md) takes it the rest of the way without a
+GUI — geometry dump, clearance-oracle routing, DRC-driven convergence, and
+JLCPCB export. Together the two make schematic-to-fab a fully scriptable
+pipeline.

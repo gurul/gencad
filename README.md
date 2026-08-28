@@ -31,6 +31,12 @@ agent ──(MCP)──▶ gencad server ──▶ freecadcmd (FreeCAD headless)
   global painter sort, back-face culling). Per-object `translate` offsets make
   exploded views a JSON edit. Driven by `$GENCAD_ISO_ARGS`, same pattern as
   the section renderer.
+- **`pcbtools/`** — headless KiCad layout automation: dump a board to
+  JSON, plan routes with a rasterized multi-layer A* gated by an
+  independent clearance oracle, write only verified copper back, and
+  loop against `kicad-cli` DRC until zero errors and zero unconnected.
+  Closes the electrical half of the agent loop the way the render tools
+  close the mechanical half: [pcbtools/README.md](pcbtools/README.md)
 - **`text-to-cad/`** — vendored from
   [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)
   (release 0.4.19, MIT), which gencad builds on as its base: a library of
