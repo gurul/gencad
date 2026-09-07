@@ -144,6 +144,16 @@ pcb layout blinky.zen    # generate the KiCad layout (KiCad 10.x)
 Install options, the quick-start blinky, and the command reference:
 [docs/pcb.md](docs/pcb.md).
 
+## Driving it: prompting the loop
+
+The tooling gives the agent hands and eyes; you still supply the intent. How to
+state a part so it converges — confirming the toolchain before modelling,
+describing the *use* rather than the object, bounding what the agent may decide,
+reporting a bad render as an observation instead of "it's wrong", putting print
+constraints in the first prompt, and demanding checks that describe use (can the
+button actuate, does the plug seat) plus which conclusions still need a physical
+test: [docs/prompting.md](docs/prompting.md).
+
 ## Built with this loop: the claude-pet case
 
 The enclosure for [claude-pet](https://github.com/gurul/claude-pet) — an
