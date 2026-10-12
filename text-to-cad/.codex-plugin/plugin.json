@@ -1,7 +1,7 @@
 {
-  "name": "cad",
-  "version": "0.4.20",
-  "description": "CAD, robotics, fabrication, and local review skills packaged for agent plugin installs.",
+  "name": "text-to-cad",
+  "version": "0.7.21",
+  "description": "The text-to-cad plugin gives your agent local workflows for generating 3D models as STEP, GLB, STL or 3MF files. It also does design for manufacturing checks, generates engineering drawings, and connects to popular 3D printing, sheet metal and CNC fabrication services.",
   "author": {
     "name": "earthtojake",
     "url": "https://github.com/earthtojake"
@@ -20,22 +20,28 @@
     "gcode"
   ],
   "skills": "./skills/",
+  "mcpServers": "./codex.mcp.json",
   "interface": {
     "displayName": "text-to-cad",
-    "shortDescription": "CAD, robotics, fabrication, and local review skills.",
-    "longDescription": "text-to-cad packages local agent workflows for generating CAD, inspecting models, sourcing STEP parts, writing robot description files, slicing mesh files, and preparing fabrication handoffs.",
+    "shortDescription": "Design 3D models",
+    "longDescription": "The text-to-cad plugin gives your agent local workflows for generating 3D models as STEP, GLB, STL or 3MF files. It also does design for manufacturing checks, generates engineering drawings, and connects to popular 3D printing, sheet metal and CNC fabrication services.",
     "developerName": "earthtojake",
-    "category": "Productivity",
+    "composerIcon": "./.codex-plugin/logo.png",
+    "logo": "./.codex-plugin/logo.png",
+    "category": "Creativity",
     "capabilities": [
       "Write",
       "Interactive"
     ],
     "websiteURL": "https://www.texttocad.dev",
+    "privacyPolicyURL": "https://www.texttocad.dev/privacy-policy",
+    "termsOfServiceURL": "https://www.texttocad.dev/terms-of-service",
+    "supportURL": "https://github.com/earthtojake/text-to-cad/issues/new",
     "defaultPrompt": [
-      "Create a CAD model and open it in CAD Viewer.",
-      "Generate a URDF and review it locally.",
-      "Slice a mesh into printer-ready G-code."
+      "Design a 3D-printable phone stand for my desk.",
+      "Design a 50 mm aluminum L-bracket with two M5 holes.",
+      "Check my bracket for CNC machining and tell me what to change."
     ],
-    "brandColor": "#00A676"
+    "brandColor": "#249DDD"
   }
 }

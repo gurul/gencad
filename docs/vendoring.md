@@ -2,7 +2,7 @@
 
 `text-to-cad/` is vendored from
 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)
-(release 0.4.20, upstream commit `02ecd59d`, MIT — see its bundled `LICENSE`).
+(release 0.7.21, upstream commit `24573128`, MIT — see its bundled `LICENSE`).
 Full credit to [@earthtojake](https://github.com/earthtojake) and the
 text-to-cad contributors.
 
@@ -20,7 +20,8 @@ and hand-off workflows.
 Local changes on top of upstream are marked with `gencad patch` comments.
 Currently:
 
-- The Viewer header's community links are hidden.
+- The Viewer header's community links were hidden through 0.4.20; the patch
+  no longer applies to the 0.5+ Viewer (see below).
 - Upstream demo GIF LFS assets and LFS config were dropped in vendoring.
 
 Local patches live in the idempotent `scripts/apply-gencad-patches.sh` —
@@ -43,14 +44,14 @@ needs Settings → Actions → General → "Allow GitHub Actions to create and
 approve pull requests" enabled to open the PR; every scheduled run from
 2026-08-24 to 2026-10-05 failed on that setting.
 
-**Upstream 0.5 and later.** Upstream rebuilt the Viewer as a source app
-(`apps/web`, launched with `cadgen viewer`) and removed
-`skills/cad-viewer/`. The HTML patch that hid the header's community links
-has no file to edit there, so `apply-gencad-patches.sh` skips it and says so;
-in the new Viewer those links come from its build environment. The update
-also makes `cadgen` send usage telemetry by default. Turn it off with
-`uvx cadgen telemetry off`, or per process with `CADGEN_TELEMETRY=0` or
-`DO_NOT_TRACK=1` (upstream README, "Telemetry"). Upstream's
-`docs/migrations/migrating-0.4-to-0.5.md` covers the rest of the move; the
-README's CAD Viewer section describes the vendored 0.4.20 layout until the
-update PR is merged.
+**Since 0.5 (vendored 0.7.21 since 2026-10-11).** Upstream rebuilt the
+Viewer as a source app (`apps/web`) served by the `cadgen` wheel
+(`cadgen viewer`) and removed `skills/cad-viewer/`. The HTML patch that hid
+the header's community links has no file to edit there, so
+`apply-gencad-patches.sh` skips it and says so; in the new Viewer those links
+come from its build environment. `cadgen` now sends usage telemetry by
+default; gencad's setup turns it off with `cadgen telemetry off`
+(`CADGEN_TELEMETRY=0` or `DO_NOT_TRACK=1` per process — upstream README,
+"Telemetry"). Upstream's
+`text-to-cad/docs/migrations/migrating-0.4-to-0.5.md` covers the rest of the
+move.

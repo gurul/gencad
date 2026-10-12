@@ -1,20 +1,50 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The repo's Python suites.
+#
+#   scripts/test/test-python.sh [--keep-going] [--select GROUP] [--print-weights] [PATH...]
+#
+# --select picks one group instead of all of them:
+#   cadgen   the cadgen package suite, the CAD Viewer backend included (92% of the time)
+#   viewer   the CAD Viewer backend alone (tests/python/packages/cadgen/viewer)
+#   skills   every skill's suite
+#   all      cadgen + skills (the default)
+#
+# --print-weights prints one `WEIGHT<TAB>path<TAB>seconds` line per slow file on
+# stdout: the first thing to read when a run is slow.
+#
+# PATHs narrow the group to the test files at or under them (repo-relative); CI passes
+# the files and directories a change selected.
+
 # shellcheck source=scripts/test/common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
-
-LIST_SKILLS_SCRIPT="$REPO_ROOT/scripts/utils/list-skills.sh"
 
 # --keep-going: run every suite and report all of them, instead of stopping at the first
 # failure. Opt-in, because stopping early is the right default for a developer waiting on a
 # run. It is for CI on a platform being brought up, where the failures are independent and
 # one round per suite means one ~10 minute round trip per suite.
 KEEP_GOING=0
-if [ "${1:-}" = "--keep-going" ]; then
-  KEEP_GOING=1
+SELECT="all"
+export PYTHON_TEST_PRINT_WEIGHTS="${PYTHON_TEST_PRINT_WEIGHTS:-}"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --keep-going) KEEP_GOING=1 ;;
+    --select) SELECT="${2:?--select wants a group}"; shift ;;
+    --select=*) SELECT="${1#--select=}" ;;
+    --print-weights) PYTHON_TEST_PRINT_WEIGHTS=1 ;;
+    -*) echo "test-python.sh: unknown argument $1" >&2; exit 2 ;;
+    *) TEST_PATHS+=("$1") ;;
+  esac
   shift
-fi
+done
+
+case "$SELECT" in
+  all|cadgen|viewer|skills) ;;
+  *) echo "test-python.sh: --select wants all|cadgen|viewer|skills, not '$SELECT'" >&2; exit 2 ;;
+esac
+
 failed_suites=()
 
 run_suite() {
@@ -27,35 +57,45 @@ run_suite() {
 
 cd "$REPO_ROOT"
 
-# Turn the render-package write-lock assertion into a hard failure for tests. In
-# production require_write_lock() only warns -- a missing lock must never be the reason a
-# user's build fails -- so CI is the only place the contract is actually enforced.
-export CADGEN_STRICT_LOCKS=1
+ensure_packaged_runtime
 
-run_suite "cadgen package Python tests" "tests/python/packages/cadgen" "packages/cadgen/src"
+# Isolate the shared store from the
+# developer's real ~/.cache/cadgen: tests assert exact built/reused counts and
+# byte-level outputs, and a populated user store would satisfy builds the test
+# expects to run (and test runs would pollute the user's cache in return).
+CADGEN_TEST_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cadgen-test-store.XXXXXX")"
+trap 'rm -rf "$CADGEN_TEST_CACHE_DIR"' EXIT
+export CADGEN_CACHE_DIR="$CADGEN_TEST_CACHE_DIR"
 
-while IFS= read -r skill; do
-  test_dir="tests/python/skills/$skill"
-  if [ -d "$test_dir" ]; then
-    skill_paths=("skills/$skill/scripts")
-    if [ "$skill" = "cad" ] || [ "$skill" = "dxf" ]; then
-      skill_paths+=("skills/$skill/scripts/packages/cadgen/src")
+# The cadgen package suite includes the CAD Viewer backend (tests/python/packages/cadgen/viewer):
+# the server is cadgen.viewer, and this is the one runner that reaches every pull request.
+# Windows matters most of all for the viewer: path handling, locks, subprocesses and file
+# URLs are precisely the class of bug that has only ever shown up there.
+if [ "$SELECT" = "all" ] || [ "$SELECT" = "cadgen" ]; then
+  run_suite "cadgen package Python tests" "tests/python/packages/cadgen" "packages/cadgen/src"
+fi
+
+# The backend alone, for a pull request that only moves the Viewer's client: nothing under
+# apps/web is read by any other cadgen test.
+if [ "$SELECT" = "viewer" ]; then
+  run_suite "CAD Viewer backend Python tests" "tests/python/packages/cadgen/viewer" "packages/cadgen/src"
+fi
+
+if [ "$SELECT" = "all" ] || [ "$SELECT" = "skills" ]; then
+  for skill_md in skills/*/SKILL.md; do
+    skill="$(basename "$(dirname "$skill_md")")"
+    test_dir="tests/python/skills/$skill"
+    if [ -d "$test_dir" ]; then
+      # Skills no longer vendor cadgen; they import the distribution. In a checkout that is
+      # the repo's own source, so put it on the path rather than depending on whatever the
+      # interpreter happens to have installed.
+      run_suite "$skill skill Python tests" "$test_dir" \
+        "skills/$skill/scripts" "packages/cadgen/src"
     fi
-    run_suite "$skill skill Python tests" "$test_dir" "${skill_paths[@]}"
-  fi
-done < <("$LIST_SKILLS_SCRIPT")
+  done
+fi
 
-run_suite "MoveIt2 server Python tests" "tests/python/viewer/moveit2_server" "viewer/moveit2_server"
-
-# The CAD Viewer backend keeps its tests beside the package it covers rather
-# than under tests/, so name the directory explicitly. It owns the only cross-process
-# coverage of the generation lock (test_artifact.py drives a real second process and
-# SIGKILLs it), which is why it must run in CI.
-# packages/cadgen/src is on the path because the viewer server imports cadgen's
-# stdlib-only modules directly (coordination, source_hash) rather than reimplementing
-# them. Without it an installed/editable cadgen from another checkout wins and the
-# coordination package is missing.
-run_suite "CAD Viewer backend Python tests" "viewer/server_py/tests" "viewer" "packages/cadgen/src"
+require_selected_tests
 
 if [ "${#failed_suites[@]}" -gt 0 ]; then
   printf '\n==> FAILING SUITES (%d)\n' "${#failed_suites[@]}"

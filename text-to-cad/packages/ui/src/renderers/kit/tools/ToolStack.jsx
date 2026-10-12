@@ -1,0 +1,102 @@
+import { createContext, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ScrollArea } from "@text-to-cad/ui/primitives/scroll-area";
+import { normalizeToolStack, toolPanelClosed, toolPanelDefaultHeight } from "./toolStackLayout.js";
+
+/**
+ * What a panel of the stack reads of it (`ToolPanel.jsx`): the viewer's width, its size, folded
+ * and closed state as the person left them, how to write any of them back, and the room it has.
+ * `null` outside a stack: a panel drawn alone opens at its defaults and keeps its state to itself.
+ * @type {import("react").Context<null | {
+ *   mobile: boolean,
+ *   viewerWidth: number,
+ *   size(key: string): { width?: number, height?: number } | null,
+ *   defaultHeight(key: string): number,
+ *   collapsed(id: string, fallback: boolean): boolean,
+ *   closed(id: string): boolean,
+ *   settle(id: string, change: { width?: number, height?: number, collapsed?: boolean, fallback?: boolean, closed?: boolean }): void,
+ *   room(): number,
+ * }>}
+ */
+export const ToolStackContext = createContext(null);
+const NONE_CLOSED = Object.freeze({});
+
+/**
+ * The tool stack under the strip: one column, the height the viewer leaves it, in which each
+ * panel (`ToolPanel.jsx`) takes its content's height — up to its cap, for a panel that has one —
+ * until the column runs out. The panels hang left-aligned under the strip, each at its own width:
+ * `TOOL_PANEL_WIDTH` (`toolStackLayout.js`), unless the person has widened the panel
+ * (`resizable`). The layout (`layout`: the sizes the person set, by panel; the folded panels; the
+ * closed ones) is theirs, and is written back (`onLayoutChange`, a patch or a function of the
+ * layout as it stands) once a gesture lets go, never per pointer move. `startsClosed`: the closable
+ * panels this file opens with closed where the person has not chosen, by id (a single part's tree,
+ * from the tool it belongs to: `RendererShell.jsx`); on a phone every closable panel starts closed.
+ *
+ * @param {{ layout: { panels: object, collapsed: object, closed?: object },
+ *   onLayoutChange(patch: object | ((layout: object) => object)): void, mobile?: boolean, hidden?: boolean,
+ *   startsClosed?: Record<string, boolean>, children?: import("react").ReactNode }} props
+ */
+export default function ToolStack({ layout: stored, onLayoutChange, mobile = false, hidden = false, startsClosed = NONE_CLOSED, children }) {
+  const layout = useMemo(() => normalizeToolStack(stored), [stored]);
+  const column = useRef(null);
+  // The column's own height — the viewer's less the strip above it and the insets: a tree opens
+  // at half of it — and the viewer's width, which bounds a panel's.
+  const [measured, setMeasured] = useState({ stack: 0, viewer: 0 });
+  useLayoutEffect(() => {
+    const element = column.current;
+    if (!element) return undefined;
+    const viewer = element.closest("[data-cad-scene-backdrop]");
+    const measure = () => setMeasured(current => {
+      const next = { stack: element.clientHeight, viewer: Math.round(viewer?.getBoundingClientRect().width || 0) };
+      return current.stack === next.stack && current.viewer === next.viewer ? current : next;
+    });
+    measure();
+    if (typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    if (viewer) observer.observe(viewer);
+    return () => observer.disconnect();
+  }, []);
+  // What one gesture on a panel leaves — a width, a cap, its folded or closed state, or several at
+  // once (a corner drag) — in one write. A panel folded as it starts is not written down: the
+  // record holds only what differs. Closing or opening is the person's choice, kept as made.
+  const settle = useCallback((id, change) => onLayoutChange(current => {
+    const patch = {};
+    if (change.width !== undefined || change.height !== undefined) {
+      const size = { ...current.panels[id] };
+      if (change.width !== undefined) size.width = change.width;
+      if (change.height !== undefined) size.height = change.height;
+      patch.panels = { ...current.panels, [id]: size };
+    }
+    if (change.collapsed !== undefined) {
+      const next = { ...current.collapsed };
+      if (change.collapsed === Boolean(change.fallback)) delete next[id]; else next[id] = change.collapsed;
+      patch.collapsed = next;
+    }
+    if (change.closed !== undefined) patch.closed = { ...current.closed, [id]: change.closed };
+    return patch;
+  }), [onLayoutChange]);
+  const panels = useMemo(() => ({
+    mobile,
+    viewerWidth: measured.viewer,
+    size: key => layout.panels[key] ?? null,
+    defaultHeight: key => toolPanelDefaultHeight(key, measured.stack, mobile),
+    collapsed: (id, fallback) => layout.collapsed[id] ?? fallback,
+    closed: id => toolPanelClosed(layout, id, { mobile, startsClosed: startsClosed[id] }),
+    settle,
+    room: () => column.current?.clientHeight || 0,
+  }), [mobile, measured, layout, settle, startsClosed]);
+  return <div ref={column} hidden={hidden} data-cad-tool-stack="" className="min-h-0 max-w-full flex-1">
+    {/* The panels give way first (`ToolPanel.jsx`), in a column exactly the stack's height; if
+        what cannot give way still does not fit, the column scrolls rather than being cut. While
+        they fit it has nothing to scroll, so a wheel over a panel moves nothing but that panel's
+        body: everything a panel draws is inside its own border (its corner grip included), and the
+        right and bottom insets keep its edge and shadow clear of the column's clip. */}
+    {/* No visible bar of its own: it would stand outside the panels on every hover. A panel's
+        own bar, inside it, is unaffected. */}
+    <ScrollArea className="max-h-full" scrollbar={false} viewportProps={{ "data-tool-stack-scroller": "" }}>
+      <div className="flex min-h-0 flex-col items-start gap-2 pb-1.5 pr-1.5" style={{ maxHeight: measured.stack || undefined }}>
+        <ToolStackContext.Provider value={panels}>{children}</ToolStackContext.Provider>
+      </div>
+    </ScrollArea>
+  </div>;
+}

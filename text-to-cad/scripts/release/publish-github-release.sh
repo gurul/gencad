@@ -3,41 +3,38 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
+# shellcheck source=release-tags.sh
+source "$SCRIPT_DIR/release-tags.sh"
 
-REMOTE="${RELEASE_REMOTE:-origin}"
-REPO=""
 DRY_RUN=0
-CREATE_RELEASE=1
 DRAFT=1
 TARGET_REF="HEAD"
-SKIP_EXISTING_VERSION=0
+ASSETS=()
 
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/release/publish-github-release.sh [options]
+  scripts/release/publish-github-release.sh [--target REF] [--asset PATH]... [--dry-run] [--publish]
 
 Creates the immutable release identity for the current repo version:
 
 1. verifies VERSION contains a valid canonical version
-2. verifies a new version is greater than the latest local semver tag
-3. creates and pushes the semver git tag for VERSION
-4. creates a GitHub Release for that tag with generated notes
+2. verifies a new version is greater than the latest local release tag
+3. creates the release tag for VERSION (`v<VERSION>`) and pushes it to origin
+4. creates a GitHub Release for that tag with generated notes, and attaches
+   the distribution files given with --asset (the wheel and sdist that went to
+   PyPI), so the release page carries the exact bytes that shipped
 
 Options:
-  --target REF       Commit/ref to tag. Defaults to HEAD.
-  --remote NAME     Git remote to push tags to. Defaults to origin.
-  --repo OWNER/REPO GitHub repository for gh release commands.
-  --dry-run         Print planned tag/release actions without writing.
-  --skip-existing-version
-                    Exit successfully when the version tag already exists.
-  --skip-release    Create/push the tag but do not create a GitHub Release.
-  --draft           Create a draft GitHub Release. This is the default.
-  --publish         Publish the GitHub Release immediately.
-  -h, --help        Show this help.
+  --target REF  Commit/ref to tag. Defaults to HEAD.
+  --asset PATH  A file to attach to the GitHub Release; repeatable. A release
+                that already exists gains (or replaces) the same files.
+  --dry-run     Print the planned tag/release actions without writing.
+  --publish     Publish the GitHub Release immediately; the default is a draft.
+  -h, --help    Show this help.
 
-The workflow path should run this from the production branch after generated
-outputs have been validated. Local use is a manual fallback.
+Publish Release runs this on the merged release commit after generated outputs
+have been validated. Local use is a manual fallback for the same commit.
 EOF
 }
 
@@ -57,27 +54,14 @@ while [ "$#" -gt 0 ]; do
       TARGET_REF="$2"
       shift
       ;;
-    --remote)
-      [ "$#" -ge 2 ] || die "--remote requires a value"
-      REMOTE="$2"
-      shift
-      ;;
-    --repo)
-      [ "$#" -ge 2 ] || die "--repo requires a value"
-      REPO="$2"
+    --asset)
+      [ "$#" -ge 2 ] || die "--asset requires a value"
+      [ -f "$2" ] || die "--asset: no such file: $2"
+      ASSETS+=("$2")
       shift
       ;;
     --dry-run)
       DRY_RUN=1
-      ;;
-    --skip-existing-version)
-      SKIP_EXISTING_VERSION=1
-      ;;
-    --skip-release)
-      CREATE_RELEASE=0
-      ;;
-    --draft)
-      DRAFT=1
       ;;
     --publish)
       DRAFT=0
@@ -101,9 +85,10 @@ require_command git
 
 version="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION")"
 [ -n "$version" ] || die "VERSION is empty"
-tag_name="$version"
+tag_name="$(release_tag_name "$version")"
 target_commit="$(git rev-parse "$TARGET_REF^{commit}")"
-latest_tag="$(git tag --list '[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | head -n 1 || true)"
+# Either spelling: releases before 0.5.0 were tagged bare (see release-tags.sh).
+latest_tag="$(latest_release_tag)"
 
 tag_commit=""
 if git rev-parse --verify --quiet "refs/tags/$tag_name" >/dev/null; then
@@ -112,10 +97,6 @@ fi
 
 if [ -n "$tag_commit" ]; then
   if [ "$tag_commit" != "$target_commit" ]; then
-    if [ "$SKIP_EXISTING_VERSION" -eq 1 ]; then
-      echo "Release tag already exists for $tag_name at $tag_commit; skipping $target_commit."
-      exit 0
-    fi
     die "release tag $tag_name already points at $tag_commit, not $target_commit"
   fi
   echo "Release tag already points at target commit: $tag_name"
@@ -125,22 +106,12 @@ else
   fi
   if [ "$DRY_RUN" -eq 1 ]; then
     echo "Would create release tag: $tag_name -> $target_commit"
-    echo "Would push release tag to $REMOTE"
+    echo "Would push release tag to origin"
   else
     git tag "$tag_name" "$target_commit"
-    git push "$REMOTE" "refs/tags/$tag_name"
+    git push origin "refs/tags/$tag_name"
     echo "Created and pushed release tag: $tag_name"
   fi
-fi
-
-if [ "$CREATE_RELEASE" -eq 0 ]; then
-  echo "Skipping GitHub Release creation."
-  exit 0
-fi
-
-gh_repo_args=()
-if [ -n "$REPO" ]; then
-  gh_repo_args=(-R "$REPO")
 fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -149,13 +120,28 @@ if [ "$DRY_RUN" -eq 1 ]; then
   else
     echo "Would create published GitHub Release: $tag_name"
   fi
+  for asset in ${ASSETS[@]+"${ASSETS[@]}"}; do
+    echo "Would attach: $asset ($(wc -c < "$asset" | tr -d ' ') bytes)"
+  done
   exit 0
 fi
 
 require_command gh
 
-if gh "${gh_repo_args[@]}" release view "$tag_name" >/dev/null 2>&1; then
+if gh release view "$tag_name" >/dev/null 2>&1; then
   echo "GitHub Release already exists: $tag_name"
+  # A resumed run still owes the release its files: attach what is missing and
+  # replace what differs, so the page always carries the bytes that shipped.
+  if [ "${#ASSETS[@]}" -gt 0 ]; then
+    gh release upload "$tag_name" "${ASSETS[@]}" --clobber
+    echo "Attached ${#ASSETS[@]} asset(s) to GitHub Release: $tag_name"
+  fi
+  # A manual resume with --publish must also finish a draft created by an
+  # earlier run. Never turn an already-published release back into a draft.
+  if [ "$DRAFT" -eq 0 ]; then
+    gh release edit "$tag_name" --draft=false
+    echo "Published GitHub Release: $tag_name"
+  fi
   exit 0
 fi
 
@@ -163,5 +149,5 @@ release_args=(release create "$tag_name" --verify-tag --generate-notes --title "
 if [ "$DRAFT" -eq 1 ]; then
   release_args+=(--draft)
 fi
-gh "${gh_repo_args[@]}" "${release_args[@]}"
-echo "Created GitHub Release: $tag_name"
+gh "${release_args[@]}" ${ASSETS[@]+"${ASSETS[@]}"}
+echo "Created GitHub Release: $tag_name (${#ASSETS[@]} asset(s) attached)"

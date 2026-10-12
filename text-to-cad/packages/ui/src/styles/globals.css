@@ -1,0 +1,132 @@
+@import "tailwindcss" source(none);
+@import "tw-animate-css";
+@source "../";
+/* Shared FileViewer and renderer styles. Hosts own document-level appearance. */
+/* The per-file surface and the shared chrome are scanned like anything else.
+ * Detection is off (`source(none)` above), so a directory missing from this
+ * list is a directory whose classes are silently absent from the stylesheet:
+ * `file-view` was, from the commit that moved the surface there until now,
+ * which is why `z-0` did not exist in the standalone build. */
+
+@import "./tokens.css";
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  .cad-loading-overlay {
+    background:
+      radial-gradient(circle at 50% 14%, color-mix(in srgb, var(--primary) 18%, transparent) 0%, transparent 38%),
+      linear-gradient(180deg, color-mix(in srgb, var(--ui-loading-overlay) 72%, transparent) 0%, var(--ui-loading-overlay-strong) 100%);
+    -webkit-backdrop-filter: blur(14px) saturate(1.12);
+    backdrop-filter: blur(14px) saturate(1.12);
+  }
+
+  ::selection {
+    background: var(--selection);
+    color: var(--selection-foreground);
+  }
+}
+
+@keyframes cad-progress-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+
+.cad-progress-indeterminate {
+  animation: cad-progress-slide 1.15s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cad-progress-indeterminate {
+    animation-duration: 2.4s;
+    animation-timing-function: linear;
+  }
+}
+
+/* The host's home (`library/`): the models opened before, to open again, on the page's own
+ * colour, the navbar's. Centred, a grid of about four solid cards a row at a typical width, or a
+ * list of rows. */
+.cad-library { width: 100%; height: 100%; background: var(--background); --cad-library-card: var(--card); --cad-library-line: var(--border); }
+.dark .cad-library { --cad-library-card: color-mix(in oklab, var(--background) 88%, white); --cad-library-line: oklch(1 0 0 / 8%); }
+/* Below the last row: 40px, or room to scroll it clear of a host's composer floating over the bottom
+   (`--cad-host-bottom-inset`), whichever is more. Added together, a library that fits would still scroll. */
+.cad-library-content { box-sizing: border-box; width: 100%; max-width: 1128px; margin: 0 auto; padding: 44px 24px max(40px, calc(var(--cad-host-bottom-inset, 0px) + 16px)); container-type: inline-size; }
+/* TEXTTOCAD is wide (about 5.9:1): sized by its width, so a narrow sidebar shrinks it rather than cuts it. */
+.cad-library-wordmark { display: block; width: min(100%, 360px); height: auto; margin: 0 auto; user-select: none; -webkit-user-drag: none; }
+/* The byline: the claim in the text colour, the promise in the wordmark's blue (its top faces in the dark, its deeper side in the light). */
+/* As wide as the wordmark above it (about 17px beside a 360px mark), shrinking with it in a narrow panel: the
+   line runs about 20.7 times its font size in the system UI font, so a divisor of 20.8 matches it. */
+.cad-library-byline { margin: 10px 0 0; text-align: center; font-size: calc(min(360px, 100cqw) / 20.8); line-height: 1.35; white-space: nowrap; font-weight: 500; color: var(--foreground); }
+.cad-library-byline > span { color: #258cc5; }
+.dark .cad-library-byline { color: #fff; }
+.dark .cad-library-byline > span { color: #94d9fa; }
+.cad-library-update { display: flex; justify-content: center; margin: 14px 0 0; }
+.cad-library-links { display: flex; align-items: center; justify-content: center; gap: 2px; margin: 12px 0 40px; }
+.cad-library-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+.cad-library-heading { margin: 0; font-size: calc(min(360px, 100cqw) / 20.8); line-height: 28px; font-weight: 600; color: var(--foreground); }
+.cad-library-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.cad-library-search { position: relative; width: 200px; }
+.cad-library-search > svg { position: absolute; left: 10px; top: 50%; width: 14px; height: 14px; transform: translateY(-50%); color: var(--muted-foreground); pointer-events: none; }
+.cad-library-search input { padding-left: 30px; background: var(--cad-library-card); }
+/* The search, the layout switch and Open stand one height: 32px. */
+.cad-library-layout { display: flex; gap: 2px; padding: 1px; border: 1px solid var(--cad-library-line); border-radius: calc(var(--radius) - 2px); background: var(--cad-library-card); }
+.cad-library-layout button { width: 28px; height: 28px; color: var(--muted-foreground); }
+.cad-library-layout button[aria-pressed=true] { background: var(--accent); color: var(--accent-foreground); }
+.cad-library-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); gap: 20px; margin: 0; padding: 0; list-style: none; }
+.cad-library-card, .cad-library-row { position: relative; min-width: 0; }
+.cad-library-card { overflow: hidden; border: 1px solid var(--cad-library-line); border-radius: 10px; background: var(--cad-library-card); transition: border-color .15s ease, box-shadow .15s ease; }
+.cad-library-card:hover:not([data-missing]), .cad-library-card:focus-within { border-color: color-mix(in oklab, var(--ring) 70%, transparent); box-shadow: 0 6px 18px -8px rgb(0 0 0 / 0.18); }
+.cad-library-open { display: flex; width: 100%; min-width: 0; text-align: left; cursor: pointer; outline: none; color: inherit; background: none; border: 0; padding: 0; font: inherit; }
+.cad-library-open:disabled { cursor: default; }
+.cad-library-open:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.cad-library-card .cad-library-open { flex-direction: column; }
+.cad-library-thumbnail { display: grid; place-items: center; overflow: hidden; background: var(--cad-library-backdrop, var(--muted)); color: var(--muted-foreground); }
+.cad-library-thumbnail img { width: 100%; height: 100%; object-fit: contain; }
+.cad-library-thumbnail > svg { width: 28px; height: 28px; opacity: .7; }
+/* The empty library's one card, which opens a file: dashed, its box large. */
+.cad-library-card[data-empty] { border-style: dashed; }
+.cad-library-card[data-empty] .cad-library-thumbnail { background: transparent; }
+.cad-library-card[data-empty] .cad-library-thumbnail > svg { width: 64px; height: 64px; opacity: .55; }
+.cad-library-card .cad-library-thumbnail { width: 100%; aspect-ratio: 4 / 3; border-bottom: 1px solid var(--cad-library-line); }
+.cad-library-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 10px 76px 12px 12px; }
+.cad-library-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--foreground); }
+.cad-library-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-tiny, 0.6875rem); line-height: 16px; color: var(--muted-foreground); }
+.cad-library-card[data-missing] .cad-library-thumbnail, .cad-library-row[data-missing] .cad-library-thumbnail, [data-missing] .cad-library-name { opacity: .55; }
+/* A card's pin and remove sit at the right of its body; they show on hover or focus, a pin always
+ * while the model is pinned, and always where nothing hovers (touch). */
+.cad-library-actions { position: absolute; display: flex; gap: 2px; color: var(--muted-foreground); }
+.cad-library-card .cad-library-actions { right: 8px; bottom: 12px; }
+.cad-library-actions button { opacity: 0; transition: opacity .15s ease; }
+.cad-library-card:hover .cad-library-actions button, .cad-library-row:hover .cad-library-actions button, .cad-library-actions:focus-within button, .cad-library-actions button[aria-pressed=true] { opacity: 1; }
+.cad-library-actions button[aria-pressed=true] { background: var(--accent); color: var(--foreground); }
+@media (hover: none) { .cad-library-actions button { opacity: 1; } }
+.cad-library-list { margin: 0; padding: 0; list-style: none; overflow: hidden; border: 1px solid var(--cad-library-line); border-radius: 10px; background: var(--cad-library-card); }
+.cad-library-row + .cad-library-row { border-top: 1px solid var(--cad-library-line); }
+.cad-library-row .cad-library-open { align-items: center; gap: 12px; padding: 8px 76px 8px 8px; transition: background-color .15s ease; }
+.cad-library-row .cad-library-open:hover:not(:disabled) { background: color-mix(in oklab, var(--accent) 60%, transparent); }
+.cad-library-row .cad-library-thumbnail { flex: none; width: 56px; aspect-ratio: 4 / 3; border-radius: 6px; border: 1px solid var(--cad-library-line); }
+.cad-library-row .cad-library-name { flex: 1 1 auto; }
+.cad-library-row .cad-library-status { flex: none; }
+.cad-library-row .cad-library-actions { right: 8px; top: 50%; transform: translateY(-50%); }
+.cad-library-empty { margin: 48px 0 0; text-align: center; color: var(--muted-foreground); line-height: 1.6; }
+/* While the list is read: the cards' own shapes, pulsing. */
+.cad-library [data-loading] .cad-library-open { cursor: default; }
+.cad-library [data-loading] .cad-library-thumbnail, .cad-library-placeholder { animation: cad-library-pulse 1.4s ease-in-out infinite; }
+.cad-library-placeholder { display: block; width: 60%; height: 10px; margin: 3px 0; border-radius: 4px; background: var(--muted); }
+.cad-library-placeholder[data-short] { width: 32%; }
+.cad-library-row .cad-library-placeholder { flex: none; width: 40%; }
+@keyframes cad-library-pulse { 50% { opacity: .5; } }
+/* The model being opened: a spinner over its picture until the host has it on screen. */
+.cad-library-thumbnail { position: relative; }
+.cad-library-opening { position: absolute; inset: 0; display: grid; place-items: center; background: color-mix(in oklab, var(--background) 45%, transparent); color: var(--foreground); }
+.cad-library-opening > svg { width: 20px; height: 20px; opacity: 1; }
+.cad-library-row .cad-library-opening > svg { width: 14px; height: 14px; }
+.cad-library-error { margin-bottom: 16px; color: var(--destructive); }
+.cad-library-error p { margin: 0; }
+@media (prefers-reduced-motion: reduce) { .cad-library-card, .cad-library-actions button, .cad-library-row .cad-library-open { transition: none; } .cad-library [data-loading] .cad-library-thumbnail, .cad-library-placeholder { animation: none; } }

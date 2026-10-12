@@ -1,66 +1,134 @@
 # AGENTS.md
 
+Installing text-to-cad rather than developing it? Follow the Install section of
+[README.md](README.md).
+
 This repo is a workbench for CAD-related agent skills. Treat `skills/` as the
 product and `models/` as the shared fixture/artifact area.
 
-## Branch And Layout First
+## Branch First
 
-Before changing code, branch from `develop`, not `main`; PRs should target `develop`.
-Do not start development work from `main`. The `develop` branch intentionally uses
-symlinks across generated runtime and viewer-local package paths. When a path is
-symlinked, follow the link and edit the source target.
-Use `main` as the production clone/release branch only. `main` is publish-only:
-do not open PRs to `main` or push it directly.
+`main` is the only branch you develop on: the source tree, and what releases
+are cut from. Branch from `main` and open PRs against `main`; never push it
+directly. There is no development symlink layout — every path in the tree is the
+real file. Installers follow `latest`, and claude.ai's directory
+`claude-plugin`: the plugin alone, one commit per release,
+written only by `Publish Release` once the release is on PyPI (see below); never
+commit to them. `main` stays an installable plugin too: every manifest and MCP
+config lives at its root.
 
 ## Release Workflow
 
-Do not bump the canonical release version in `VERSION` during
-normal development work. Ship releases only through the single `Release`
-GitHub Actions workflow, which handles the version bump, release PR, publish
-commit to `main`, `cadgen` PyPI publish, docs deploy, semver tag, and GitHub
-Release in one run.
+A pull request that changes `VERSION` is a release, and merging it releases it.
+Never bump during normal development work, and never pick the bump yourself: if
+a request to make or ship a release does not name patch, minor, major, or an
+exact version, ask which one. A release pull request comes one of two ways:
 
-When asked to publish, make, or ship a release, dispatch `Release` with its
-defaults: build from `develop` (`base_branch=develop`), publish to `main`
-(`target_branch=main`), and publish the GitHub Release (`publish=true`, not a
-draft). Never pick the semver bump yourself: if the request does not name
-patch, minor, major, or an exact version, ask which one before dispatching.
-Use `target_branch=build-test` only when the user explicitly asks to test
-CI/CD or build-pipeline changes — never by default and never as part of a
-requested release, and pair it with `bump=none` so a rehearsal does not consume
-a version number. `bump=none` publishes `base_branch` as it stands and is also
-how you resume a failed publish; it is never a release setting.
+- **Its own pull request**, for a release of what `main` already has — what
+  "make a release" means unless the user names a pull request to carry it:
+  dispatch `Prepare Release`
+  (`gh workflow run release-prepare.yml --ref main -f bump=<patch|minor|major>`,
+  or `-f set_version=X.Y.Z`). It opens `release/X.Y.Z` with the bump and never
+  merges it.
+- **On the pull request that should carry it**: on its branch,
+  `scripts/release/bump-version.sh <patch|minor|major|X.Y.Z>` sets `VERSION` past
+  `main`'s and stamps the derived metadata and every `cadgen==` pin with it.
 
-The standalone `Deploy Docs` workflow redeploys the docs site without running a
-release. It deploys a source ref (defaulting to `develop`), never `main`: the
-publish tree drops `docs/` and `packages/`, which the docs app builds against.
-The CAD Viewer is a local-filesystem app with no hosted deployment, but each
-release mirrors `viewer/` into the standalone `earthtojake/cad-viewer` repo
-through the `Sync CAD Viewer Repo` workflow, which `Release` calls after
-publishing and which can also be dispatched on its own. Both of those read the
-release SOURCE commit, because `main` carries only what installs.
-`main` is publish-only; pushing `develop` runs tests but
-never publishes. See the Releases section in `CONTRIBUTING.md` for the full
-flow, CI/CD-testing and resume options, and local/manual fallbacks.
+Merge a release pull request only on the user's explicit word, once its checks
+pass: the merge is the release.
+
+- `Test` runs every job for a `VERSION` change, so a release is tested whole.
+  Its Version Check vets the bump: a branch of this repository only (a fork
+  cannot release), a version past `main`'s and the latest tag, every stamp in
+  step.
+- `Publish Release` (`release-publish.yml`) runs on the merge. It finds the
+  `Test` run that recorded the merged tree as tested in full (else it runs every
+  `Test` job on it first), builds the plugin ZIP, the bundle and the `cadgen`
+  wheel and sdist, installs and exercises the wheel, uploads the pages' source
+  maps to PostHog and the wheel to PyPI, and
+  waits until PyPI's index lists it. Only then does it commit the plugin alone
+  onto the branches installers follow (`scripts/release/plugin_branch.py`):
+  `latest`, which every install command names, and `claude-plugin`, which
+  claude.ai's directory tracks. After them it deploys the docs site and tags
+  (`v<VERSION>`; releases before 0.5.0 are bare
+  `0.4.x` tags) and GitHub-Releases the release commit, with the wheel and sdist
+  that went to PyPI attached as release assets, plus the plugin ZIP that a
+  person uploads to OpenAI's plugin portal, which has no API.
+
+To finish a run that stopped partway, dispatch `Publish Release` on `main`
+(`publish=false` leaves the GitHub Release as a draft): it publishes the commit
+that last moved `VERSION`, if that version has no tag yet. `build-test` is the
+rehearsal branch — `Prepare Release` with `-f target=build-test` opens a bump
+against it, whose merge is built and installed with no PyPI, branches, docs or
+tag — and is never a release; use it only when the user explicitly asks to test
+the pipeline.
+
+The standalone `Deploy Docs` workflow redeploys the docs site from a ref
+(default `main`, or a release tag) without running a release.
+
+cadgen runs as ONE launch command everywhere, `uvx --no-config --managed-python
+--python 3.13 --from cadgen==<VERSION> <tool>` (`cadgen._internal.launch`): the
+plugin server configs and every cadgen skill's SKILL.md carry it, the release
+stamps every pin (`sync-version.mjs`), and `scripts/release/check-version.sh`
+and the tests assert they all equal `VERSION`. uv keeps one installation per
+requirement and cadgen names its warm daemon after that installation, so the
+server, every thread and every skill command share one daemon. In a checkout,
+install `requirements-dev.txt` (the editable cadgen) and test in agent apps with
+`scripts/install/dev_install.py`, which points both at the checkout.
+`models/` stays on `main` as plain files; nothing installs it.
+`scripts/github-workflows/check-builds.sh` enforces the shipping contract on
+every push: no tracked symlink, no `.gitattributes` rule that rewrites files at
+checkout or changes the archive (so no Git LFS; claude.ai's plugin directory
+refuses them), every tracked file under 5 MiB, no skill reaching into a repo root.
+See the Releases section in `CONTRIBUTING.md` for the full flow, the resume
+path, the rehearsal, and local/manual fallbacks.
 
 ## Repo Map
 
 - `skills/`: agent skills and their references/scripts.
-- `.claude-plugin/`, `.codex-plugin/`: agent plugin manifests. The repository
-  root is the plugin package; its skills are `skills/` directly.
+- `.claude-plugin/`, `.codex-plugin/`, `.cursor-plugin/`, `gemini-extension.json`, and the
+  [Agent Plugins](https://agent-plugins.org) standard's `plugin.json` and `mcp.json`:
+  agent plugin manifests. The repository root is the plugin package; its skills are
+  `skills/` directly. Installers take it from the `latest` branch, which
+  `scripts/release/plugin_branch.py` builds from this tree at each release.
 - `models/`: sample and durable CAD/robot-description fixtures.
-- `viewer/`: editable CAD Viewer source app.
-- `packages/cadjs`: shared JS CAD/render/runtime code, UI-framework agnostic.
-- `packages/implicitjs`: standalone JS implicit CAD model, shader render,
-  snapshot, mesh sampling, and export runtime.
-- `packages/cadgen`: shared Python STEP/GLB/topology artifact code.
-- `docs/`: documentation site.
+- `apps/web/`: the CAD Viewer's React client (its backend is `cadgen.viewer`).
+- `apps/mcp/`: the CAD app agent hosts render: tabs in Codex, cards in Claude Desktop (its server is `cadgen mcp`).
+- `packages/core`: `@text-to-cad/core`, shared CAD/runtime/client code without React.
+- `packages/ui`: `@text-to-cad/ui`, the shared FileViewer, renderers, controls and styles.
+- `packages/cadgen`: the published distribution — STEP/GLB/topology generation,
+  the skill CLI parsers, the CAD Viewer backend + client, and the Node/browser
+  runtimes it executes.
+- `apps/docs/`: documentation site.
+- `apps/api/`: `api.texttocad.dev`, its own Vercel project: cadgen's version feed (read from PyPI) and the CAD app's consented analytics.
 - `tests/`: root-owned test suites for skills, packages, viewer services, and
   repo-wide policy.
 - `scripts/`: durable repo commands grouped by purpose.
 
 ## Repo Rules
 
+- Boundaries and design laws live in each package's README: read
+  `packages/cadgen/README.md` (the laws), `packages/core/README.md`, `packages/ui/README.md`,
+  `apps/web/README.md`, `apps/docs/README.md` and `apps/api/README.md` before changing
+  generation, rendering, storage, layout, or public interfaces.
+- A README holds the laws; the mechanism each law constrains lives one link
+  away, and the README names the link. Read the README, then follow the one
+  link — not the tree. What exists:
+  - `packages/cadgen/`: `STORE.md` (the store contract — sectioned, with a
+    table of contents), `SNAPSHOTS.md` (snapshot `--debug` timings).
+  - `packages/core/docs/`: `render-pipeline.md`, `resource-ownership.md`,
+    `tube-deformation.md`.
+  - `packages/ui/docs/`: `settings-ui.md` (BINDING for any settings control),
+    `render-types.md`, `render-mode.md`, `lod.md`, `storage.md`, `backend.md`.
+- Ships-alone law: `packages/cadgen` (the built PyPI wheel) works in isolation
+  outside this repo, so its markdown must not refer to anything outside the
+  package — enforced by `tests/python/global/test_package_boundaries.py`.
+  Repo-development guidance for it goes in `CONTRIBUTING.md`.
+
+- The README and the docs site's homepage (its copy: `apps/docs/src/lib/content.ts`)
+  share their structure, install message and commands: change them together.
+  The README says more: the steps to install it yourself, and fuller notes under each install
+  (`apps/docs/README.md`).
 - Keep root guidance short. Put domain workflows, CLI details, and validation
   policy in the relevant `skills/<skill>/SKILL.md` or `references/` file.
 - Keep relevant Markdown docs current when changing behavior, commands, or repo
@@ -68,60 +136,98 @@ flow, CI/CD-testing and resume options, and local/manual fallbacks.
   rules and pointers.
 - Read `CONTRIBUTING.md` before committing, rebasing, resolving generated-file
   conflicts, or bumping release versions.
-- Keep the primary local `develop` checkout in symlink layout with
-  `scripts/dev/setup-symlinks.sh`. Do not auto-repair that layout from
-  Codex or Claude Code startup hooks in linked worktrees.
-- Each skill must be self-contained and independent at runtime. A skill must
-  not refer to or import or depend on code from another skill, from `skills/`
-  root, or from repository-root modules. Do not add `skills/`, the repository
-  root, or sibling skill directories to `sys.path`, `PYTHONPATH`, `NODE_PATH`,
-  or similar runtime lookup paths. Shared runtime helpers must live under
-  `packages/` as the source of truth and be vendored/generated from there into
-  each consuming skill runtime; do not keep shared helper modules directly under
-  `skills/`.
-- Edit the source reached by the `develop` symlink layout first, then regenerate
-  explicit derived outputs when a production-output task requires it.
-- Write all test, sample, permanent, and generated CAD/robot-description
-  artifacts under `models/`, including STEP/STP, STL, GLB, DXF, URDF, SRDF,
-  and SDF outputs. Do not create ad hoc artifact directories elsewhere.
+- A skill must not import another skill, a `skills/` root module, or a
+  repository-root module, and must not add `skills/`, the repository root, or a
+  sibling skill directory to `sys.path`, `PYTHONPATH`, `NODE_PATH`, or any other
+  runtime lookup path. Skills are independent of each other, not of everything.
+- Shared runtime comes from the **`cadgen` distribution**. A skill that uses it
+  defines `cadgen` and `python` in its SKILL.md as the launch command above,
+  pinned to `VERSION` (the release stamps every pin); no skill installs cadgen
+  any other way (no `requirements.txt` naming it), because a second installation
+  is a second daemon. Skills do not vendor it: a skill script is a thin entrypoint whose
+  parser and behaviour live in `cadgen.cli`. Playwright is a cadgen dependency and
+  the first snapshot fetches its headless browser, so no skill has a browser step. cadgen carries
+  the JavaScript it executes too (Node builders, the snapshot browser bundle,
+  the CAD Viewer client), so a skill ships no runtime of its own. Not every
+  skill needs cadgen (bambu-labs, dfam-check, dfm, gcode, sendcutsend,
+  step-parts are cadgen-free); do not add the dependency to a skill that never invokes it.
+- Keep samples and manual CAD/robot-description validation artifacts under
+  `models/`. Automated tests must not read, build or import that sample corpus:
+  generate small fixtures in fresh temporary directories or use tiny test-owned
+  fixtures, with their own cache stores and cleanup. Repo `tmp/` is fine.
+  Enforced by `tests/python/global/test_tests_are_self_contained.py`.
+- Every test runs in CI. Each test file is reached by a runner under
+  `scripts/test/`, every runner is called by a `test.yml` job on the changes that
+  can break it, and a collector that finds nothing fails the run rather than
+  reporting a group that never ran. A test no CI job runs is dead: wire it in or
+  delete it. There are no manual-only test gates. Enforced by
+  `tests/python/global/test_ci_workspace_selection.py`.
+- Tests and CI are short and succinct. Test a contract, a user flow or a fixed bug,
+  once, at the cheapest level that exercises the real path: a unit or jsdom test
+  first, a real browser (WebGL) only for what needs one. Await the condition, never
+  a fixed sleep or a wall-clock bound; a flaky test is fixed or deleted, never
+  retried. CI time is a budget: the `web` job stays within 7 minutes, and a
+  change that lengthens any job says what it costs and why in its PR.
+- Benchmarks under `scripts/bench/` are manual and their output is never
+  committed: reports, logs, profiles and screenshots go to an ignored `tmp/`.
+  Only their pure helper units run in a test runner.
+- The Python floor is `requires-python` in `packages/cadgen/pyproject.toml` and
+  nowhere else. Every cadgen source is parsed against that floor, so syntax
+  newer than it fails here rather than at `pip install` time on a user's
+  interpreter; raising the declared minimum relaxes the check automatically.
 - Reserve `scripts/` for durable repo commands. Do not write temporary,
   one-off, or local-only helper scripts there; use `tmp/` or `/tmp` instead.
-- Development symlinks mark generated or copied paths. If a file is under a
-  symlinked runtime or viewer package path, edit the symlink target/source path
-  instead of treating the copy as independent.
-- When source changes affect generated runtimes, refresh or check them with the
-  master bundle wrapper, `scripts/bundle/bundle.sh`. Use lower-level bundle
-  scripts only when debugging the wrapper itself.
+- cadgen's packaged runtime (`_runtime/node`, `_runtime/browser`,
+  `_runtime/viewer`, and the file tracer every build loads, `_runtime/native`)
+  is BUILT, never committed: the whole directory is
+  gitignored and ships only inside the wheel. Build it with the one bundle
+  entry point, `scripts/bundle/bundle.sh`; `bundle.sh --check` builds it and
+  asserts every required output. Call `scripts/bundle/cadgen-runtime.sh`
+  directly only when debugging one stage.
+- Installs always work from `main`. A command that names no branch installs `main`
+  as it is, so every manifest, MCP config and the marketplace catalog stay at its
+  root, the catalog lists the plugin at `./`, and nothing on `main` points an
+  installer at another branch. The documented commands name `latest` instead: the
+  plugin alone, one commit per release, which `Publish Release` writes once the
+  release is on PyPI, so it installs lean (no monorepo, no npm install of the
+  workspace) and is never ahead of PyPI. `latest` is a channel, so a slower
+  `stable` can join it later. `tests/python/global/test_plugin_manifests.py`
+  holds both halves.
 - Never let a symlink reach the published tree. Agent installers disagree about
   symlinks and one loses data silently: the Skills CLI dereferences them, Claude
   Code preserves them, and Codex `plugin add` drops them with no error, shipping
   a skill with missing files. `scripts/github-workflows/check-builds.sh` enforces
   this; do not relax it.
-- `viewer/` must stay self-contained: nothing under it may reference a path,
-  command, or document above it, because it is mirrored verbatim into the
-  standalone `cad-viewer` repo with no rewriting step. Keep repo-level tooling
-  in `scripts/`, not under `viewer/`.
-  `viewer/scripts/selfContained.test.mjs` enforces this.
-- `packages/cadjs` must stay reusable/non-React; app UI and workflow state
-  belong in `viewer/`.
-- `packages/implicitjs` must stay reusable/non-React and independent of
-  `packages/cadjs` (`implicitjs` must never import `cadjs`). The dependency
-  flows one way: `cadjs` depends on `implicitjs` and re-exports its shared
-  render/export APIs under `cadjs/implicit/*`, so consumers (CAD Viewer,
-  snapshot tools) install and import `cadjs` alone rather than depending on
-  `implicitjs` directly or duplicating implicit CAD logic. Shared primitives
-  that both packages need live in `implicitjs` as the single source of truth
-  and are re-exported from `cadjs` (e.g. `cadjs/common/camera.js`).
-- `packages/cadgen` owns reusable Python artifact generation; skills should use
-  bundled package code, not sibling skill imports.
+- The CAD Viewer is `cadgen viewer`: the server is `cadgen.viewer` (Python, in
+  `packages/cadgen`), the React client's source is `apps/web/` and its build
+  ships in the wheel at `cadgen/_runtime/viewer` (built, never committed; a
+  checkout serves `apps/web/dist`). The CAD, DXF and robot-description skills document that verb directly.
+  Nothing in `cadgen.viewer` imports the CAD kernel at module scope — the one
+  kernel action, importing a foreign STEP, is a compile job in cadgen's build
+  pool, never work the server process does.
+  Keep repo-level tooling in `scripts/`, not under `apps/web/`.
+- `packages/core` stays non-React. Shared FileViewer/renderers belong in
+  `packages/ui`; host workflow state belongs in apps. Apps never import another
+  app and shared packages never import apps. Root npm workspaces consume compiled
+  package exports; do not add source aliases or nested lockfiles. Preserve app
+  UI/UX and functionality during restructuring; changes are pure refactors.
+- Shared UI must stay platform-agnostic. Apps implement environmental effects;
+  shared features use injected capabilities and named extension slots. Before
+  extending these interfaces, read [the viewer host contract](packages/ui/docs/viewer-host.md).
+- `packages/cadgen` is the whole distribution, not just the Python: artifact
+  generation, the CLI parsers behind every skill command (`cadgen/cli`), the warm
+  build daemon (`cadgen/daemon`), and
+  the JS/SPA assets it executes (`cadgen/_runtime`, built by
+  `scripts/bundle/cadgen-runtime.sh`). Skills consume it as an
+  installed distribution.
 - Create lightweight shared Python packages under `packages/` when a helper
   should not inherit heavier package dependencies.
 - Use path-targeted search, validation, and `git status`; avoid broad scans over
-  generated CAD/LFS artifacts unless the task requires them.
+  generated CAD artifacts unless the task requires them.
 - Treat `VERSION` as the canonical release version. Do not hand-edit duplicate
-  package, plugin, lockfile, or Python `pyproject.toml` versions; release
-  preparation and `scripts/bundle/bundle.sh` stamp them from the canonical
-  version.
+  package, plugin, lockfile, or Python `pyproject.toml` versions;
+  `scripts/release/bump-version.sh` and `scripts/bundle/bundle.sh` stamp them
+  from the canonical version.
 
 ## Environments
 
@@ -131,16 +237,11 @@ flow, CI/CD-testing and resume options, and local/manual fallbacks.
   inside the worktree only when Python dependencies are needed for the workflow.
 - In Codex or Claude Code worktrees, prefer the skill instructions and scripts
   under the current worktree's `skills/` directory over globally installed
-  skill symlinks from another checkout.
-- If a worktree explicitly needs the development symlink layout, run
-  `scripts/dev/setup-symlinks.sh --check` and then
-  `scripts/dev/setup-symlinks.sh` intentionally in that worktree.
-- Hydrate `models/` only when the user asks for it or when the task targets
-  specific files under `models/`. In a new worktree, make the relevant model
-  paths real before using them, preferring the local Git LFS cache with
-  `git lfs checkout <path>` or `git lfs checkout models`. Download missing LFS
-  objects only when explicitly requested or required after confirming the local
-  cache is missing them.
+  skills or plugins from another checkout.
+- Test skills and the plugin in an agent app with
+  `scripts/install/dev_install.py <host>` (`CONTRIBUTING.md`, "Test In Agent
+  Apps"). One copy of the plugin per app: never the development install beside
+  the published plugin, or beside the skills installed loose.
 - Install dependencies only for the workflow being changed.
 - Do not commit `.venv/`, `node_modules/`, caches, `tmp/`, local credentials, or
   printer config.
@@ -150,138 +251,49 @@ flow, CI/CD-testing and resume options, and local/manual fallbacks.
 Run the smallest path-targeted check that covers the change. Use broad wrappers
 when touching shared surfaces or before handoff:
 
-- Code tests: `scripts/test/test.sh`
-  - In GitHub Actions, `test.yml` checks the canonical release version in a
-    separate job so code tests still run when version metadata is wrong; its
-    test job verifies the `develop` symlink layout, checks generated outputs
-    against their sources, bundles temporary production outputs, and runs docs
-    and code tests against that bundle. `main` writes are validated by the
-    `Release` workflow's publish job; GitHub branch settings should block PRs
-    and direct pushes to `main`.
-- Focused test runners: `scripts/test/test-js.sh`,
-  `scripts/test/test-docs.sh`, `scripts/test/test-python.sh`,
-  `scripts/test/test-global.sh`
-- Development symlink layout: `scripts/dev/setup-symlinks.sh --check`
+- Code tests: `scripts/test/test.sh` (JS, API, Python, then policy).
+- Focused runners: `scripts/test/test-js.sh`, `scripts/test/test-api.sh`, `scripts/test/test-docs.sh`,
+  `scripts/test/test-python.sh`, `scripts/test/test-global.sh`.
+  `test-python.sh` takes `--select cadgen|viewer|skills|all` and
+  `--print-weights`; `test-js.sh` takes `--select core|ui|web|mcp|all`. See
+  `scripts/README.md`.
+- In GitHub Actions, `test.yml` runs one job per concern, each only when the
+  change reaches it: `scripts/github-workflows/select_checks.py` maps every
+  changed path to the tests that read it, and the Python jobs run just those
+  files. A test that reads a new kind of path gets a rule there
+  (`CONTRIBUTING.md#ci`); an unknown path, `VERSION`, `packages/core`, the
+  lockfiles and the test machinery run everything, as does a manual dispatch.
+  Required check names stay stable.
 - Canonical release version: `scripts/release/check-version.sh`
-- Generated runtime freshness: `scripts/bundle/bundle.sh --check`
-- CAD Viewer, `packages/cadjs`, or `packages/implicitjs`:
-  `npm --prefix packages/cadjs test`, `npm --prefix packages/implicitjs test`,
-  `npm --prefix viewer run test`, `npm --prefix viewer run build`
-- Docs site: `npm --prefix docs run check`
+- Packaged runtime builds and is complete: `scripts/bundle/bundle.sh --check`
+- CAD Viewer or shared packages: build exports with `npm run build:packages`,
+  then `npm --prefix packages/core test`, `npm --prefix packages/ui test`,
+  `npm --prefix apps/web run test`, `npm --prefix apps/web run build`.
+  The Viewer is two languages and `npm run test` covers only the client — the
+  backend's suite is `tests/python/packages/cadgen/viewer`, run by
+  `scripts/test/test-python.sh`. Touching `cadgen/viewer/` means running that.
+- Docs site: `npm --prefix apps/docs run check`
+- API (`api.texttocad.dev`): `npm --prefix apps/api test`
 - Targeted Python tests: `./.venv/bin/python -m unittest <changed test paths>`
 
-When a task intentionally writes production outputs locally, run
-`scripts/bundle/bundle.sh`, rerun `scripts/bundle/bundle.sh --check`, and restore
-the development symlink layout afterward if you are continuing on `develop`.
+When a task changes what the bundlers consume, run `scripts/bundle/bundle.sh`
+and confirm the change lands in the built runtime. There is nothing to commit:
+`_runtime/` is gitignored end to end, so what a reviewer reads is the source and
+what a user gets is the wheel the release builds from it.
 
 ## CAD Viewer
 
-A Viewer URL's PATH is the absolute directory it opens, exactly as in a `file://`
-URL, and `?file=` selects one artifact within it:
+The app-facing playbook lives in `apps/web/README.md`: launcher contract
+(reuse, ports, `--new`), dev vs prod, and the catalog/link-verification
+gotchas. The repo-side half — the lightweight-worktree recipe and
+root workspace dependencies — lives in `CONTRIBUTING.md` under "Viewer Development
+In This Repo". Read them before starting, stopping, or debugging a Viewer.
+Never stop an instance you did not start; packaged-runtime checks go
+through `scripts/bundle/bundle.sh`.
 
-```text
-http://127.0.0.1:3245/absolute/model/root?file=path/relative/to/that/root
-```
+## Git
 
-On Windows the drive is part of that path, after the leading slash and with
-forward slashes: `D:\project\models` is `.../3245/D:/project/models`.
-
-The Viewer is not started against a directory — it opens whatever a URL names, so
-one instance serves any folder **under its own served root**. That qualifier
-matters in a worktree: an instance started from another checkout resolves paths
-against ITS root, so an absolute path into a different clone is simply not found
-and the pane reports it as outside this viewer's root. If a Viewer from another
-checkout already holds the default port, start one for this workspace on a free
-port (`--port <n>`) rather than pointing the running one at your path.
-
-When reviewing repo fixtures, use the repo
-`models/` directory as the path and keep permanent or generated
-CAD/robot-description files there so the catalog and artifacts stay in one place.
-Always use an absolute path: the Viewer runs from an arbitrary working directory,
-so a relative one resolves against the wrong place. Do not stop another Viewer
-unless the user asks.
-
-Editing `viewer/` or `packages/cadjs` source and not seeing the change? Vite's
-server-side transform cache can outlive both HMR and a hard reload — the browser
-keeps serving the old module while the file on disk is already correct. Restart
-the dev server and delete `viewer/node_modules/.vite`.
-
-### Dev by default, prod only for e2e
-
-Iterate with the **dev** server — Vite serves the client from source with HMR, so
-your `viewer/`, `packages/cadjs`, and `packages/implicitjs` edits show up live:
-
-```bash
-npm --prefix viewer run dev -- --host 127.0.0.1 --port <n>
-# then open http://127.0.0.1:<port><repo>/models?file=<path>
-```
-
-Use the **prod** path only for end-to-end tests against the shipped bundle, or
-when explicitly asked to test prod. It serves the built `dist/` via the Python
-backend (the `cad-viewer` skill's `start` command), so build first:
-
-```bash
-npm --prefix viewer run build
-npm --prefix viewer run start -- --host 127.0.0.1 --port <n>
-# then open http://127.0.0.1:<port><repo>/models?file=<path>
-```
-
-### Ports
-
-Both `dev` and `start` listen on `--port`, defaulting to `3245`. Neither rolls to
-another port: if the port is taken they exit with an error, so a Viewer is always
-on the port you asked for. Pass `--port <n>` to run more than one at a time.
-
-Packaged Viewer runtime and handoff details live in the `cad-viewer` skill.
-Treat packaged Viewer checks as generated-output checks via the master bundle
-wrapper unless you are debugging a lower-level script.
-
-### Starting the Viewer from a lightweight worktree
-
-The `cad-viewer` skill documents the PRODUCTION runtime and assumes a hydrated
-checkout. In a lightweight worktree its one-liner fails four times in a row, each
-with an error that does not name the real cause, because worktrees deliberately
-carry no `node_modules` and no built bundle:
-
-1. `npm --prefix skills/cad-viewer/scripts/viewer run start` dies with
-   `Cannot find package 'cadjs'`. `skills/cad-viewer/scripts/viewer` is a symlink
-   to `viewer/`, so the "packaged" runtime still needs the worktree's modules.
-2. With those linked, the server starts and the CAD API answers but `/` returns
-   404: `start` serves a prebuilt bundle and there is no `viewer/dist` yet. A live
-   backend with no front end looks like a broken link, not a missing build.
-3. `npm --prefix viewer run build` then fails one bare specifier at a time —
-   `implicitjs`, `three`, `meshoptimizer` — each from `packages/cadjs/src/...`.
-4. `meshoptimizer` is not under `packages/cadjs/node_modules` anywhere; the only
-   copy in the repo is `docs/node_modules/meshoptimizer`.
-
-From the worktree root, with `<main>` the primary checkout:
-
-```bash
-ln -s <main>/viewer/node_modules viewer/node_modules
-mkdir -p packages/cadjs/node_modules
-ln -s ../../implicitjs                                packages/cadjs/node_modules/implicitjs
-ln -s <main>/packages/cadjs/node_modules/three        packages/cadjs/node_modules/three
-ln -s <main>/docs/node_modules/meshoptimizer          packages/cadjs/node_modules/meshoptimizer
-npm --prefix viewer run build
-npm --prefix skills/cad-viewer/scripts/viewer run start -- --host 127.0.0.1 --port <n>
-```
-
-Use an explicit free `--port`: a Viewer already running from another checkout
-resolves paths against ITS root, so it will never find a model in this worktree.
-
-Two behaviours worth knowing before you conclude a model is broken:
-
-- **The catalog scan skips dot-directories.** A buildable entry under `.review/`
-  or any other dotted path resolves by a direct `?dir=` query but never appears
-  in a scan from the project root, and the Viewer reports that the file does not
-  exist. Keep buildable entries out of dotted directories.
-- **Verify a Viewer link by loading the page**, not by curling `/__cad/asset`.
-  That route serves raw files; a generated entry's render package is served by a
-  different route, so probing it returns 404 whether or not anything is wrong.
-
-## Git And LFS
-
-CAD exchange files, generated render/topology assets, and `assets/**` may be
-LFS-tracked. Never disable LFS filters for `git add`, commits, or other
-object-writing operations. Local hooks live in `.githooks` and
+No Git LFS, and every file under 5 MiB: the repository root is the plugin, and
+claude.ai's plugin directory refuses files a filter rewrites at checkout, so
+heavyweight media stays out of the tree. Local hooks live in `.githooks` and
 delegate build checks through `scripts/git-hooks/pre-commit`.

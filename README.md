@@ -39,7 +39,7 @@ agent ──(MCP)──▶ gencad server ──▶ freecadcmd (FreeCAD headless)
   close the mechanical half: [pcbtools/README.md](pcbtools/README.md)
 - **`text-to-cad/`** — vendored from
   [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)
-  (release 0.4.20, MIT), which gencad builds on as its base: a library of
+  (release 0.7.21, MIT), which gencad builds on as its base: a library of
   agent skills for CAD, CAE and CAM — generation with STEP/STL/3MF export, a
   local CAD Viewer, DXF drawings, robot descriptions, G-code slicing, part
   sourcing, and more. How the vendoring, upstream sync, and local patches
@@ -103,22 +103,22 @@ If `freecadcmd` isn't at the macOS default path, set `GENCAD_FREECADCMD`.
 
 ### CAD Viewer
 
-The vendored Viewer serves browser previews of STEP/STL/GLB/URDF and friends
-on port 3245. Its CAD backend needs a Python with OCP + build123d + cadgen —
-one-time setup, then launch:
+The vendored text-to-cad release ships its Viewer inside the `cadgen` wheel:
+browser previews of STEP/STL/GLB/URDF and friends on port 3245. Install the
+cadgen version that matches the vendored tree, turn telemetry off (cadgen 0.5+
+sends usage stats by default), then launch:
 
 ```bash
 uv venv --python 3.12 .venv-viewer
-uv pip install --python .venv-viewer/bin/python \
-  -r text-to-cad/skills/cad-viewer/requirements.txt   # pins cadgen to the vendored release
-
-cd text-to-cad/skills/cad-viewer
-VIEWER_CAD_PYTHON=$PWD/../../../.venv-viewer/bin/python \
-  npm --prefix scripts/viewer run start -- --host 127.0.0.1
+uv pip install --python .venv-viewer/bin/python "cadgen==$(cat text-to-cad/VERSION)"
+.venv-viewer/bin/cadgen telemetry off
+.venv-viewer/bin/cadgen viewer --host 127.0.0.1    # cadgen viewer stop to quit
 ```
 
-Then open `http://127.0.0.1:3245/<absolute model dir>?file=<model>` — e.g.
-`http://127.0.0.1:3245/Users/you/gencad/models?file=part.step`.
+Then open a model by absolute path, e.g.
+`http://127.0.0.1:3245/?file=/Users/you/gencad/models/part.step`.
+`CADGEN_TELEMETRY=0` or `DO_NOT_TRACK=1` also turns telemetry off for a single
+process.
 
 ### chili3d
 

@@ -6,15 +6,14 @@ Create or update this ledger before writing SDF XML. The ledger's canonical home
 
 | Field | Value |
 |---|---|
-| Output path | |
-| Source file | |
+| SDF path | |
 | SDF version | `1.12` unless constrained |
 | Document kind | model / world / model-in-world |
 | Target consumer | Gazebo / other simulator / visualization-only / model package |
 | Units | meters, kilograms, seconds, radians unless documented otherwise |
 | Coordinate convention | REP-103-like / simulator-specific / documented exception |
 | World support needed | yes/no; reason |
-| Optional external checks | `gz sdf --check`, simulator load, CAD Viewer, other |
+| External checks | `gz sdf --check` mode (`auto`/`required`/`never`), simulator load, CAD Viewer, other |
 
 ## Model or world scope
 
@@ -104,8 +103,7 @@ If a value cannot be derived or safely assumed, generate a minimal placeholder o
 ## Compact response template
 
 ```text
-SDF source: path/to/source.py
-Generated target: path/to/output.sdf
+SDF file: path/to/model.sdf
 Target consumer: Gazebo Harmonic, SDF 1.12
 Bundled validation: passed with 2 warnings
 External checks: gz sdf --check skipped, gz not installed

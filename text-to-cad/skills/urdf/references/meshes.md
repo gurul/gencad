@@ -8,7 +8,7 @@ The unit of export is the **link**, not the assembly and not the CAD feature tre
 
 1. Enumerate the links from the design ledger first. Every link that shows geometry gets exactly one visual asset (or an explicit set of assets); rigidly-joined parts that belong to one link are merged into that link's single export.
 2. Never point multiple links at one combined assembly mesh with compensating origins. If two links share a source body, the body must be split at the joint in CAD before export.
-3. Export each link's mesh **in that link's own frame** — the frame the ledger defines, coincident with the parent joint frame at zero position. Done right, every `<visual><origin>` is identity (`0 0 0`, `0 0 0`), which is the convention repository fixtures use and the easiest state to audit.
+3. Export each link's mesh **in that link's own frame** — the frame the ledger defines, coincident with the parent joint frame at zero position. Done right, every `<visual><origin>` is identity (`0 0 0`, `0 0 0`), which is the convention to follow and the easiest state to audit.
 4. If an export cannot be re-framed (vendor mesh, scanned part), a nonzero visual origin is acceptable but must be recorded in the ledger with its source; it is a per-link constant, not a tuning knob.
 5. Splitting, re-framing, and exporting STEP/STL/3MF/GLB assets belongs to the owning CAD workflow (`$cad`, `$step-parts` when installed). Do not attempt to fix a wrong split by editing URDF origins.
 
@@ -28,11 +28,11 @@ Checklist after export, before authoring:
 
 ## Reference Forms
 
-- **Local relative paths** (`3MF/forearm_link.3mf`) resolve from the `.urdf` file's directory. Preferred for repository fixtures — the bundled validator verifies these files exist.
+- **Local relative paths** (`3MF/forearm_link.3mf`) resolve from the `.urdf` file's directory. Preferred for a robot kept in a project tree — the bundled validator verifies these files exist.
 - **`package://name/path` URIs** are for ROS-package consumers. The validator checks syntax only and warns that resolution is consumer-specific; confirm the consuming environment resolves the package root as expected.
 - Remote URIs are accepted with warnings; avoid them for durable fixtures.
 
-Keep mesh files under the same model directory tree as the URDF (repository policy: everything under `models/`), so the file and its assets move together.
+Keep mesh files under the same model directory tree as the URDF, so the file and its assets move together.
 
 ## Visual vs Collision Assets
 

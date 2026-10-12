@@ -1,134 +1,193 @@
-# DXF generator templates
+# DXF drawing templates
 
-Read this file when creating a new `<name>.dxf.py` drawing generator. Copy the
-template for the workflow that applies and replace the TODO markers. Every
-template follows the same contract: `gen_dxf()` takes no arguments and returns
-`{"document": <ezdxf document>}` (or the bare document); the CLI owns output
-paths; validation runs during generation, so cut layers must hold closed
-profiles and open geometry belongs on bend/engrave/reference-named layers.
+Read this file when creating a new `<name>.py` drawing script. Copy the
+template for the workflow that applies and replace the TODO markers.
+
+Every template follows one contract: **the parameterless `@dxf` function
+returns build123d 2D geometry and the engine writes the DXF.** You never
+construct a document, name a file, or think about entities.
+
+- Return a **bare shape** for a single-operation drawing — it lands on the `CUT`
+  layer.
+- Return **`{layer: shape}`** when the drawing genuinely has more than one CAM
+  operation (`CUT` / `ENGRAVE` / `SCORE`).
+- Geometry must lie in the **XY plane**. A face derived from a solid is at that
+  solid's height, so relocate it (`flatten.flatten_face`, or
+  `bd.Location((0, 0, -z)) * face`). The engine refuses off-plane geometry
+  rather than silently writing its XY shadow.
+- Validation runs during generation: cut layers must hold closed profiles, and
+  open geometry belongs on a bend/engrave/reference-named layer.
+- Every script ends with `if __name__ == "__main__": <drawing>()` — the call
+  is what builds it.
 
 ## 1. Standalone drafting (DXF from scratch)
 
-For pure 2D outputs — gaskets, panels, templates, cut layouts — with no 3D
-model behind them. Keep meaningful dimensions as named parameters.
+For pure 2D outputs — gaskets, panels, templates, cut layouts — with no 3D model
+behind them. Keep meaningful dimensions as named constants.
 
 ```python
 """Standalone 2D drawing: <description>."""
 
 from __future__ import annotations
 
-import ezdxf
+from cadgen import build123d as bd
+from cadgen import dxf
 
-# TODO: named dimension parameters
+# TODO: named dimension constants
+WIDTH_MM = 40.0
+HEIGHT_MM = 20.0
+HOLE_D_MM = 4.5
+
+
+@dxf
+def drawing():
+    with bd.BuildSketch() as cut:
+        bd.Rectangle(WIDTH_MM, HEIGHT_MM)
+        bd.Circle(HOLE_D_MM / 2, mode=bd.Mode.SUBTRACT)
+    return cut.sketch
+
+
+if __name__ == "__main__":
+    drawing()
+```
+
+Two layers, when the part is both cut and marked:
+
+```python
+"""Standalone 2D drawing with a marking layer."""
+
+from __future__ import annotations
+
+from cadgen import build123d as bd
+from cadgen import dxf
+
 WIDTH_MM = 40.0
 HEIGHT_MM = 20.0
 
 
-def gen_dxf():
-    document = ezdxf.new("R2010")
-    document.units = ezdxf.units.MM
-    modelspace = document.modelspace()
-    document.layers.add("CUT")
-
-    modelspace.add_lwpolyline(
-        [(0, 0), (WIDTH_MM, 0), (WIDTH_MM, HEIGHT_MM), (0, HEIGHT_MM)],
-        close=True,
-        dxfattribs={"layer": "CUT"},
-    )
-    return {"document": document}
+@dxf
+def drawing():
+    with bd.BuildSketch() as cut:
+        bd.Rectangle(WIDTH_MM, HEIGHT_MM)
+    with bd.BuildSketch() as mark:
+        bd.Text("REV B", font_size=6)
+    return {"CUT": cut.sketch, "ENGRAVE": mark.sketch}
 
 
 if __name__ == "__main__":
-    gen_dxf()
+    drawing()
 ```
 
-## 2. Projection of a generated STEP part
+Text is engraved **outlines**, not DXF `TEXT` entities: cut and marking
+toolchains consume geometry, and font rendering inside CAM is unreliable.
 
-For flat patterns / profiles of a `$cad` model. The `.dxf.py` sits beside the
-`<name>.step.py` it projects and path-loads it (dotted-extension files cannot
-be imported by module name). Keep the drawing logic — typically a `build_dxf()`
-helper built on `cadgen.flatten` — in the `.step.py` or a plain helper module;
-the `.dxf.py` is the drawing entry point. The loaded `.step.py` and its imports
-are recorded as freshness inputs automatically.
+## 2. Flat pattern of a generated STEP part
+
+For a profile of a `$cad` model. The drawing imports the model and calls it,
+exactly as an assembly composes a child: importing a model never builds it,
+and the call inside the drawing's build returns the part's geometry (building
+the part first if it is stale). The drawing's record pins the part's RESULT,
+so a geometry change in the part makes the drawing stale and a comment or
+refactor does not; a constant imported from the part is tracked by value.
 
 ```python
-"""Flat-pattern DXF drawing for <name>; geometry reused from <name>.step.py."""
+"""Flat-pattern DXF drawing for <name>; geometry reused from <name>.py."""
+
+from __future__ import annotations
+
+from cadgen import dxf, flatten
+
+from <name> import <name>          # a child: tracked by its result; importing never builds
+
+THICKNESS_MM = 6.0                 # TODO: the profile face's height
+
+
+KERF = 0.0
+
+
+@dxf
+def drawing():
+    return flatten.flat_pattern(
+        <name>(),
+        coordinate=THICKNESS_MM,   # TODO: which face plane defines the profile
+        kerf=KERF,
+    )
+
+
+if __name__ == "__main__":
+    drawing()
+```
+
+`flat_pattern` is selection + flatten + union + optional kerf offset in one
+call. Do the steps yourself when a part needs them apart — a bracket with
+flanges on several planes selects each one, flattens each with its own
+transform, and unions the result:
+
+```python
+@dxf
+def drawing():
+    part = bracket()
+    faces = [
+        *flatten.planar_faces(part, normal_axis="z", normal_sign=1.0,
+                              coordinate_axis="z", coordinate=3.0),
+        *flatten.planar_faces(part, normal_axis="y", normal_sign=-1.0,
+                              coordinate_axis="y", coordinate=0.0),
+    ]
+    return flatten.union_faces(flatten.flatten_faces(faces))
+```
+
+## 3. Flat pattern of an imported STEP
+
+For a vendor `.step` with no Python source. Read it with `cadgen.read_step`;
+like every file a build reads, it is an input — replacing the STEP makes the
+drawing stale on its own, with no `--force`.
+
+The face selection is a part-specific judgment call: pick the planar face(s)
+that define the cut profile.
+
+Never point `read_step` at a STEP this project GENERATES — that is a model
+whose input changes every time its sibling builds. Keep vendor files in an
+`imported/` directory beside the drawing (see the CAD skill's
+`step-generation.md`), and give the drawing its own stem:
+
+```python
+"""DXF profile of vendor_panel.step."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from cadgen.sources import load_source_module
+from cadgen import dxf, flatten, read_step
 
-_step = load_source_module(Path(__file__).with_name("<name>.step.py"))
-
-
-def gen_dxf():
-    return {
-        "document": _step.build_dxf(),
-    }
+_STEP_PATH = Path(__file__).parent / "imported" / "vendor_panel.step"
 
 
-if __name__ == "__main__":
-    gen_dxf()
-```
-
-## 3. Projection of an imported STEP
-
-For a vendor/imported `.step` with no Python source. Only Python sources are
-freshness inputs — the drawing does not auto-rebuild when the imported STEP
-file changes; rerun with `--force` after replacing it.
-
-The face selection and projection are part-specific judgment calls: pick the
-planar face(s) that define the cut profile and the 2D projection for that
-plane. `cadgen.flatten` owns the projection/union/emission machinery.
-
-```python
-"""DXF projection of <name>.step."""
-
-from __future__ import annotations
-
-from pathlib import Path
-
-import build123d
-import ezdxf
-from cadgen import flatten
-
-_STEP_PATH = Path(__file__).with_name("<name>.step")
+KERF = 0.15
 
 
-def gen_dxf():
-    shape = build123d.import_step(str(_STEP_PATH))
-    document = ezdxf.new("R2010")
-    document.units = ezdxf.units.MM
-    modelspace = document.modelspace()
-    document.layers.add("CUT")
-
-    faces = flatten.planar_faces(
-        shape,
-        normal_axis="z", normal_sign=1.0,      # TODO: the profile face plane
-        coordinate_axis="z", coordinate=0.0,   # TODO: the face location
-    )
-    geometry = flatten.union_projected_faces(
-        [(faces, lambda v: (v.X, v.Y))],       # TODO: projection for that plane
-    )
-    flatten.add_shapely_geometry(modelspace, geometry, layer="CUT")
-    return {"document": document}
+@dxf
+def drawing():
+    part = read_step(_STEP_PATH)
+    top_z = part.bounding_box().max.Z
+    return flatten.flat_pattern(part, coordinate=top_z, kerf=KERF)
 
 
 if __name__ == "__main__":
-    gen_dxf()
+    drawing()
 ```
 
 ## Common additions
 
-- **Bend/fold lines**: draw them on a layer whose name contains "bend"
-  (e.g. `document.layers.add("BEND", linetype="DASHED")`); open geometry is
-  allowed there and downstream tools classify it as bends rather than cuts.
-- **Kerf / tool-radius compensation**: offset closed profiles with
-  `cadgen.flatten.offset_geometry` (shapely geometry) or
-  `cadgen.flatten.offset_closed_points` (point lists); do not hand-offset
-  coordinates.
-- **Circles**: emit holes with `flatten.add_shapely_geometry` (fits circles
-  from projected rings automatically) or `flatten.add_circle_polyline` when
-  drafting directly.
+- **Bend / fold lines**: put them on a layer whose name contains `bend`
+  (`{"CUT": profile, "BEND": fold_lines}`). Open geometry is allowed there, and
+  downstream tools classify it as bends rather than cuts.
+- **Kerf / tool-radius compensation**: `flatten.offset_profile(shape, amount)`,
+  or the `kerf=` argument of `flat_pattern`. Positive grows the profile (cut
+  outside the line), negative shrinks it. Never hand-offset coordinates.
+- **Curves stay curves.** The union and the offset are OCC operations on the real
+  faces, so a filleted corner exports as an `ARC` and a hole as a `CIRCLE`, kerf
+  included. If a drawing comes out as hundreds of short `LINE`s, something fell
+  back to the sampled path — check the union inputs rather than accepting it.
+- **Why did it (not) rebuild?** `cadgen store why <drawing>.py` prints the
+  drawing's gate: its closure files, each part it called with the pinned and
+  current tree, and whether the `.dxf` on disk is the one it wrote.
