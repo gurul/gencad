@@ -2,17 +2,23 @@
 //  photogrammetry-cli
 //
 //  Minimal Mac command line front end for RealityKit's PhotogrammetrySession.
-//  Written for scan2cad WI-14: turn a folder of stills into a metric-scaled
-//  mesh that `scan2cad describe` / `scan2cad draft` can read.
+//  Written for scan2cad WI-14: turn a folder of stills into a mesh, in
+//  metres, that `scan2cad describe` / `scan2cad draft` can read. Real-world
+//  scale is set by RealityKit only when the images carry depth data; see
+//  https://developer.apple.com/documentation/realitykit/capturing-photographs-for-realitykit-object-capture
 //
 //  Assumes:
-//    - macOS 14 or later on Apple silicon (PhotogrammetrySession.isSupported).
+//    - macOS 14 or later on a Mac that PhotogrammetrySession.isSupported
+//      accepts. Apple: a GPU with at least 4 GB of RAM and ray tracing
+//      support, https://developer.apple.com/documentation/realitykit/creating-3d-objects-from-photographs
 //    - The input folder holds only the capture images (HEIC or JPEG), one
 //      object, reasonable overlap. The session reads the folder itself; this
 //      tool does not filter or reorder the files.
 //    - The output path names a FILE ending in .usdz or .obj. RealityKit
-//      itself writes USDZ only: .usda, .usd, .obj and bare directory paths
-//      are all rejected with invalidOutput on the macOS 26 SDK. Asking for
+//      rejected .usda, .usd, .obj and bare directory paths with invalidOutput
+//      when this was observed on the macOS 26 SDK. That is contrary to
+//      Apple's modelFile documentation, which says a directory URL saves an
+//      OBJ and its textures. Asking for
 //      .obj therefore reconstructs to a sibling .usdz first and converts it
 //      with Model I/O, which is what scan2cad reads.
 //
@@ -113,8 +119,9 @@ Options:
   -h, --help             Print this message.
 
 Notes:
-  Output is metric. RealityKit reports positions in meters.
-  Run scan2cad with --units m on the resulting mesh.
+  Output units are meters. The real-world size is right only if
+  the photos carry depth data; otherwise scale it against a
+  caliper measurement. Run scan2cad with --units m on the mesh.
 """
 
 /// Parses the command line.
@@ -307,7 +314,7 @@ func countImages(in folder: URL) -> Int {
 func run(_ options: Options) async {
     guard PhotogrammetrySession.isSupported else {
         fail(
-            "PhotogrammetrySession is not supported on this Mac; Apple silicon with 4 GB or more of memory is required",
+            "PhotogrammetrySession is not supported on this Mac; Apple requires a GPU with at least 4 GB of RAM and ray tracing support",
             .unsupportedHardware
         )
     }

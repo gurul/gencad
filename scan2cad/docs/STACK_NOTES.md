@@ -6,8 +6,8 @@ If something here disagrees with a plan document, this file is what actually run
 
 ## Environment
 
-Repo: /Users/gurucharan/Documents/personal/gencad/scan2cad
-Virtual environment: /Users/gurucharan/Documents/personal/gencad/scan2cad/.venv
+Repo: scan2cad/ inside the gencad repository
+Virtual environment: scan2cad/.venv
 Created with: uv venv --python 3.12 .venv
 uv version: 0.11.27
 Python: 3.12.13
@@ -21,7 +21,13 @@ Always use .venv/bin/python and .venv/bin/pytest.
 The install command that produced this set:
 
     uv pip install --python .venv/bin/python numpy "open3d==0.19.*" cgal \
-        "opencv-python>=4.13,<5" scipy trimesh "build123d==0.11.*" pytest
+        "opencv-python>=4.13,<5" "build123d==0.11.*" pytest
+
+The 2026-08-19 command also named scipy and trimesh. No code in this project
+imports either, so on 2026-10-11 both were removed from the direct
+dependencies in pyproject.toml. scipy is still installed, as a dependency of
+build123d and scikit-learn. trimesh is not, and its pin was removed from
+requirements.txt.
 
 Resulting versions:
 
@@ -29,12 +35,13 @@ numpy 2.5.2
 open3d 0.19.0
 cgal 6.0.1.post202410241521
 opencv-python 4.14.0.94
-scipy 1.18.0
-trimesh 5.0.0
+scipy 1.18.0 (transitive since 2026-10-11)
 build123d 0.11.1
 pytest 9.1.1
 
 requirements.txt was frozen from this venv after the smoke gate passed.
+On 2026-10-11 the trimesh line was removed by hand, not by a new freeze (see
+above); trimesh has no required dependencies, so no other line changes.
 
 ## Smoke gate
 

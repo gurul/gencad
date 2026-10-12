@@ -43,8 +43,10 @@ ORIENT_K = 30  # k for orient_normals_consistent_tangent_plane
 # Millimetres per unit of the named input unit.
 _UNIT_SCALE_MM: dict[str, float] = {"mm": 1.0, "m": 1000.0}
 
-# Photogrammetry meshes arrive metric-scaled in metres, so a file with no other
-# information is assumed to be in metres. Synthetic parts are authored in
+# Photogrammetry meshes from tools/photogrammetry-cli arrive in metres, so a
+# file with no other information is assumed to be in metres. Their real-world
+# scale is right only if the photographs carried depth data; otherwise the
+# user scales the result against a caliper (docs/CAPTURE_PROTOCOL.md step 8). Synthetic parts are authored in
 # millimetres and their caller passes units="mm" explicitly.
 DEFAULT_UNITS = "m"
 

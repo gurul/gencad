@@ -26,7 +26,11 @@ A run passes when both hold:
      built with, and
   2. every dimension the report prints is a real dimension of the part, and
      every dimension in the required list is found, both within
-     max(3 x sigma, 0.5 mm).
+     max(3 x sigma, 0.5 mm). A required dimension is found only by a reported
+     dimension of the same kind: a length by a plane-to-plane gap, a diameter
+     by a cylinder diameter (REQUIRED_KIND). Before 2026-10-11 any reported
+     value counted, so a spurious cylinder length could stand in for a box
+     length; sweep numbers produced before that date used the looser match.
 
 DEGRADATION SMOKE (--degraded)
 ------------------------------
@@ -111,6 +115,19 @@ REQUIRED_MM: dict[str, tuple[float, ...]] = {
     "lbracket": (50.0, 5.0),
     "bossbox": (80.0, 50.0, 8.0),
 }
+
+# What kind of reported dimension may recover each required one. A "length" is
+# recovered only by a plane-to-plane gap (report names width, depth, height,
+# with an optional _N suffix); a "diameter" only by a cylinder's *_diameter.
+# A cylinder's *_length never counts: a spurious cylinder fitted along a box
+# edge can report a length that lands on a true box dimension by accident.
+REQUIRED_KIND: dict[str, dict[float, str]] = {
+    "bracket": {60.0: "length", 40.0: "length", 20.0: "length", 12.5: "diameter"},
+    "lbracket": {50.0: "length", 5.0: "diameter"},
+    "bossbox": {80.0: "length", 50.0: "length", 8.0: "diameter"},
+}
+
+_GAP_NAME_RE = re.compile(r"^(?:width|depth|height)(?:_[0-9]+)?$")
 
 _REPORT_DIMENSION_RE = re.compile(
     r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*) = (?P<value>[0-9]+(?:\.[0-9]+)?) mm,"
@@ -209,6 +226,44 @@ def _report_dimensions(report: str) -> dict[str, float]:
     return values
 
 
+def dimension_kind(name: str) -> str | None:
+    """Return "length" for a plane-gap name, "diameter" for a cylinder
+    diameter, and None for anything else (a cylinder length included)."""
+    if _GAP_NAME_RE.match(name):
+        return "length"
+    if name.endswith("_diameter"):
+        return "diameter"
+    return None
+
+
+def match_required(
+    reported: dict[str, float], model: str, tolerance: float
+) -> tuple[dict[float, float | None], list[str]]:
+    """Match each required true dimension of `model` to the reported values.
+
+    Each required dimension is compared only with reported dimensions of its
+    own kind (REQUIRED_KIND). Returns (errors, problems): `errors` maps each
+    required dimension to the smallest same-kind error within `tolerance`, or
+    None; `problems` holds one sentence per required dimension that was not
+    recovered.
+    """
+    errors: dict[float, float | None] = {t: None for t in REQUIRED_MM[model]}
+    problems: list[str] = []
+    for truth_mm in REQUIRED_MM[model]:
+        kind = REQUIRED_KIND[model][truth_mm]
+        candidates = [
+            abs(value - truth_mm)
+            for name, value in reported.items()
+            if dimension_kind(name) == kind
+        ]
+        best = min(candidates) if candidates else None
+        if best is not None and best <= tolerance:
+            errors[truth_mm] = best
+        else:
+            problems.append(f"the {truth_mm} mm dimension was not recovered")
+    return errors, problems
+
+
 def _count_phrase(planes: int, cylinders: int) -> str:
     """Return "6 planes and 1 cylinder", with each noun agreeing with its count."""
     plane_word = "plane" if planes == 1 else "planes"
@@ -273,13 +328,9 @@ def run_once(
                 f"reported {name} = {value} mm, which is no dimension of the part"
             )
 
-    for truth_mm in REQUIRED_MM[model]:
-        candidates = [abs(value - truth_mm) for value in reported.values()]
-        best = min(candidates) if candidates else None
-        if best is not None and best <= tolerance:
-            errors[truth_mm] = best
-        else:
-            problems.append(f"the {truth_mm} mm dimension was not recovered")
+    found, missing = match_required(reported, model, tolerance)
+    errors.update(found)
+    problems.extend(missing)
 
     return Outcome(
         model=model,

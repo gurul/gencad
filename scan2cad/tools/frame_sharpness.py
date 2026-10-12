@@ -1,6 +1,6 @@
 """Print one sharpness number per capture frame, so a blind user can judge focus.
 
-Why this exists: docs/MORNING_PROTOCOL.md step 11 decides whether to open the
+Why this exists: docs/CAPTURE_PROTOCOL.md step 11 decides whether to open the
 autofocus-lock contingency. That decision was originally written as "the
 reconstruction visibly fails" and "look for blurry frames", which is not a test
 a user working without sight can run. This tool turns the blur half of it into a
@@ -14,6 +14,12 @@ one at the same focus. Only the spread within one capture session means
 anything, which is why the summary reports each frame against the median of the
 session.
 
+What it cannot see. Because each frame is judged against the session median, a
+session in which every frame is equally out of focus (focus locked at the wrong
+distance, for example) has no outliers and is not flagged. The tool prints the
+median and a warning on every run for this reason. The median is comparable only
+with another session of the same object under the same light.
+
 HEIC files, which is what an iPhone AirDrops, are not readable by OpenCV. On
 macOS they are converted through `sips` into a temporary JPEG first. If `sips`
 is missing the file is reported as unreadable and skipped, by name.
@@ -24,7 +30,8 @@ Usage:
 
 Reading the output: frames flagged "far below the session median" are the
 candidates for focus or exposure hunting. A handful is normal. If a third of the
-session is flagged, that is the evidence step 11 asks for.
+session is flagged, that is the evidence step 11 asks for. No flagged frame does
+not rule focus out; see "What it cannot see" above.
 """
 
 from __future__ import annotations
@@ -43,6 +50,16 @@ import numpy as np
 # a reporting threshold for a human, not a pipeline parameter: nothing downstream
 # reads it, and it never changes a fitted number.
 LOW_FRACTION = 0.4
+
+# Printed on every run. The test compares frames with each other, so a session
+# in which every frame is equally soft passes it. Only a comparison with a
+# session known to be sharp, of the same object under the same light, or a look
+# at frames at full size, can catch that.
+UNIFORM_MISFOCUS_WARNING = (
+    "Warning. This test compares frames only with each other.",
+    "It cannot detect a session where every frame is equally out of focus.",
+    "Compare the median with a session of the same object that you know was sharp.",
+)
 
 # Extensions OpenCV cannot open on this Mac and that `sips` can convert.
 _NEEDS_CONVERSION = (".heic", ".heif")
@@ -111,12 +128,13 @@ def main(argv: list[str] | None = None) -> int:
     low = [name for name, value in scores if value < LOW_FRACTION * median]
     if not low:
         print("No frame is far below the session median.")
-        print("Focus hunting is not the explanation for a bad reconstruction.")
-        return 0
-    print(f"Frames far below the median: {len(low)} of {len(scores)}.")
-    for name in low:
-        print(f"Soft frame: {name}.")
-    print("Delete those frames and reconstruct again before opening any gate.")
+    else:
+        print(f"Frames far below the median: {len(low)} of {len(scores)}.")
+        for name in low:
+            print(f"Soft frame: {name}.")
+        print("Delete those frames and reconstruct again before opening any gate.")
+    for line in UNIFORM_MISFOCUS_WARNING:
+        print(line)
     return 0
 
 

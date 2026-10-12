@@ -1,7 +1,9 @@
 # scan2cad morning report
 
 Written overnight, 2026-08-19.
-Read this first. It is short. The details live in docs/.
+This is a dated record. It was moved here from scan2cad/MORNING_REPORT.md on
+2026-10-11. Corrections made on that date are marked "Correction, 2026-10-11".
+The current capture steps are in docs/CAPTURE_PROTOCOL.md.
 
 ## What you asked for
 
@@ -17,6 +19,7 @@ The original scan-to-CAD pipeline died in review, component by component.
 LeapDepth cannot be extended for scanning. No poses, no confidence, smoothed millimetre depth. Killed.
 ARKit pose logging: drifts 20 to 40 mm per second of motion. Killed.
 The LiDAR fusion leg: measured plus or minus 10 mm with a 5 cm feature floor. Killed.
+Correction, 2026-10-11: the sourced figures are about 20 mm per second of ARKit drift (Kim et al., Sensors 2022), and LiDAR models accurate only above about 10 cm object size, with a detection limit around 5 cm (Luetzenburg et al., Scientific Reports 2021). Sources are listed in docs/DECISIONS.md.
 COLMAP: nothing for it to do tonight, kept as a gated contingency.
 Automatic B-rep assembly: unsolved in the literature, already sold by Backflip for 20 dollars a month. Killed.
 Sub-millimetre and press-fit claims: embargoed until real captures are measured.
@@ -33,20 +36,33 @@ It does not compete with Backflip. It competes with silence: no incumbent produc
 ## What was built and verified
 
 The repo is at ~/Documents/personal/gencad/scan2cad. Four commits. 284 tests, all passing, re-run and confirmed after the build agents finished.
+Correction, 2026-10-11: the project is now the scan2cad/ directory of the gencad repository.
+"Four commits" counted the standalone repository before this report was committed; the report itself was the fifth, commit 7592e662.
+gencad took that history in through a subtree merge, commit 83cfb184, so git log -- scan2cad in gencad lists only the merge and later commits.
 
 The pipeline: mesh or point cloud, then CGAL Efficient RANSAC for planes and cylinders, then dominant-frame fitting and snapping with a full audit log, then the report and the build123d skeleton and STEP.
+PLUMBING VERIFICATION ONLY -- synthetic noise model; NOT predictive of iPhone accuracy.
+That caption covers every synthetic number in this section.
 The noise-zero gate: all three synthetic parts recovered exactly, every dimension within max of 0.05 mm and 0.1 percent, declared before any run.
 The noise sweep, frozen thresholds, no overrides possible: at sigma 0.1 mm, 29 of 30 runs pass. At sigma 0.5 mm, 9 of 30. At sigma 1.0 mm, none.
 Most failures at higher noise are spurious extra primitives, not wrong dimensions. Failed runs often still recovered dimensions within 0.1 mm.
+Correction, 2026-10-11: that last sentence is not supported.
+The sweep matched each true dimension to the nearest value of any reported dimension, so a spurious cylinder's length could count as a box length.
+scripts/sweep_noise.py now matches by kind: a length only to a plane-to-plane gap, a diameter only to a cylinder diameter.
+In a rerun on 2026-10-11 with that fix, at sigma 1.0 mm the bracket's 20 mm height was recovered in 0 of 10 runs, where the 2026-08-19 run reported 10 of 10.
+At sigma 1.0 mm the bracket, L-bracket and box-shell lengths were recovered in 0 to 4 of 10 runs each; only the diameters were recovered in all 10.
+The pass counts in the rerun were 29 of 30 at sigma 0.1 mm, 14 of 30 at sigma 0.5 mm, and 0 of 30 at sigma 1.0 mm.
+The fitter cannot be seeded, so pass counts move by a few runs between reruns. The rerun output is out/sweep_report.txt, which git does not track.
 Degraded smoke, reported as findings, not tuned away: single-sided coverage and flipped normals hurt badly. Details in out/sweep_report_degraded.txt.
 
 A bonus beyond the plan: tools/photogrammetry-cli is a working Mac command line around Apple PhotogrammetrySession, built and smoke-tested tonight.
 It reconstructed Apple's 36-photo sample in 21 seconds, converted to OBJ, and the mesh ran through scan2cad describe end to end.
 So the chain has already digested one real photogrammetry mesh, not only synthetics.
+Correction, 2026-10-11: that mesh was not checked for scale. Without depth data in the photographs, RealityKit does not set real-world size, and the capture protocol now makes a caliper scale calibration mandatory.
 
 ## What to do this morning
 
-Follow docs/MORNING_PROTOCOL.md. Numbered steps, written for working alone.
+Follow docs/CAPTURE_PROTOCOL.md, then named MORNING_PROTOCOL.md. Numbered steps, written for working alone.
 The short version:
 Print out/reference_part.stl and caliper its five known dimensions.
 Photograph a real object with the stock camera, sixty to eighty stills.

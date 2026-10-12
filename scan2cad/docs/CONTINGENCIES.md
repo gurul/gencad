@@ -22,8 +22,8 @@ its own intrinsics.
 
 Why it might be needed.
 Optical image stabilisation and autofocus vary the intrinsics by 5 to 22
-micrometres between shots, which is the dominant threat to photogrammetry
-accuracy, and neither the stock Camera app nor EXIF data can express or control
+micrometres between shots (unsourced), which is the dominant threat to
+photogrammetry accuracy (unsourced), and neither the stock Camera app nor EXIF data can express or control
 it.
 
 What it must never become.
@@ -38,13 +38,16 @@ The gate.
 Morning evidence that stock camera bursts with automatic exposure and
 automatic focus locked actually break the reconstruction, or blow the error
 budget.
-Concretely, step 11 of docs/MORNING_PROTOCOL.md, whose two halves are both
+Concretely, step 11 of docs/CAPTURE_PROTOCOL.md, whose two halves are both
 machine readable and neither of which needs sight: the reconstruction failed,
 evidenced by a non zero exit, an error message, an OBJ with almost no vertices
 or faces, or scan2cad reporting fewer than two primitives; and the failure is
 attributable to focus or exposure hunting rather than to scale or to coverage,
 evidenced by tools/frame_sharpness.py naming a third or more of the session as
 far below its median sharpness.
+That tool compares frames with each other, so it cannot detect a session in
+which every frame is equally out of focus. It prints the median and a warning
+on every run; step 11 says how to check the median.
 
 Cost if opened.
 Roughly 200 lines of Swift over an existing Apple sample, plus a device build.
@@ -71,11 +74,17 @@ All three are permanently rejected in docs/DECISIONS.md, and opening this
 ticket does not reopen them.
 
 The gate.
-Step 10 of docs/MORNING_PROTOCOL.md, which depends on the step 8 caliper audit.
-The gate opens only if PhotogrammetrySession's scale error exceeds 0.3
-millimetres, or 0.3 percent, on the roughly 100 millimetre reference part
-dimensions.
-If the audit passes, do not install COLMAP.
+Step 10 of docs/CAPTURE_PROTOCOL.md, which uses the step 8 scale calibration.
+It is a scale ratio gate, separate from the one to ten millimetre per-feature
+band of step 8.
+It applies only to a capture whose photographs carried depth data, because
+without depth data RealityKit does not set real-world scale and a scale
+correction is expected.
+The gate opens only if the mean of the three caliper to scan ratios on the
+reference part's block dimensions differs from 1.0 by more than 0.3 percent.
+Those dimensions are 60, 40 and 20 millimetres (tools/reference_part.py), so
+0.3 percent is at most 0.18 millimetres, and per-feature error can mask it.
+If the gate does not open, do not install COLMAP.
 
 Cost if opened.
 About 30 minutes for brew install colmap and its 23 dependencies, plus the
@@ -104,25 +113,23 @@ About 50 lines and an afternoon at most. It is the cheapest of the three and
 therefore the easiest one to write for no reason, which is why its gate is a
 conjunction.
 
-## Status notes from the overnight build
+## Status of the items that were allowed to be dropped
 
-This section records what the overnight build actually did with the items that
-were allowed to be dropped. It is written to be corrected in the morning if it
-disagrees with what is on disk.
+Checked against the repository on 2026-10-11.
 
 Mat audit tool. Not stubbed. It shipped in full.
 docs/SYNTHESIS.md ruling 2 permitted the ChArUco mat audit to be stubbed if it
 cost more than about an hour, and that escape hatch was not used.
-tools/mat_audit.py exists, out/charuco_a4.png exists, and step 9 of
-docs/MORNING_PROTOCOL.md can be run as written.
+tools/mat_audit.py exists, and step 9 of docs/CAPTURE_PROTOCOL.md can be run as
+written. out/charuco_a4.png is not tracked by git; tools/mat_audit.py board
+writes it.
 Note that the printed board's nominal long span is 139.87 millimetres and not
 140.0, because one square rounds to a whole number of pixels at 300 dots per
 inch. Divide the caliper reading by 139.87.
 The tool remains an audit only. It is not a pose source and it is not a
-pipeline stage, so nothing else in the morning depends on it.
+pipeline stage, so nothing else in the protocol depends on it.
 
 Photogrammetry command line app.
-This was timeboxed to 45 minutes and is skippable.
-If the binary was not built overnight, step 3 of docs/MORNING_PROTOCOL.md tells
-you how: open Apple's sample project in Xcode and press Build.
-Its absence is a note, never a build failure.
+It shipped as this project's own Swift package at tools/photogrammetry-cli,
+not as Apple's sample project. Step 3 of docs/CAPTURE_PROTOCOL.md builds it
+with swift build.

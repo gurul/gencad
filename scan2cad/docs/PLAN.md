@@ -1,5 +1,13 @@
 # SCAN2CAD -- DEFINITIVE OVERNIGHT BUILD PLAN
 
+> Record of 2026-08-19, kept as written except for file names. Since then
+> the protocol, then named MORNING_PROTOCOL.md, was renamed docs/CAPTURE_PROTOCOL.md and
+> MORNING_REPORT.md moved to docs/history/2026-08-19-morning-report.md
+> (2026-10-11). Where section 5 below expects a metric-scaled mesh or a
+> roughly 100 mm reference dimension, docs/CAPTURE_PROTOCOL.md supersedes it:
+> without depth data in the photographs the mesh scale is not trusted, and the
+> largest reference dimension is 60 mm.
+
 **Product sentence (fixed, non-negotiable):** a screen-reader-native describe-and-draft tool that turns any phone-scanned mesh into a plain-language geometry report and an editable named-dimension build123d script, where the scan is the draft and the caliper is the truth.
 
 ## 0. Ground rules encoding the verdicts (implementation agents may not deviate)
@@ -47,7 +55,7 @@ scan2cad/
     sweep_noise.py # characterization, NOT pytest; writes out/sweep_report.txt
     check_step_freecad.py # FreeCADCmd validation helper
   docs/
-    MORNING_PROTOCOL.md
+    CAPTURE_PROTOCOL.md
     DECISIONS.md # the six verdicts, condensed, with embargoed-claims list
     CONTINGENCIES.md # three gated tickets (below)
   out/ # gitignored: STEP files, sweep reports, demo skeletons
@@ -179,7 +187,7 @@ class SceneModel:
 
 **WI-11 -- ChArUco mat scale audit** (`tools/mat_audit.py`, `test_mat_audit_synthetic.py`) -- fully parallel, independent
 - Goal (audit tool, NOT a pipeline stage, NOT a pose source): given images of a scene containing a ChArUco board (spec fixed here: `cv2.aruco.DICT_5X5_1000`, 7 x 5 squares, 20 mm nominal square, 15 mm marker), detect corners, solvePnP with provided intrinsics, and output the implied metric scale factor between the image set's reconstruction units and true mm, with `--mat-scale-correction FACTOR` applied (FACTOR = caliper-measured span / nominal span, entered in the morning). Tonight's validation is fully synthetic: render board corner projections through a known pinhole camera at 5 poses, add 0.3 px Gaussian pixel noise, recover scale.
-- Acceptance: scale recovery error < 0.1% on clean synthetic; < 0.5% at 1.0 px noise; report degradation curve. Also emits `out/charuco_a4.png` (the printable board, 300 DPI, with nominal span in the filename metadata and in MORNING_PROTOCOL.md).
+- Acceptance: scale recovery error < 0.1% on clean synthetic; < 0.5% at 1.0 px noise; report degradation curve. Also emits `out/charuco_a4.png` (the printable board, 300 DPI, with nominal span in the filename metadata and in CAPTURE_PROTOCOL.md).
 - Size: ~220 src + ~100 test lines. ~2 h.
 
 **WI-12 -- Reference part model** (`tools/reference_part.py`) -- parallel, independent
@@ -190,14 +198,14 @@ class SceneModel:
 **WI-13 -- Docs + morning decision report** -- docs parallelizable now; final report assembly is the last sequential item
 - `docs/DECISIONS.md`: the six verdicts condensed to one paragraph each + the permanent-rejection list (ARKit poses, pose_prior_mapper, frozen-pose triangulation, dense MVS, LiDAR-in-fitting, silent snapping) + the embargoed-claims list (section 7 below).
 - `docs/CONTINGENCIES.md`: three tickets, each with an explicit evidence gate (section 6 below).
-- `docs/MORNING_PROTOCOL.md`: full contents in section 5 below.
-- Final `out/MORNING_REPORT.md` assembled after WI-10: what was built, test results with mandatory captions, kill rationale one-pager (plus or minus 10 mm LiDAR vs 0.2-0.4 mm print tolerance; 5 cm floor vs 2 mm walls), the day's decision gates, and the protocol pointer. This report is prose for the user's screen reader: short lines, no tables.
+- `docs/CAPTURE_PROTOCOL.md`: full contents in section 5 below.
+- Final morning report (now `docs/history/2026-08-19-morning-report.md`) assembled after WI-10: what was built, test results with mandatory captions, kill rationale one-pager (plus or minus 10 mm LiDAR vs 0.2-0.4 mm print tolerance; 5 cm floor vs 2 mm walls), the day's decision gates, and the protocol pointer. This report is prose for the user's screen reader: short lines, no tables.
 
 **WI-14 (best-effort, timeboxed 45 min, may be skipped without affecting the gate) -- Apple PhotogrammetrySession Mac CLI**
 - Goal: de-risk the morning by building Apple's "Creating a Photogrammetry Command-Line App" sample on this Mac (Mac-side Swift, no device, no signing -- this does not violate the iOS kill). Smoke it on Apple's downloadable sample image set if fetchable; otherwise stop at a successful build.
-- Acceptance: binary exists and prints usage. On any friction past 45 min, abandon and note in MORNING_PROTOCOL.md that the user builds it in the morning (Xcode project, one Build command).
+- Acceptance: binary exists and prints usage. On any friction past 45 min, abandon and note in CAPTURE_PROTOCOL.md that the user builds it in the morning (Xcode project, one Build command).
 
-## 5. MORNING_PROTOCOL.md contents (the user's physical steps tomorrow)
+## 5. CAPTURE_PROTOCOL.md contents (the user's physical steps tomorrow)
 
 Written as numbered spoken-friendly steps:
 
@@ -221,7 +229,7 @@ Written as numbered spoken-friendly steps:
 2. **COLMAP sparse + GCP backend.** Sparse SfM with per-image intrinsics refinement, mat corners as ground-control points, behind `GeometrySource`. Never pose_prior_mapper, never known-pose triangulation, never dense MVS. GATE: step-10 caliper audit failure.
 3. **Stray Scanner pose-CSV parser** (~50 lines). GATE: contingency 2 active AND a scale prior measurably needed.
 
-## 7. What tonight's build MUST NOT claim (verbatim into DECISIONS.md and MORNING_REPORT.md)
+## 7. What tonight's build MUST NOT claim (verbatim into DECISIONS.md and the morning report)
 
 - No sentence of the form "the pipeline achieves plus or minus X mm" -- synthetic numbers are plumbing verification only; the iPhone-accuracy claim is embargoed until step-8 real-capture audits exist.
 - No press-fit, mating-fit, or sub-mm claims, ever -- the two-channel model makes them unnecessary by design.
@@ -244,7 +252,7 @@ WI-0 (sequential gate: scaffold + venv + primitives.py + thresholds.py)
   +-- Track H: WI-13 docs (protocol/decisions/contingencies) -- fully independent
   +-- Track I: WI-14 (timeboxed, skippable)
 Then sequential: WI-8 (CLI) -> WI-10 (e2e gate, then sweep, then degraded smoke)
-              -> WI-13 final MORNING_REPORT.md assembly
+              -> WI-13 final morning report assembly
 ```
 
-Up to 6 agents concurrently after WI-0 (A, B/C/D as three, E, F, G+H combined). Estimated totals: ~2,400 src/test lines; critical path about WI-0 -> WI-1 -> WI-3 -> WI-4 -> WI-8 -> WI-10 -> report about 8-9 h; parallel tracks fit inside it. If time runs short: drop WI-14 first, then the noise sweep, then degraded smoke; the noise=0 gate, the emitter, the report, and MORNING_PROTOCOL.md are never dropped.
+Up to 6 agents concurrently after WI-0 (A, B/C/D as three, E, F, G+H combined). Estimated totals: ~2,400 src/test lines; critical path about WI-0 -> WI-1 -> WI-3 -> WI-4 -> WI-8 -> WI-10 -> report about 8-9 h; parallel tracks fit inside it. If time runs short: drop WI-14 first, then the noise sweep, then degraded smoke; the noise=0 gate, the emitter, the report, and CAPTURE_PROTOCOL.md are never dropped.

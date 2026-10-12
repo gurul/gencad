@@ -75,7 +75,21 @@ tools holds standalone helpers that are not pipeline stages.
 scripts holds characterisation and validation runners, which are not tests.
 tests holds the suite; tests/test_e2e_noise0.py is the gate that matters.
 out holds generated artefacts and is not tracked by git.
-docs holds the plan, the verdicts, the rulings, and the stack notes.
+docs holds the project records and the working guides:
+
+- docs/CAPTURE_PROTOCOL.md, the physical steps for a real capture and the
+  first accuracy audit.
+- docs/DECISIONS.md, the condensed decision record, with sources.
+- docs/VERDICTS.md, the 2026-08-19 kill review in long form, a dated record.
+- docs/SYNTHESIS.md, the rulings that resolve verdicts against the plan.
+- docs/PLAN.md, the 2026-08-19 build plan, a dated record.
+- docs/CONTINGENCIES.md, the three gated tickets.
+- docs/STACK_NOTES.md, the working import paths, versions and binary paths.
+- docs/history/, dated session records; 2026-08-19-morning-report.md is the
+  overnight build report.
+
+tools/photogrammetry-cli holds the Mac reconstruction tool; its README states
+what its output scale can and cannot be trusted for.
 
 Read docs/STACK_NOTES.md before touching the environment.
 It records the working import paths and the FreeCAD binary path.

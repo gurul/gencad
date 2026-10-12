@@ -2,7 +2,9 @@
 //
 // Standalone Swift package for the scan2cad photogrammetry front end.
 //
-// Assumes: Xcode command line tools with a macOS 14+ SDK, Apple silicon.
+// Assumes: Xcode command line tools with a macOS 14+ SDK, and a Mac that
+// RealityKit Object Capture supports (Apple: a GPU with at least 4 GB of RAM
+// and ray tracing support).
 // No external package dependencies, so `swift build` works with no network.
 
 import PackageDescription

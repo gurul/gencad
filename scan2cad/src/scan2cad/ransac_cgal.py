@@ -11,6 +11,11 @@ only). Spheres, cones and tori are never enabled; if a future caller enables
 them anyway, `params.py` reports them as unsupported and they are skipped with
 a recorded reason rather than crashing the run.
 
+Method reference: R. Schnabel, R. Wahl, R. Klein, "Efficient RANSAC for
+Point-Cloud Shape Detection", Computer Graphics Forum 26(2), 214-226, 2007,
+as cited by the CGAL Shape Detection user manual,
+https://doc.cgal.org/latest/Shape_detection/index.html
+
 Why the fitted parameters are recomputed here
 ---------------------------------------------
 CGAL reports minimal-sample fits, not least-squares refits (docs/STACK_NOTES.md,
