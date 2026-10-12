@@ -17,7 +17,9 @@ dump_board ──▶ geometry.json ──▶ route ──▶ routes.json ──�
 
 ## Requirements
 
-- **KiCad 7+** (developed against KiCad 10). The scripts that need the
+- **KiCad 8+** (developed against KiCad 10.0.5). `drc.py` and
+  `converge.py` call `kicad-cli pcb drc --format json`, which first shipped
+  in KiCad 8.0 ([release notes](https://www.kicad.org/blog/2024/02/Version-8.0.0-Released/)). The scripts that need the
   `pcbnew` bindings re-execute themselves under KiCad's bundled Python
   automatically (`kicad_env.py`; override with `KICAD_PYTHON` /
   `KICAD_CLI`).

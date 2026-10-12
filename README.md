@@ -39,7 +39,7 @@ agent ──(MCP)──▶ gencad server ──▶ freecadcmd (FreeCAD headless)
   close the mechanical half: [pcbtools/README.md](pcbtools/README.md)
 - **`text-to-cad/`** — vendored from
   [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)
-  (release 0.4.19, MIT), which gencad builds on as its base: a library of
+  (release 0.4.20, MIT), which gencad builds on as its base: a library of
   agent skills for CAD, CAE and CAM — generation with STEP/STL/3MF export, a
   local CAD Viewer, DXF drawings, robot descriptions, G-code slicing, part
   sourcing, and more. How the vendoring, upstream sync, and local patches
@@ -65,6 +65,22 @@ agent ──(MCP)──▶ gencad server ──▶ freecadcmd (FreeCAD headless)
   is the generative-design counterpart to gencad's scripted loop. Submodule,
   not vendored — how it is pinned and updated:
   [docs/geofield-bracket.md](docs/geofield-bracket.md)
+- **`models/`** — example parts built with this loop. Each `build_*.py` writes
+  its `.FCStd`/`.step` beside itself (outputs are gitignored, so run the
+  script to regenerate them); `section_*.png` are sample section renders.
+- **`scripts/`** — upkeep for the vendored `text-to-cad/` tree
+  (`pull-text-to-cad.sh`, `apply-gencad-patches.sh`); see
+  [docs/vendoring.md](docs/vendoring.md)
+
+## Docs
+
+- [docs/prompting.md](docs/prompting.md) — how to state a part so the loop converges
+- [docs/vendoring.md](docs/vendoring.md) — how `text-to-cad/` is vendored, patched and synced
+- [docs/pcb.md](docs/pcb.md) — pcb/Zener, the electrical side of the loop
+- [docs/chili3d.md](docs/chili3d.md) — the browser CAD app for human inspection
+- [docs/geofield-bracket.md](docs/geofield-bracket.md) — the generative bracket submodule
+- [pcbtools/README.md](pcbtools/README.md) — headless KiCad layout automation
+- [scan2cad/README.md](scan2cad/README.md) — mesh scan to editable CAD draft
 
 ## Setup
 
@@ -93,7 +109,8 @@ one-time setup, then launch:
 
 ```bash
 uv venv --python 3.12 .venv-viewer
-uv pip install --python .venv-viewer/bin/python cadgen==0.4.19
+uv pip install --python .venv-viewer/bin/python \
+  -r text-to-cad/skills/cad-viewer/requirements.txt   # pins cadgen to the vendored release
 
 cd text-to-cad/skills/cad-viewer
 VIEWER_CAD_PYTHON=$PWD/../../../.venv-viewer/bin/python \
@@ -105,44 +122,18 @@ Then open `http://127.0.0.1:3245/<absolute model dir>?file=<model>` — e.g.
 
 ### chili3d
 
-[chili3d](https://github.com/xiangechen/chili3d) is a full browser CAD app
-(TypeScript + WebAssembly OpenCascade) that makes a great zero-install
-inspection stop for gencad output: the hosted app at
-[chili3d.com](https://chili3d.com) imports the exported `.step` directly
-(New Document → Import), giving you a real B-rep view with orbit, measure,
-section and even boolean edits — no local server, no Python env. Where the
-vendored Viewer is the scripted preview in the agent loop, chili3d is the
-human-in-the-loop end of the same pipeline: hand it to whoever needs to poke
-at the part without installing FreeCAD. It is also checked in as the
-`chili3d/` submodule, pinned, for offline or version-stable use:
-
-```bash
-git submodule update --init --recursive
-cd chili3d && npm install && npm run dev   # http://localhost:8080
-```
-
-Details, the local-build notes and an agent-driven import recipe:
-[docs/chili3d.md](docs/chili3d.md).
+For a zero-install human inspection stop, open the exported `.step` in the
+hosted app at [chili3d.com](https://chili3d.com) (New Document → Import). The
+pinned `chili3d/` submodule, the local build and an agent-driven import recipe
+are in [docs/chili3d.md](docs/chili3d.md).
 
 ### pcb / Zener — the electrical side
 
-[diodeinc/pcb](https://github.com/diodeinc/pcb) (MIT) brings the same loop to
-circuit boards: schematics are code — Zener, a Starlark-based language — that
-`pcb build` validates headlessly and `pcb layout` turns into KiCad layout
-files. Where gencad scripts the enclosure, pcb scripts the board inside it,
-so both halves of a fit like the claude-pet case's PCB-derived bosses and
-hole-grid gauge plate can come from reviewable source. It is an installed
-CLI with its own versioned toolchain manager (like FreeCAD/KiCad, not a
-submodule):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/diodeinc/pcb/main/install.sh | bash
-pcb build blinky.zen     # validate a design (no KiCad needed)
-pcb layout blinky.zen    # generate the KiCad layout (KiCad 10.x)
-```
-
-Install options, the quick-start blinky, and the command reference:
-[docs/pcb.md](docs/pcb.md).
+[diodeinc/pcb](https://github.com/diodeinc/pcb) (MIT) scripts the circuit
+board the way gencad scripts the enclosure: Zener schematics are code that
+`pcb build` validates headlessly and `pcb layout` turns into KiCad files. It
+is an installed CLI with its own toolchain manager, not a submodule. Install,
+quick start and command reference: [docs/pcb.md](docs/pcb.md).
 
 ## Driving it: prompting the loop
 

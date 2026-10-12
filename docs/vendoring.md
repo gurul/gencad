@@ -2,7 +2,7 @@
 
 `text-to-cad/` is vendored from
 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)
-(release 0.4.19, upstream commit `16e90db6`, MIT — see its bundled `LICENSE`).
+(release 0.4.20, upstream commit `02ecd59d`, MIT — see its bundled `LICENSE`).
 Full credit to [@earthtojake](https://github.com/earthtojake) and the
 text-to-cad contributors.
 
