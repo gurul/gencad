@@ -1,0 +1,173 @@
+"""Viewer format-identity checks may only go DOWN.
+
+The viewer renders every format through one shared component stack, but historically
+gated every feature per format with identity checks (``renderFormat === RENDER_FORMAT.X``,
+``isMeshRenderFormat(...)``, the ``xxxMode`` boolean piles). Each one is a place a new
+format must be hand-added and a place an improvement fails to reach the other formats.
+That is not hypothetical: the Orbit button was gated off per format independently and
+had to be fixed twice, and one format grew a parallel export route to an endpoint the
+server does not implement.
+
+The fix is the capability registry (``packages/core/src/lib/renderCapabilities.js``):
+code asks *what a format can do*, not *what it is*. This test ratchets the old pattern
+downward so it cannot grow back — without it the count creeps up again one feature at a
+time and the unification silently rots.
+
+If this test fails because you ADDED an identity check: use a capability instead. If you
+genuinely removed some, lower the budget in the same commit.
+"""
+
+from __future__ import annotations
+
+import re
+import unittest
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+UI_ROOT = REPO_ROOT / "packages" / "ui" / "src"
+CLIENT_ROOT = UI_ROOT / "renderers" / "step"
+
+# Every remaining identity check is a unification candidate. Lower these as phases land;
+# never raise them.
+#
+# 13 -> 0. Every check was the STEP renderer asking whether an entry was a STEP, inside a
+# renderer whose registry match already guarantees it. The file view asked eight times; the
+# STEP artifact helpers took a ``sourceFormat`` that only ever arrived as STEP (they existed
+# so a DXF, served by the same renderer then, would not get a STEP artifact card); the asset
+# loaders were allowlisted as "per-format" long after every other format had its own
+# renderer. At 0 this is a regression gate: one reappearing check fails it.
+MAX_RENDER_FORMAT_CHECKS = 0
+MAX_FORMAT_PREDICATE_CALLS = 0
+
+# Files allowed to know about concrete formats, because deciding *which* format an entry
+# is, or loading it, is their whole job. Everything else must go through capabilities.
+ALLOWLIST = {
+    # The registry and the format enum themselves.
+    "workbench/constants.js",
+}
+
+RENDER_FORMAT_MEMBER = re.compile(
+    r"RENDER_FORMAT\.(?:STEP|STL|THREE_MF|GLB|DXF|URDF|SRDF|SDF)\b"
+)
+FORMAT_PREDICATE = re.compile(r"\b(?:isMeshRenderFormat|isRobotRenderFormat)\s*\(")
+
+
+def _client_sources() -> list[Path]:
+    paths: list[Path] = []
+    for suffix in ("*.js", "*.jsx"):
+        for path in CLIENT_ROOT.rglob(suffix):
+            name = path.name
+            if name.endswith((".test.js", ".test.jsx")):
+                continue
+            relative = path.relative_to(CLIENT_ROOT).as_posix()
+            if relative in ALLOWLIST:
+                continue
+            paths.append(path)
+    return sorted(paths)
+
+
+def _count(pattern: re.Pattern[str]) -> tuple[int, dict[str, int]]:
+    total = 0
+    by_file: dict[str, int] = {}
+    for path in _client_sources():
+        hits = len(pattern.findall(path.read_text(encoding="utf-8")))
+        if hits:
+            by_file[path.relative_to(CLIENT_ROOT).as_posix()] = hits
+            total += hits
+    return total, by_file
+
+
+class ViewerFormatCapabilityPolicyTest(unittest.TestCase):
+    def test_render_format_identity_checks_do_not_grow(self) -> None:
+        total, by_file = _count(RENDER_FORMAT_MEMBER)
+        worst = sorted(by_file.items(), key=lambda item: -item[1])[:8]
+        self.assertLessEqual(
+            total,
+            MAX_RENDER_FORMAT_CHECKS,
+            "viewer client gained RENDER_FORMAT identity checks "
+            f"({total} > {MAX_RENDER_FORMAT_CHECKS}). Gate on a capability from "
+            "@text-to-cad/core/lib/renderCapabilities instead of on the format's identity. "
+            f"Heaviest files: {worst}",
+        )
+
+    def test_format_predicate_calls_do_not_grow(self) -> None:
+        total, by_file = _count(FORMAT_PREDICATE)
+        self.assertLessEqual(
+            total,
+            MAX_FORMAT_PREDICATE_CALLS,
+            "viewer client gained isMeshRenderFormat/isRobotRenderFormat calls "
+            f"({total} > {MAX_FORMAT_PREDICATE_CALLS}). These are format-identity tests; "
+            f"use a capability instead. Files: {sorted(by_file.items())}",
+        )
+
+    def test_budgets_are_tight(self) -> None:
+        """A budget far above the real count stops ratcheting anything."""
+        render_total, _ = _count(RENDER_FORMAT_MEMBER)
+        predicate_total, _ = _count(FORMAT_PREDICATE)
+        self.assertGreaterEqual(
+            render_total,
+            MAX_RENDER_FORMAT_CHECKS - 10,
+            "RENDER_FORMAT budget is stale — lower MAX_RENDER_FORMAT_CHECKS to "
+            f"{render_total} to lock in the removals.",
+        )
+        self.assertGreaterEqual(
+            predicate_total,
+            MAX_FORMAT_PREDICATE_CALLS - 5,
+            "predicate budget is stale — lower MAX_FORMAT_PREDICATE_CALLS to "
+            f"{predicate_total} to lock in the removals.",
+        )
+
+    def test_shared_shell_components_are_capability_driven(self) -> None:
+        """The three components every format flows through must stay identity-free.
+
+        These are the shell: if they start branching on format identity again, every
+        feature added to one format stops reaching the others.
+        """
+        # The STEP scene and everything of it that lives in the kit's viewport
+        # (`CadViewer.js` and `CadRenderPane.js` before the renderer split). They show ONE
+        # family, so there is no format left for them to ask about. The sweep is asserted
+        # non-empty: a renamed directory would otherwise match nothing and pass in silence.
+        scene_sources = sorted(
+            path
+            for suffix in ("*.js", "*.jsx")
+            for path in (CLIENT_ROOT / "scene").glob(suffix)
+            if not path.name.endswith((".test.js", ".test.jsx"))
+        )
+        self.assertGreater(
+            len(scene_sources),
+            5,
+            f"swept no scene sources under {CLIENT_ROOT / 'scene'} — did the directory move?",
+        )
+        for path in (
+            # The STEP surface itself, on the shell since the renderer split finished: it shows
+            # ONE family, so it has no format left to ask about either. (It replaced
+            # `file-view/CadFileView.js`, and STEP's own `FloatingToolBar.js` went with it.)
+            CLIENT_ROOT / "StepSurface.jsx",
+            *scene_sources,
+            # Status, alerts and the file list: every one of these was a per-format
+            # cascade, and each cascade was a place a new format inherited the wrong
+            # advice, the wrong icon or no spinner at all.
+            CLIENT_ROOT / "workbench/viewerAlerts.js",
+            UI_ROOT / "file-viewer/navigation/entryIconKind.js",
+            # The file list, the SHARED explorer, and the file source that feeds it — drawn
+            # by every app alike, so a format check in either is a format one app lists and
+            # another does not.
+            UI_ROOT / "file-viewer/navigation/FolderExplorer.jsx",
+            UI_ROOT / "cad-viewer/catalog.ts",
+        ):
+            source = path.read_text(encoding="utf-8")
+            relative = path.relative_to(REPO_ROOT).as_posix()
+            self.assertEqual(
+                RENDER_FORMAT_MEMBER.findall(source),
+                [],
+                f"{relative} must gate on capabilities, not RENDER_FORMAT identity",
+            )
+            self.assertEqual(
+                FORMAT_PREDICATE.findall(source),
+                [],
+                f"{relative} must gate on capabilities, not format predicates",
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()

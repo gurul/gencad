@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -10,74 +10,47 @@ const canonicalVersionPath = "VERSION";
 const semverPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 export const jsonTargets = [
-  { path: "docs/package.json", fields: [["version"]] },
-  { path: "docs/package-lock.json", fields: [["version"], ["packages", "", "version"]] },
-  { path: "packages/cadjs/package.json", fields: [["version"]] },
-  {
-    path: "packages/cadjs/package-lock.json",
-    fields: [["version"], ["packages", "", "version"], ["packages", "../implicitjs", "version"]],
-  },
-  { path: "packages/implicitjs/package.json", fields: [["version"]] },
-  { path: "packages/implicitjs/package-lock.json", fields: [["version"], ["packages", "", "version"]] },
-  { path: "viewer/package.json", fields: [["version"]] },
-  {
-    path: "viewer/package-lock.json",
-    fields: [
-      ["version"],
-      ["packages", "", "version"],
-      ["packages", "packages/cadjs", "version"],
-      ["packages", "packages/implicitjs", "version"],
-    ],
-  },
-  { path: "skills/cad-viewer/scripts/viewer/package.json", fields: [["version"]] },
+  ...["package.json", "apps/docs/package.json", "packages/core/package.json", "packages/ui/package.json", "apps/web/package.json", "apps/mcp/package.json"].map(path => ({ path, fields: [["version"]] })),
+  { path: "package-lock.json", fields: [["version"], ["packages", "", "version"], ...["apps/docs", "apps/web", "apps/mcp", "packages/core", "packages/ui"].map(name => ["packages", name, "version"])] },
   { path: ".claude-plugin/plugin.json", fields: [["version"]] },
   { path: ".codex-plugin/plugin.json", fields: [["version"]] },
-  { path: ".claude-plugin/marketplace.json", fields: [["version"]], pluginEntries: ["cad"] },
-  { path: "viewer/packages/cadjs/package.json", fields: [["version"]], required: false },
-  {
-    path: "viewer/packages/cadjs/package-lock.json",
-    fields: [["version"], ["packages", "", "version"], ["packages", "../implicitjs", "version"]],
-    required: false,
-  },
-  { path: "skills/cad-viewer/scripts/viewer/packages/cadjs/package.json", fields: [["version"]], required: false },
-  {
-    path: "skills/cad-viewer/scripts/viewer/packages/cadjs/package-lock.json",
-    fields: [["version"], ["packages", "", "version"], ["packages", "../implicitjs", "version"]],
-    required: false,
-  },
-  { path: "viewer/packages/implicitjs/package.json", fields: [["version"]], required: false },
-  {
-    path: "viewer/packages/implicitjs/package-lock.json",
-    fields: [["version"], ["packages", "", "version"]],
-    required: false,
-  },
-  { path: "skills/cad-viewer/scripts/viewer/packages/implicitjs/package.json", fields: [["version"]], required: false },
-  {
-    path: "skills/cad-viewer/scripts/viewer/packages/implicitjs/package-lock.json",
-    fields: [["version"], ["packages", "", "version"]],
-    required: false,
-  },
-  { path: "skills/implicit-cad/scripts/packages/implicitjs/package.json", fields: [["version"]], required: false },
-  {
-    path: "skills/implicit-cad/scripts/packages/implicitjs/package-lock.json",
-    fields: [["version"], ["packages", "", "version"]],
-    required: false,
-  },
-  { path: "skills/cad/scripts/packages/implicitjs/package.json", fields: [["version"]], required: false },
-  {
-    path: "skills/cad/scripts/packages/implicitjs/package-lock.json",
-    fields: [["version"], ["packages", "", "version"]],
-    required: false,
-  },
+  { path: ".cursor-plugin/plugin.json", fields: [["version"]] },
+  { path: "gemini-extension.json", fields: [["version"]] },
+  { path: "plugin.json", fields: [["version"]] },
+  { path: ".claude-plugin/marketplace.json", fields: [["version"]], pluginEntries: ["text-to-cad"] },
 ];
 
 const tomlTargets = [
   "packages/cadgen/pyproject.toml",
-  "viewer/moveit2_server/pyproject.toml",
-  "viewer/packages/cadgen/pyproject.toml",
-  "skills/cad-viewer/scripts/viewer/moveit2_server/pyproject.toml",
-  "skills/cad-viewer/scripts/viewer/packages/cadgen/pyproject.toml",
-  "skills/cad/scripts/packages/cadgen/pyproject.toml",
+];
+
+// Every skill that runs cadgen teaches the launch command (`uvx ... --from cadgen==<version>`)
+// in its SKILL.md, pinned like the server's so the two share one installation.
+function skillLaunchTargets() {
+  const skills = path.join(repoRoot, "skills");
+  if (!existsSync(skills)) {
+    return [];
+  }
+  return readdirSync(skills, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => `skills/${entry.name}/SKILL.md`)
+    .filter((relative) => existsSync(path.join(repoRoot, relative)))
+    .filter((relative) => readFileSync(path.join(repoRoot, relative), "utf8").includes("--from cadgen=="))
+    .sort();
+}
+
+// Files that pin the cadgen runtime by a requirement string rather than a version field: the
+// commands the agent apps run to start CAD's MCP server, the README's Claude Desktop config,
+// and every cadgen skill's launch command. A file may also be a JSON target (the Gemini
+// extension carries both); its pin is stamped on top of that change, not over it.
+export const pinTargets = [
+  "codex.mcp.json",
+  "claude.mcp.json",
+  "cursor.mcp.json",
+  "mcp.json",
+  "gemini-extension.json",
+  "README.md",
+  ...skillLaunchTargets(),
 ];
 
 function usage() {
@@ -86,8 +59,8 @@ function usage() {
 
 Synchronizes duplicate package and plugin metadata versions from the canonical
 VERSION file. Release preparation edits that file, then
-stamps derived metadata from it; the bundle script and the Release workflow
-re-check the same metadata before production output is written.
+stamps derived metadata from it; the bundle script and the Publish Release
+workflow re-check the same metadata before production output is written.
 
 Options:
   --check  Fail if derived version metadata is stale.
@@ -228,6 +201,22 @@ function syncTomlTarget(relativePath, version) {
   };
 }
 
+function syncPinTarget(relativePath, version, text = readRequiredText(relativePath)) {
+  const pin = /(cadgen(?:\[[a-z0-9_,.-]+\])?==)([^"\s]+)/g;
+  const matches = [...text.matchAll(pin)];
+  if (matches.length === 0) {
+    throw new Error(`${relativePath} must pin cadgen==<version>`);
+  }
+  if (matches.every((match) => match[2] === version)) {
+    return null;
+  }
+  return {
+    path: relativePath,
+    labels: ["cadgen pin"],
+    text: text.replace(pin, (_, prefix) => `${prefix}${version}`),
+  };
+}
+
 /** Merge targets that are the SAME FILE into one, unioning their fields.
  *
  * The mirrored viewer/skill paths are symlinks to the canonical package in the development
@@ -235,7 +224,7 @@ function syncTomlTarget(relativePath, version) {
  * happens, so two of them stamping it means the last write wins -- and when the mirror declares
  * FEWER fields than the canonical target, the field only the canonical one knows about is
  * silently reverted. That is how the 0.4.10 release gate came to reject its own bump:
- * `packages/cadjs/package-lock.json` was stamped with the implicitjs version and then
+ * The former per-package lockfile was stamped with a package version and then
  * overwritten through its own symlink, which did not carry that field.
  */
 export function mergeTargetsByRealPath(targets) {
@@ -287,6 +276,16 @@ function main() {
   for (const target of tomlTargets) {
     const change = syncTomlTarget(target, version);
     if (change) {
+      changes.push(change);
+    }
+  }
+  for (const target of pinTargets) {
+    const pending = changes.find((change) => change.path === target);
+    const change = syncPinTarget(target, version, pending?.text);
+    if (change && pending) {
+      pending.text = change.text;
+      pending.labels.push(...change.labels);
+    } else if (change) {
       changes.push(change);
     }
   }

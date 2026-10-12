@@ -7,24 +7,24 @@ Use smoke tests after the SDF passes bundled validation. The goal is to catch si
 ### Bundled validation
 
 ```bash
-python scripts/validate path/to/model.sdf
-python scripts/validate path/to/model.sdf --strict
+cadgen sdf validate path/to/model.sdf
+cadgen sdf validate path/to/model.sdf --strict
 ```
 
-Bundled validation runs during explicit target generation. Use `--strict` when warnings should block handoff.
+Use `--strict` when warnings should block handoff. It is safe on any machine: the default `--gz-check auto` notes a missing `gz` as `info` rather than a finding against the file, so `--strict` fails only on the document's own warnings.
 
 ### SDFormat parser check
 
-When Gazebo tooling is installed:
+`cadgen sdf validate` already runs `gz sdf --check` whenever `gz` is on PATH. Run it directly to read the parser's own output:
 
 ```bash
 gz sdf --check path/to/model.sdf
 ```
 
-or through the skill CLI:
+or make it mandatory, so a missing `gz` is an error instead of a note:
 
 ```bash
-python scripts/validate path/to/model.sdf --gz-check auto
+cadgen sdf validate path/to/model.sdf --gz-check required
 ```
 
 Use the exact simulator environment that will consume the file when possible.
@@ -50,7 +50,7 @@ For each non-fixed joint:
 
 ### CAD Viewer static review
 
-After generating or modifying an `.sdf`, hand the explicit path to `$cad-viewer` for a live viewer link when available.
+After generating or modifying an `.sdf`, show it ([Show the model](../SKILL.md#show-the-model)). Report any failure explicitly.
 
 - confirm direct model links, joints, frames, visuals, and collisions are placed correctly;
 - confirm includes, plugins, sensors, lights, nested models, and unsupported geometry are listed as static metadata;
@@ -68,7 +68,7 @@ For each sensor or plugin:
 
 ### Visual review
 
-When CAD Viewer or an equivalent viewer is available through `$cad-viewer`, return the viewer link. Visual review is useful but insufficient: it can catch gross placement and mesh problems, but it cannot prove axis frames, inertials, dynamics, or plugin behavior.
+Return the live CAD Viewer link, or explicitly report why launching failed. Visual review is useful but insufficient: it can catch gross placement and mesh problems, but it cannot prove axis frames, inertials, dynamics, or plugin behavior.
 
 ## Report format
 

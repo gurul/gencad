@@ -1,24 +1,21 @@
 name: Deploy Docs
 
-# Deploys the docs site from a SOURCE ref, never from main.
+# Deploys the docs site from a ref of this repository -- main by default.
 #
-# The docs app is a website, not something anyone installs, and it builds against
-# repo-root packages/: docs/tsconfig.json maps cadjs/* to ../packages/cadjs/src/*,
-# and packages/cadjs/src/common pulls implicitjs. Both docs/ and packages/ are
-# therefore trimmed out of the publish tree, so main cannot build this.
-#
-# Releases pass the release SOURCE commit (release-pr's source_sha), which already
-# carries the bumped VERSION and the stamped docs/package.json that the site header
-# reads. To redeploy a past release, use that release's source commit -- every
-# publish commit records it as its second parent, so `git rev-parse <tag>^2`.
+# The docs app is a website, not something anyone installs. It builds against
+# compiled @text-to-cad/core exports, built through the root npm workspace. It
+# needs the shared source tree and root lockfile, which every ref
+# of main is. Releases pass the release commit itself, which carries the bumped
+# VERSION and the stamped apps/docs/package.json the site header reads. To
+# redeploy a past release, pass its tag (`v0.5.0`; bare `0.4.28` before 0.5.0).
 
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Source ref to deploy — develop, or a release source commit (git rev-parse <tag>^2). Never main.
+        description: Ref to deploy — main, or a release tag (v0.5.0).
         required: true
-        default: develop
+        default: main
         type: string
   workflow_call:
     inputs:
@@ -41,29 +38,28 @@ jobs:
 
     steps:
       - name: Check out deploy ref
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
 
-      # A publish-layout ref has neither, and the failure would otherwise surface
-      # as an opaque module-resolution error deep in `next build`.
+      # A tag from before main carried the source tree has neither, and the
+      # failure would otherwise surface as an opaque module-resolution error
+      # deep in `next build`.
       - name: Check this ref can build the docs site
         run: |
           missing=""
-          [ -d docs ] || missing="$missing docs/"
-          [ -d packages/cadjs/src ] || missing="$missing packages/cadjs/src"
-          [ -d packages/implicitjs/src ] || missing="$missing packages/implicitjs/src"
+          [ -d apps/docs ] || missing="$missing apps/docs/"
+          [ -d packages/core/src ] || missing="$missing packages/core/src"
           if [ -n "$missing" ]; then
             echo "This ref cannot build the docs site; missing:$missing" >&2
-            echo "main is the publish branch and drops docs/ and packages/." >&2
-            echo "Deploy from a source ref instead — develop, or a release source" >&2
-            echo "commit: git rev-parse <tag>^2" >&2
+            echo "This looks like a publish commit from before main carried apps/ and packages/." >&2
+            echo "Deploy main, or a release tag from after the cutover." >&2
             exit 1
           fi
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
 

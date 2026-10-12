@@ -1,267 +1,246 @@
-# Inspection and validation
+# Inspecting and checking saved CAD in Python
 
-Read this file for every generated STEP artifact and whenever the user asks for geometry facts, references, dimensions, mating, diffing, or frame inspection.
+Use small Python scripts against the saved STEP/STP. `cadgen step inspect`
+and `cadgen.step.inspect` have been removed. Choose the relevant entities,
+measurements and acceptance criteria in the script; there is no replacement
+inspection command or universal validation report.
 
-## Principle
+Put exploratory scripts in the CAD project's ignored `tmp/`, for example
+`tmp/check_clearance.py`; system `/tmp/` is also fine for disposable work.
+Keep reusable design checks in `checks/` (for example `checks/clearance.py`),
+or use the project's existing test location. Commit those checks so they can
+be rerun after a model changes. Create the directory only when needed.
+Keep checks outside `src/` model directories and raw format folders such as
+`STEP/`. Examples below use paths relative to the CAD project root; run from
+there, or anchor input paths explicitly when a script must run elsewhere.
 
-Deterministic geometry checks decide pass/fail; mandatory snapshot review (see `snapshot-review.md`) catches semantic errors the deterministic checks did not encode. Scale the deterministic checks to the user's spec: every dimension, clearance, or relationship the user specified — including dimensions taken from a technical drawing — must be verified with `measure`, `align`, or `frame`. The facts/planes/positioning baseline runs for every generated artifact regardless of spec.
+Report what was measured, the units, the threshold and the selected geometry.
+A failed computation is not a passing check, and an untested relationship has
+no verdict. Run the model first when you want to check newly authored geometry.
 
-## Tool
+## Opening and selecting geometry
 
-The launcher lives in the CAD skill directory:
+```python
+from cadgen import read_step, read_scene
 
-```bash
-python scripts/inspect {refs|diff|frame|measure|align|worker|batch} ...
+shape = read_step("STEP/bracket.step")  # native build123d geometry
+scene = read_scene("STEP/assembly.step")  # hierarchy and exact selector refs
+
+print(scene.document_hash)
+for occurrence in scene.leaves():
+    print(occurrence.ref, occurrence.label, occurrence.prototype_id)
+
+housing = scene.resolve("#housing")
+print(housing.ref, housing.kind)
+solid_or_compound = housing.shape()
+for face in housing.entities("face"):
+    print(face.ref, face.shape().area)
 ```
 
-Inspection targets resolve from the command cwd; prefer cwd-relative target paths. Absolute paths are accepted when they point under the command cwd (they are relativized); an absolute path outside the cwd fails with an explicit error — run the command from the workspace that owns the artifact. Common data-output flags: `--format json|text` (default is machine-readable), `--quiet`, `--verbose`.
+`read_step` keeps its existing name. `read_scene` replaces the old
+`load_step_scene` helper. Inside a model, the document either reads is a build
+input, as every file a build reads is. Paths expand `~` and resolve relative to the working directory.
 
-Accepted target forms:
+- `scene.roots` and `occurrence.children` are tuples. `scene.leaves()` yields
+  geometry occurrences, including repeated copies. A leaf can hold multiple
+  solids; the reader does not infer manufactured parts.
+- `scene.resolve(ref)` returns a selection with `ref`, `kind`,
+  `occurrence_ref`, `shape()` and `entities(kind)`. Kinds for enumeration are
+  `"shape"`, `"face"`, `"edge"`, `"vertex"`. Shape entities (`sN`) are solids,
+  or shells when no solids exist, or the leaf geometry itself.
+- Every `shape()` is caller-owned exact build123d geometry in the document's
+  world coordinates, including ancestor placements. A group produces an
+  unfused compound. Modifying the result cannot change the scene or another
+  selection. Keep the returned shape when making several queries about it.
+- `prototype_id` identifies shared geometry within this scene, allowing a
+  script to avoid repeating a suitable body-local check. It is not a part
+  number or an identity across revisions. Numeric self-intersection tests can
+  behave differently at different placements; state which placements ran.
+- A scene is bound to one document hash. Replacing the file does not change an
+  already opened scene. Reopen it to inspect the new revision. Selector IDs
+  are revision-scoped, not persistent feature names.
+- Opening reuses the canonical BREP cache, decoding prototypes on demand.
+  No display surfaces, tessellation, source discovery or source execution are
+  needed. Cached inventory and occurrence lookup defer the build123d import
+  until native geometry is requested. Keep the scene open: repeated reads
+  still hash the document bytes, and fresh Python processes pay import costs.
+- The scene describes the saved placement. It does not evaluate sidecar
+  kinematics or animation poses.
+
+### Reference syntax
 
 ```text
-path/to/entry
-path/to/entry.step
-path/to/entry.step.py
+#o1.2          occurrence or subassembly
+#o1.2.f7       canonical face 7 on that leaf occurrence
+#housing.e3   canonical edge 3 on the occurrence labelled housing
+#f7           face 7, only when the scene has exactly one leaf
+part.step#o1  a file-prefixed ref matching the opened STEP
 ```
 
-A `<name>.step.py` generator target resolves to the same entry as its logical `<name>.step`, and keeps resolving to the generator entry even when a same-stem exported `.step` file exists beside it.
+Pass one reference per `resolve()` call. To enumerate a subassembly's faces,
+use `scene.resolve("#group").entities("face")`; a group has no independent
+face ordinals. Enumeration preserves canonical occurrence IDs and never
+merges coincident instances. Face and edge IDs agree with the viewer; vertex
+IDs enumerate native STEP vertices (the viewer currently exposes no vertex
+table).
 
-Selector-backed queries (`refs --facts`, planes, measures) on generated assemblies extract whole-model topology on demand and cache it as `topology.glb` inside the entry's render package; repeat queries read the cache (seconds instead of a full re-extraction) until the package is rebuilt, which invalidates the sidecar.
+Labels use letters, digits, `_` and `:`, and cannot start with a digit or
+collide with numeric reference syntax. Other labels remain accessible through
+numeric IDs. Duplicate labels receive numbered aliases in occurrence order;
+resolving the ambiguous bare label raises and lists candidates. No fuzzy
+matching or choosing the first match.
 
-Selector refs are local to the STEP/CAD entry target passed to the command:
+A copied reference's file prefix is the file's absolute path, with the file's real
+name and extension (in quotes when it holds a space or `#`). `resolve()` reads the
+prefix as a path, with `~` expanded, links followed and a relative one read from the
+working directory, and it must name the opened document.
+A relative prefix that names no file from where you run still matches the end of
+the document's path. A prefix naming a different document is rejected. Do not
+guess between ambiguous files.
 
-```text
-#o1.2
-#o1.2.f1
-#f1
+## Measurements
+
+Most measurements already have native build123d interfaces:
+
+```python
+# p, q: chosen points; u, v, direction, normal: explicit vectors
+length = (q - p).length
+signed_offset = (q - p).dot(direction.normalized())
+angle_degrees = u.get_angle(v)
+signed_angle_degrees = u.get_signed_angle(v, normal)
+
+# Select the actual geometric feature that defines the dimension.
+center = circular_edge.arc_center
+radius = circular_edge.radius
+diameter = 2 * radius
+length = edge.length
+area = face.area
+volume = solid.volume
+size = shape.bounding_box().size
 ```
 
-Pass selector refs as `#...` tokens. The STEP/CAD file path or entry target is a separate CLI argument.
+A bounding box dimension is an envelope, not a hole diameter or wall
+thickness. A surface centroid is not necessarily a datum. Use analytic
+centers, axes and selected points when those define the requested dimension.
+The default `bounding_box()` searches for tight bounds and can be expensive
+on curved geometry. Use `bounding_box(optimal=False)` for a fast conservative
+envelope when filtering candidate collision pairs, not for a tight dimension.
 
-### File-prefixed refs (the CAD Viewer copy format)
+```python
+from cadgen.geometry import closest_points
 
-A ref copied from the CAD Viewer carries the file it came from, so it stays meaningful in a
-prompt that spans several files:
-
-```text
-bracket#o1.2.f1               the generator models/step/parts/bracket.step.py
-imported_housing.step#o1.3    a raw STEP, models/step/imports/imported_housing.step
-mounting_plate.stl#           a whole mesh file
+result = closest_points(a, b)
+print(result.distance, result.point_a, result.point_b)
 ```
 
-The prefix is the **shortest path suffix that names exactly one file**, plus as many leading
-directories as it takes to be unique. A prefix with no selectors after the `#` names the whole
-file.
+`closest_points(Shape, Shape) -> ClosestPoints` returns a nonnegative minimum
+set distance and one witness pair in the input frame. Solid overlap, contact
+and containment have distance zero; it does not measure penetration depth.
+Witnesses may be nonunique or internal to a solid. Pass selected faces/shells
+when asking about boundary separation. Minimum distance does not replace
+center spacing, angles, radii, lengths, areas or volume measurements.
 
-A `.step.py` generator shows as a bare stem, because generators are what you normally work in
-and the common case deserves the shortest name. Everything else keeps its suffix:
+## Overlap and clearance checks
 
-| File | Prefix |
-| --- | --- |
-| `bracket.step.py` | `bracket` |
-| `bracket.step`, `bracket.stp` | `bracket.step`, `bracket.stp` |
-| `plate.stl`, `plate.3mf`, `plate.glb`, `outline.dxf` | unchanged |
+`overlap_volume(Solid, Solid) -> float` measures the exact intersection volume
+of two finite, positively oriented solids. It returns zero for mere contact.
+It applies no minimum volume, exclusions, part hierarchy or pass/fail policy.
+Kernel failures raise; inputs remain unchanged. Length units from STEP are mm,
+so overlap volume is mm³. Tolerances in these scripts are design decisions,
+separate from the kernel's numerical precision.
 
-Keeping those suffixes is what makes the stripping safe: `bracket` (the generator) stays
-distinct from `bracket.step` (its export) and from `bracket.stl` (a mesh of it).
+For example, checking every body pair inside a chosen subassembly:
 
-**These CLIs do not resolve prefixes. You do.** When you receive a file-prefixed ref:
+```python
+from itertools import combinations
+from cadgen import read_scene
+from cadgen.geometry import overlap_volume
 
-1. Split it at the first `#`. The left side is the file prefix; the right side is the ref.
-2. Resolve the prefix to a real path. A bare stem is **not** a literal path suffix, so expand
-   it before searching:
-   - `<name>` with no extension → look for `<name>.step.py`, then `<name>.stp.py`
-   - anything carrying a suffix (`.step`, `.stp`, `.stl`, `.3mf`, `.glb`, `.dxf`) → use as-is
+scene = read_scene("STEP/assembly.step")
+selection = scene.resolve("#housing_assembly")
+bodies = [
+    (entity.ref, solid)
+    for entity in selection.entities("shape")
+    for solid in entity.shape().solids()
+]
+if len(bodies) < 2:
+    raise ValueError("This interference check needs at least two bodies")
 
-   Match on **segment boundaries**, so `plate.stl` names `models/mesh/stl/plate.stl` and never
-   `models/mesh/stl/mounting_plate.stl`.
-3. Pass the resolved path as the entry/input argument and the `#...` part as the ref, exactly
-   as you would for a bare ref.
-
-```bash
-# received: bracket#o1.2.f1   ->  expand the bare stem, then search
-git ls-files '*/bracket.step.py' '*/bracket.stp.py'
-python scripts/inspect refs models/step/parts/bracket.step.py '#o1.2.f1'
+max_overlap_mm3 = 0.01  # chosen for this design
+failures = []
+tested = 0
+for (ref_a, a), (ref_b, b) in combinations(bodies, 2):
+    volume = overlap_volume(a, b)
+    tested += 1
+    if volume > max_overlap_mm3:
+        failures.append((ref_a, ref_b, volume))
+print({"tested_pairs": tested, "limit_mm3": max_overlap_mm3,
+       "overlaps_mm3": failures})
+if failures:
+    raise SystemExit(1)
 ```
 
-If the search returns more than one file the prefix was ambiguous — ask rather than guess; the
-Viewer only emits prefixes that were unique when it copied them.
+Adapt pair selection to the question: for clearance around a moving carriage,
+compare that carriage against relevant fixed geometry. List intentional
+press fits/excluded pairs explicitly. Do not infer exclusions from assembly
+depth. For large pair sets, retain the shapes and compute conservative bounds
+once per body. Disjoint bounds rule out overlap; intersecting bounds only
+identify candidates for the exact query. For a clearance requirement use
+`closest_points(a, b).distance` and
+compare against the specified minimum. A static check proves only that pose;
+path or motion checks need an explicit sampling or swept-volume strategy.
 
-Passing the prefixed ref through unsplit also works **when the prefix names the file the
-command already targets** — the CLI strips it, and it accepts every spelling of that file
-(`bracket`, `bracket.step.py`, `bracket.step`). A prefix naming a *different* file is a hard
-error, never ignored: silently inspecting the file the command was pointed at would produce a
-confident answer about geometry nobody asked about.
+## Geometry diagnostics
 
-```text
-ref 'other_part#o1.2' names file 'other_part' but this command targets
-'models/step/parts/bracket'; pass the file as the entry argument and the '#...' part as the ref
+```python
+from cadgen.geometry import is_sound, topology_errors, boundary_edges, self_intersections
+
+ok = shape.is_valid                       # bool: BRepCheck passes (build123d)
+clean = is_sound(shape)                   # bool: the boolean kernel's argument check passes, expensive
+issues = topology_errors(shape)            # tuple[GeometryIssue, ...]
+free = boundary_edges(shell)              # tuple[Edge, ...]
+crossings = self_intersections(shape)     # tuple[GeometryIssue, ...], expensive
 ```
 
-Bare `#...` refs are unchanged and work everywhere they always did.
+`GeometryIssue` has `code` and `entities`, containing owned build123d geometry.
+Topology codes are OCCT `BRepCheck_*` statuses; self-intersection codes are
+`BOPAlgo_SelfIntersect`. Failed/inconclusive checks raise `GeometryError`,
+never an empty success result. None of these functions repairs geometry.
 
-### Referencing a part by its label
+`is_sound` is `BRepAlgoAPI_Check`'s verdict: BRepCheck-valid, no
+self-intersections, no too-small edges, an argument type a boolean accepts.
+It is the gate a fuse or cut demands of an operand. Closure, solid count and
+signed volume stay the script's own checks. `is_sound` is `False` for a null
+or empty shape, which the boolean kernel rejects as an argument. A check costs
+kernel time, so gate where a failure is plausible rather than after every
+operation.
 
-A part's build123d label can stand in for its occurrence id anywhere a ref is accepted:
+Choose checks appropriate to the artifact. For an intended closed solid,
+check topology, free shell edges and each solid's signed volume. A reversed
+solid can pass topology validation but have negative volume; check individual
+solids because aggregate volumes can cancel. Open shells can be valid when
+surfaces are intended. No free edges establishes closure, not full manifold
+validity. Run self-intersection checks explicitly when required and report
+any checks you did not complete.
 
-```text
-#eye_shank             the part labelled eye_shank
-#eye_shank.f45         a face on it
-#eye_shank.f45,f46     two faces on it -- the label carries forward like an occurrence id
+## Mass properties
+
+```python
+from cadgen.geometry import mass_properties
+
+properties = mass_properties([
+    (aluminum_body, 2.70e-6),  # kg/mm³; use the material density for the task
+    (steel_insert, 7.85e-6),
+])
+print(properties.volume, properties.mass, properties.center_of_mass)
+print(properties.inertia)
 ```
 
-Numeric refs are unchanged and always work; labels are an additional spelling, not a
-replacement. `snapshot --mode list` shows each part's `name`, and `inspect refs` reports the
-exact ref to paste as `labelRef`.
+`mass_properties(Iterable[tuple[Solid, float]]) -> MassProperties` integrates
+uniform density per solid and sums the supplied bodies, including overlaps.
+Densities must be finite and positive. It does not infer materials or fuse
+bodies. The 3×3 inertia tuple is about the combined center of mass in the input
+coordinate axes. With mm and kg/mm³, outputs are mm³, kg, mm and kg·mm².
 
-A label may contain letters, digits, `_` and `:`, and may not start with a digit. Parts whose
-label cannot be spelled that way, or which collides with the numeric grammar (`f12`, `o1`,
-`m2`), are addressable by their numeric ref only.
-
-When several parts share a label -- two wheels, one `cast_rim:5spoke` -- each gets a numbered
-ref in tree order and the bare label refuses to resolve rather than guessing:
-
-```text
-$ snapshot -i motorbike.step.py --focus='#cast_rim:5spoke'
-selection.focus label 'cast_rim:5spoke' matches 2 occurrences;
-use one of: #cast_rim:5spoke_1 (o1.7.2), #cast_rim:5spoke_2 (o1.14.2)
-```
-
-## Validation sequence
-
-1. Generation completed and the STEP/STP file exists.
-2. `refs --facts --planes --positioning` confirms scale, labels, major planes, and placement-ready references. Run this for every generated artifact.
-3. `validate` confirms the geometry is sound: valid topology, closed shells, no self-intersection, and positive volume on every solid. Run this for every generated artifact.
-4. Spec-driven checks: `measure` for every user-specified dimension, offset, or clearance; `align` for interfaces that should be flush or centered; `frame` for orientation and occurrence-placement expectations; `diff` for modifications that could affect unrelated geometry.
-5. Snapshot the primary STEP/STP per `snapshot-review.md`, then convert every visual concern into a deterministic geometry check before it becomes a validation claim.
-
-### `refs --facts` "ok" is not a geometry claim
-
-`refs --facts` reports counts, bounds, labels and references. Its `ok` field is
-a command-success flag: it is true when every requested ref resolved, and it
-says nothing about whether the geometry is sound. A five-face open box reports
-`"ok": true` with `"faceCount": 5`, and a solid with inverted orientation —
-which renders as a hole in the world — reports `"ok": true` as well.
-
-Use `validate` for that question:
-
-```bash
-python scripts/inspect validate models/part/part.step.py
-python scripts/inspect validate models/part/part.step.py --refs o1.2      # one subassembly
-python scripts/inspect validate models/panel/panel.step.py --allow-open   # surfaces intended
-```
-
-It reports, per occurrence, any of `invalidTopology`, `openShell`,
-`nonPositiveVolume`, `noSolid`, `selfIntersecting`, and exits non-zero when any
-occurrence fails.
-
-Two subtleties worth knowing. `BRepCheck_Analyzer` returns **true** for a
-reversed solid, so topological validity alone cannot catch an inverted body —
-only the sign of the volume can. And volume is measured per solid, never
-aggregated: a `+1000` and a `-1000` inside one compound sum to zero, so any
-check reading a compound's total volume sees nothing wrong.
-
-Pass `--skip-self-intersection` on large assemblies if the boolean test
-dominates runtime.
-
-## Reference discovery
-
-Compact facts and planes:
-
-```bash
-python scripts/inspect refs path/to/model.step \
-  --facts --planes --positioning
-```
-
-Detailed selector inspection:
-
-```bash
-python scripts/inspect refs path/to/model.step '#selector' \
-  --detail --positioning
-```
-
-Topology enumeration, only when needed:
-
-```bash
-python scripts/inspect refs path/to/model.step --topology
-```
-
-Plane options:
-
-```bash
---plane-coordinate-tolerance FLOAT
---plane-min-area-ratio FLOAT
---plane-limit INT
-```
-
-Use lower plane limits and compact facts for normal validation. Use topology enumeration only for selector discovery, complex debugging, or when a feature cannot be verified through facts/planes/measurements; it can be expensive on large models.
-
-## Measurement checks
-
-Use `measure` for bounding distances, clearances, offsets, part spacing, plate thickness, hole-to-face distances, and alignment verification.
-
-```bash
-python scripts/inspect measure path/to/model.step \
-  --from '#selector_a' \
-  --to '#selector_b' \
-  --axis x
-```
-
-Axis may be inferred when possible, but specify `x`, `y`, or `z` for deterministic checks.
-
-## Alignment checks
-
-Use `align` when two exported STEP references should be flush or centered. It returns a translation delta between the selected refs; apply any required correction in the build123d source (see `positioning.md`), regenerate, and re-inspect.
-
-```bash
-python scripts/inspect align path/to/assembly.step \
-  --moving '#moving_selector' \
-  --target '#target_selector' \
-  --mode flush \
-  --axis z
-```
-
-## Frame inspection
-
-Use `frame` to validate occurrence transforms and selected-reference world frames:
-
-```bash
-python scripts/inspect frame path/to/model.step '#selector'
-```
-
-Frame output is useful for assemblies, part-local-to-world conversion, and placement debugging.
-
-## Diff checks
-
-For modification tasks, compare before and after artifacts:
-
-```bash
-python scripts/inspect diff path/to/before.step path/to/after.step --planes
-```
-
-Use diff when a repair, feature addition, or source edit could affect unrelated geometry.
-
-## Validation report content
-
-Report only checks that were actually run or directly supported by tool output. If an important selector was inspected, return the local selector ref beside the owning CAD Viewer link.
-
-Use this structure:
-
-```text
-Validation:
-- STEP generation: passed/partial/failed
-- Solids/assembly: <counts and labels>
-- Bounding box: <dimensions and units>
-- Major planes/refs: <summary>
-- Positioning: <frame/measure/align results if relevant>
-- Feature checks: <holes, cutouts, bosses, etc.>
-- Visual review: `$cad-viewer` viewer link returned; CAD `scripts/snapshot` PNG/GIF included or skipped with reason; follow-up geometry checks for any visual findings
-```
-
-Do not claim:
-
-- structural safety
-- process certification
-- tolerance compliance
-- manufacturability beyond geometric plausibility
-unless the relevant analysis or manufacturing data was explicitly performed.
+Use snapshots for visual review per `snapshot-review.md`. Turn visual concerns
+into explicit geometric checks before claiming they have been resolved.

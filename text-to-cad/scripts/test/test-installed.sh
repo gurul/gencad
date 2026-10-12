@@ -1,0 +1,250 @@
+#!/usr/bin/env bash
+# Exercise cadgen the way a user gets it: built into a wheel, pip-installed, run from a
+# directory that is not this repo.
+#
+# Every other check in this repo runs against the source tree, where the repo root is on
+# sys.path and `packages/core/bin` exists. None of
+# that is true after `pip install cadgen`, so the failures this catches are exactly the
+# ones no other check can: an asset left out of package-data, a module that resolves only
+# because a sibling directory happened to be adjacent, a builder that still imports a bare
+# specifier. Those all pass locally and break for the person who installed it.
+#
+# The scratch venv reuses the repo venv's heavy dependencies (OCP, build123d) rather than
+# reinstalling half a gigabyte -- but the wheel's own cadgen must WIN over the repo's
+# editable one, or this would silently test the source tree again. See _link_repo_deps.
+#
+# Usage: scripts/test/test-installed.sh [--wheel PATH]
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Shared resolution: the repo venv in a checkout, python3 otherwise. CI installs the CAD
+# dependencies into the interpreter that setup-python provides and has no .venv at all, so
+# hardcoding one here fails there and only there.
+# shellcheck source=scripts/test/common.sh
+source "$SCRIPT_DIR/common.sh"
+
+WHEEL=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --wheel)
+      [ "$#" -ge 2 ] || { echo "--wheel requires a path" >&2; exit 2; }
+      [ -f "$2" ] || { echo "wheel not found: $2" >&2; exit 2; }
+      WHEEL="$(cd "$(dirname "$2")" && pwd -P)/$(basename "$2")"
+      shift 2
+      ;;
+    -h|--help)
+      echo "Usage: scripts/test/test-installed.sh [--wheel PATH]"
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      echo "Usage: scripts/test/test-installed.sh [--wheel PATH]" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1 && [ ! -x "$PYTHON_BIN" ]; then
+  echo "No usable Python ($PYTHON_BIN). Set PYTHON_BIN to an interpreter with the CAD deps." >&2
+  exit 1
+fi
+
+# The wheel is installed with --no-deps and reuses this interpreter's heavy packages, so it
+# must actually have them; otherwise the failure surfaces much later in a build that
+# cannot import its kernel.
+if ! "$PYTHON_BIN" -c "import OCP, build123d" >/dev/null 2>&1; then
+  echo "$PYTHON_BIN cannot import OCP/build123d; installed-mode checks need the CAD deps." >&2
+  exit 1
+fi
+
+WORK="$(mktemp -d)"
+cleanup() { rm -rf "$WORK"; }
+trap cleanup EXIT
+
+VENV="$WORK/venv"
+EMPTY="$WORK/empty"
+DIST="$WORK/dist"
+CACHE="$WORK/cache"
+DAEMON_STATE="$WORK/daemon"
+mkdir -p "$EMPTY" "$DIST" "$CACHE" "$DAEMON_STATE"
+export CADGEN_CACHE_DIR="$CACHE"
+export CADGEN_DAEMON=0
+export CADGEN_DAEMON_STATE_DIR="$DAEMON_STATE"
+# What the CAD app remembers (its library, release checks) stays in the throwaway directory too.
+export CADGEN_STATE_DIR="$WORK/state"
+unset CADGEN_BROKER CADGEN_BROKER_KEY CADGEN_BROKER_STATS CADGEN_DAEMON_CHILD CADGEN_ROOT_ID
+
+fail() { echo "FAIL: $*" >&2; exit 1; }
+step() { printf '\n== %s\n' "$*"; }
+
+if [ -z "$WHEEL" ]; then
+  step "Build the wheel"
+  "$REPO_ROOT/scripts/bundle/bundle.sh" >/dev/null
+  "$PYTHON_BIN" -m build --wheel --outdir "$DIST" "$REPO_ROOT/packages/cadgen" >"$WORK/build.log" 2>&1 \
+    || { cat "$WORK/build.log" >&2; fail "wheel build"; }
+  WHEEL="$(find "$DIST" -name '*.whl' -type f | head -n 1)"
+  [ -n "$WHEEL" ] || fail "no wheel produced"
+else
+  step "Use the supplied wheel"
+fi
+echo "   $(basename "$WHEEL")"
+
+step "Install it into a scratch venv"
+"$PYTHON_BIN" -m venv "$VENV"
+"$VENV/bin/python" -m pip install --quiet --no-deps "$WHEEL"
+
+_link_repo_deps() {
+  # Expose the repo venv's site-packages for OCP/build123d/etc WITHOUT letting its editable
+  # cadgen win. A plain path line in a .pth is sys.path.append, so it lands AFTER this
+  # venv's own site-packages (where the wheel is) and its .pth files are not processed --
+  # which is what keeps the editable cadgen out.
+  local repo_sp scratch_sp
+  repo_sp="$("$PYTHON_BIN" -c 'import site; print(site.getsitepackages()[0])')"
+  scratch_sp="$("$VENV/bin/python" -c 'import site; print(site.getsitepackages()[0])')"
+  printf '%s\n' "$repo_sp" >"$scratch_sp/zz-repo-deps.pth"
+}
+_link_repo_deps
+
+step "The installed cadgen is the WHEEL's, not the checkout's"
+"$VENV/bin/python" - <<'PY' || exit 1
+import sys, pathlib, cadgen
+where = pathlib.Path(cadgen.__file__).resolve()
+if "site-packages" not in where.parts:
+    sys.exit(f"FAIL: imported cadgen from {where}, not the installed wheel")
+print(f"   {cadgen.__version__} at {where.parent}")
+PY
+
+step "Assets resolve to the packaged runtime"
+"$VENV/bin/python" - <<'PY' || exit 1
+import sys
+from cadgen.assets import browser_runtime_dir, node_builders_dir
+for label, resolved in (
+    ("node builders", node_builders_dir()),
+    ("browser runtime", browser_runtime_dir()),
+):
+    if "site-packages" not in str(resolved):
+        sys.exit(f"FAIL: {label} resolved outside the wheel: {resolved}")
+    if not resolved.is_dir():
+        sys.exit(f"FAIL: {label} missing: {resolved}")
+    print(f"   {label}: {resolved.name}")
+PY
+
+step "Every subcommand dispatches from an empty directory"
+cd "$EMPTY"
+"$VENV/bin/cadgen" --help >/dev/null || fail "cadgen --help"
+# The list comes from the INSTALLED registry, not from a copy of it here: a
+# hand-written list goes stale silently the first time a command is renamed, and
+# then this step passes while checking commands that no longer exist.
+"$VENV/bin/python" -c 'from cadgen.cli import _COMMANDS; print("\n".join(sorted(_COMMANDS)))' \
+  >"$WORK/commands.txt" || fail "read the installed command registry"
+[ -s "$WORK/commands.txt" ] || fail "the installed command registry is empty"
+while read -r command; do
+  [ -n "$command" ] || continue
+  # shellcheck disable=SC2086
+  "$VENV/bin/cadgen" $command --help >/dev/null 2>&1 || fail "cadgen $command --help"
+  echo "   cadgen $command"
+done <"$WORK/commands.txt"
+
+step "Serve the CAD app over MCP, as an agent host starts it"
+"$VENV/bin/python" - "$VENV/bin/cadgen" "$WORK" <<'PY' || exit 1
+import json, os, subprocess, sys, threading
+import cadgen
+
+server = subprocess.Popen([sys.argv[1], "mcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+watchdog = threading.Timer(60, server.kill)
+watchdog.daemon = True
+watchdog.start()
+
+
+def send(message):
+    server.stdin.write(json.dumps({"jsonrpc": "2.0", **message}) + "\n")
+    server.stdin.flush()
+
+
+def call(request_id, method, params):
+    send({"id": request_id, "method": method, "params": params})
+    for line in server.stdout:
+        message = json.loads(line)
+        if message.get("id") == request_id:
+            if "error" in message:
+                sys.exit(f"FAIL: {method}: {message['error']}")
+            return message["result"]
+    sys.exit(f"FAIL: cadgen mcp exited during {method}")
+
+
+# As an MCP Apps host: one that advertises the UI extension is served the page.
+ui = {"extensions": {"io.modelcontextprotocol/ui": {"mimeTypes": ["text/html;profile=mcp-app"]}}}
+call(1, "initialize", {"protocolVersion": "2025-06-18", "capabilities": ui, "clientInfo": {"name": "test-installed", "version": "0"}})
+send({"method": "notifications/initialized"})
+tools = {tool["name"]: tool for tool in call(2, "tools/list", {})["tools"]}
+uri = tools["cad_show"]["_meta"]["ui"]["resourceUri"]
+page = call(3, "resources/read", {"uri": uri})["contents"][0]["text"]
+# The page is package data: a wheel without it serves a placeholder that says so.
+if "missing from this install" in page or "<script" not in page:
+    sys.exit(f"FAIL: {uri} is not the packaged CAD app")
+# Showing a model mounts a view whose launch says which cadgen serves it: this install's.
+mesh = os.path.join(sys.argv[2], "shown.stl")
+with open(mesh, "w", encoding="utf-8") as handle:
+    handle.write("solid t\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid t\n")
+shown = call(4, "tools/call", {"name": "cad_show", "arguments": {"path": mesh}})
+launch = (shown.get("structuredContent") or {}).get("launch") or {}
+if shown.get("isError") or launch.get("version") != cadgen.__version__ or launch.get("model") != os.path.abspath(mesh):
+    sys.exit(f"FAIL: cad_show answered {shown}")
+server.stdin.close()
+if server.wait(30) != 0:
+    sys.exit(f"FAIL: cadgen mcp exited {server.returncode} when the host closed its input")
+watchdog.cancel()
+print(f"   {len(tools)} tools; the app is {len(page) // 1024} KiB at {uri}")
+PY
+
+step "Build a real STEP with no repo in sight"
+mkdir -p "$EMPTY/models"
+cat >"$EMPTY/models/probe.py" <<'PY'
+# A model script declares one @step function and builds it from __main__
+# (library-first: there is no gen verb). Deliberately the simplest one that
+# exists: this checks
+# that an installed cadgen can build at all, not that it models anything
+# interesting. @stl declares a mesh serialization so the mesh door has something
+# to produce below.
+from cadgen import build123d as bd
+from cadgen import step, stl
+
+
+@step
+@stl
+def probe():
+    return bd.Box(10, 10, 10)
+
+
+if __name__ == "__main__":
+    probe()
+PY
+# Running the script IS the build: its __main__ calls the model, and no CLI verb
+# takes its place.
+"$VENV/bin/python" models/probe.py >"$WORK/build.log" 2>&1 \
+  || { cat "$WORK/build.log" >&2; fail "python <model>.py"; }
+[ -f "$EMPTY/models/probe.step" ] \
+  || { cat "$WORK/build.log" >&2; fail "the model script produced no STEP document"; }
+echo "   built a STEP document and package"
+
+step "Re-emit the document through the build door"
+"$VENV/bin/cadgen" step build models/probe.step models/reemit.step \
+  >"$WORK/reemit.log" 2>&1 \
+  || { cat "$WORK/reemit.log" >&2; fail "cadgen step build"; }
+[ -f "$EMPTY/models/reemit.step" ] \
+  || { cat "$WORK/reemit.log" >&2; fail "step build produced no STEP document"; }
+echo "   re-emitted a document to a new document"
+
+# Running the script above already wrote the STL the model DECLARES. This is
+# the other half: the ad-hoc door, taking a document and an explicit OUT. It
+# needs that OUT because the written document carries no trace of the model's
+# declarations — generated files hold no metadata.
+step "Export it through a format door"
+rm -f "$EMPTY/models/probe.stl"
+"$VENV/bin/cadgen" stl build models/probe.step models/probe.stl >"$WORK/stl.log" 2>&1 \
+  || { cat "$WORK/stl.log" >&2; fail "cadgen stl build"; }
+[ -s "$EMPTY/models/probe.stl" ] \
+  || { cat "$WORK/stl.log" >&2; fail "stl build produced no mesh"; }
+echo "   wrote an STL from the document"
+
+printf '\nInstalled-mode checks passed.\n'

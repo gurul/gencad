@@ -1,0 +1,99 @@
+# Weekly dependency PRs, one grouped PR per ecosystem for minor + patch bumps so the
+# noise is one review, not twenty. Majors stay individual. Every PR carries the
+# `dependencies` label, which .github/release.yml files under Maintenance.
+#
+# packages/cadgen's pins are the Python floor a released wheel is built against, so
+# they are reviewed like any other change; @text-to-cad/core/viewer/docs are the three npm
+# trees CI installs (.github/actions/setup-deps).
+version: 2
+updates:
+  # `/` covers .github/workflows plus a root action.yml -- it does NOT reach a
+  # composite action nested under .github/actions, which is why setup-deps sat on
+  # setup-node@v4 and setup-python@v5 while every workflow moved to v7. That file
+  # is where all of CI gets its Python and Node, so it is the last place that
+  # should rot unwatched. The second entry names it directly.
+  #
+  # Verified live: Dependabot runs a dedicated update job for this directory
+  # ("github_actions in /.github/actions/setup-deps"), so the entry is processed
+  # even though GitHub's reference only documents `/` for this ecosystem. Do not
+  # read silence as inertness -- both pins are current, so there is simply
+  # nothing to propose until the next setup-node/setup-python release.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+    groups:
+      actions:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /.github/actions/setup-deps
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+    groups:
+      setup-deps-actions:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+    groups:
+      npm-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: pip
+    directory: /packages/cadgen
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+    groups:
+      cadgen-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    # Two ceilings are raised by hand, and a bot cannot tell that it has raised
+    # them: both are satisfied by the version already installed, so widening
+    # them changes nothing that CI can run and everything about what a LATER
+    # install resolves.
+    #
+    # cadquery-ocp-novtk is the geometry kernel. OCCT 7.8 -> 7.9 re-hashed ~20k
+    # STEP lines in one downstream part with no design change, so a major is a
+    # geometry event, not a dependency event. It is also invisible to CI while
+    # build123d's own `<8.0` caps the resolver: a widening PR passes every job
+    # without OCP 8 ever being installed, then takes effect silently the day
+    # build123d widens too.
+    #
+    # build123d is capped for the reason pyproject.toml gives at length -- cadgen
+    # patches its set de-duplication, `Vertex.__hash__` and `Compound.__init__`,
+    # and a release that moves those stops applying the patch rather than
+    # failing. 0.11 -> 0.12 is a semver MINOR, so without this it would arrive
+    # inside the grouped minor/patch PR above.
+    #
+    # Raise either ceiling in its own PR, after running the suite against it.
+    ignore:
+      - dependency-name: cadquery-ocp-novtk
+        update-types:
+          - version-update:semver-major
+      - dependency-name: build123d
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor

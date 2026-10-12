@@ -19,9 +19,9 @@ An SRDF pairs with its URDF by **colocation and robot name** — nothing else:
 
 - Save the `.srdf` in the **same folder** as the `.urdf` it describes.
 - Both files declare the identical `<robot name="...">`.
-- Exactly one `.urdf` in that folder may declare that robot name; the validator, the CAD Viewer, and the local MoveIt2 server all resolve the pairing by scanning the folder, and they error when zero or several URDFs match.
+- Exactly one `.urdf` in that folder may declare that robot name; the validator and the CAD Viewer resolve the pairing by scanning the folder, and they error when zero or several URDFs match.
 - Matching basenames (`so101.srdf` next to `so101.urdf`) are conventional and recommended for readability, but the robot name is what pairs the files. Multiple SRDF planning variants for one robot (`so101_dual.srdf`, `so101_precise.srdf`) all pair with the same URDF through its name.
-- There is no link element. Older files carried `<tcad:urdf path="..."/>` (or legacy `<explorer:urdf/>`) metadata; that element is retired, ignored by all consumers, and flagged by the validator as `deprecated_urdf_link` — remove it when you touch such a file.
+- There is no link element: an SRDF pairs with the same-folder URDF whose robot name matches.
 
 ## Names Come From the URDF Table
 
@@ -64,8 +64,6 @@ Every `link`, `joint`, `base_link`, `tip_link`, `parent_link`, and group-state j
   <disable_collisions link1="base_link" link2="shoulder_link" reason="Adjacent" />
 </robot>
 ```
-
-Repository fixtures under `models/robots/` (for example `so101.srdf`, `juno.srdf`) are full worked examples.
 
 ## Helper Scripts
 

@@ -1,0 +1,28 @@
+"""W16 system model: valvetrain — 64 valves + springs + retainers + followers + HLAs.
+
+A sub-assembly of the engine: the parts `lib/valvetrain.py` builds, as one model
+with its own STEP, its own record and its own worker. `w16.py` links it as
+occurrence `o1.5`; rebuild `w16.py` to pick up a change here.
+"""
+
+from __future__ import annotations
+
+from cadgen import build123d as bd
+from cadgen import step
+
+from lib import valvetrain as valvetrain_lib
+from lib import spec as S
+from lib.palette import material_compound, materials_for_system
+
+
+@step(out="../STEP/valvetrain.step", materials=materials_for_system("valvetrain"),
+      mesh_tolerance=0.0006, mesh_angular_tolerance=0.3)
+def valvetrain():
+    parts = valvetrain_lib.build()
+    if not parts:
+        raise RuntimeError("valvetrain.build() produced no parts")
+    return material_compound(parts, "valvetrain")
+
+
+if __name__ == "__main__":
+    valvetrain()

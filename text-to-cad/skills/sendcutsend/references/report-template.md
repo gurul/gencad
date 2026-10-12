@@ -17,8 +17,6 @@ List official SendCutSend URLs used for the checks as Markdown links. Include on
 
 Summarize facts from `$cad` inspection when available and targeted `build123d`/`ezdxf` inspection code: file type, units, extents/bounding box, entity/body counts, layers, unsupported entities, obvious open/duplicate geometry, and parsing limitations.
 
-If the reviewed upload was generated or updated in this workflow, include the `$cad-viewer` viewer link when available.
-
 For bent 2D files, include bend geometry facts from the exported file: bend-line count and layers, individual bend line lengths, nearest non-bend cut geometry for each bend line, local flange depths, bend-line span coverage, bend-adjacent cut geometry, insufficient contact/support observations, and any split/interrupted/common-axis bend observations. Use those facts for comparison against the current material/thickness service page.
 
 For bent STEP/STP files, include measured sheet thickness when available and the extracted bend-radius set. Compare bend radii to the selected material/SKU only when that order context is known.
@@ -29,7 +27,7 @@ Use one row per issue. In `Rule source`, link the specific official page or JSON
 
 | Status | Check | Evidence | Rule source | Recommendation |
 | --- | --- | --- | --- | --- |
-| ✅ pass / ❌ fail / ❓ need more info | requirement name | file fact | Markdown link to specific rule doc/table, or `Direct file inspection` | concrete next action |
+| ✅ pass, ❌ fail or ❓ need more info | requirement name | file fact | Markdown link to specific rule doc/table, or `Direct file inspection` | concrete next action |
 
 ## Verdict
 

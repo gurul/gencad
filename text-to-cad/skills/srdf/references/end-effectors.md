@@ -1,6 +1,6 @@
 # SRDF end effectors
 
-Use this reference when creating or editing `<end_effector>` entries or preparing MoveIt2 pose-target handoffs for `$cad-viewer`.
+Use this reference when creating or editing `<end_effector>` entries.
 
 ## Concept
 
@@ -45,29 +45,6 @@ Before authoring:
 
 The current runtime enforces several of these checks, but target/TCP choice remains a semantic decision. Do not rely on inference when planning to a tool center point.
 
-## CAD Viewer MoveIt2 target link
+## Handoff
 
-When handing an SRDF to `$cad-viewer` for optional MoveIt2 controls, make the intended target link explicit when possible:
-
-```json
-{
-  "protocolVersion": 1,
-  "type": "srdf.solvePose",
-  "payload": {
-    "file": "robot.srdf",
-    "target": {
-      "endEffector": "gripper_eef",
-      "targetLink": "tool0",
-      "frame": "base_link",
-      "xyz": [0.4, 0.0, 0.2],
-      "quat_xyzw": [0, 0, 0, 1]
-    },
-    "moveit2": {
-      "planningGroup": "manipulator",
-      "targetLink": "tool0"
-    }
-  }
-}
-```
-
-Use position-only IK only when orientation is intentionally unconstrained. CAD Viewer owns the local MoveIt2 server startup and protocol details.
+When handing an SRDF to another tool or reviewer, state the intended target/TCP link explicitly whenever it differs from the inferred group tip — target choice is a semantic decision no consumer can infer.

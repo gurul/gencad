@@ -1,0 +1,17 @@
+# Next.js
+.next/
+out/
+
+# Dependencies
+node_modules/
+
+# Build and cache output
+dist/
+coverage/
+*.tsbuildinfo
+
+# Local env
+.env*.local
+
+# Generated from src/lib/icon/model.mjs before dev/build
+/public/icon/icon.glb
