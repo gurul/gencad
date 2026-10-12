@@ -91,6 +91,42 @@ TOOLS = [
             "required": ["fcstd_path", "object_name", "axis", "offset", "out_png"],
         },
     },
+    {
+        "name": "enclose_project",
+        "description": (
+            "Scaffold an Enclose project folder (the desktop CAD workbench in "
+            "the enclose/ submodule) from STEP files or a FreeCAD .FCStd "
+            "document. Give exactly one of step_paths or fcstd_path. An FCStd "
+            "document is exported through freecadcmd into one STEP file in "
+            "out_dir/source/, one named body per object. The folder gets the "
+            "Enclose kit exporter, a build123d model.py that reads every body "
+            "of the STEP files this call put in source/ as a part, enclose.json and, by default, .mcp.json plus "
+            ".claude/settings.json registering these gencad tools for Claude "
+            "Code in that folder. With build_python (a Python that has build123d) the model "
+            "is also built and the part labels are returned."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "out_dir": {"type": "string",
+                            "description": "Absolute path of the project folder to create or fill"},
+                "step_paths": {"type": "array", "items": {"type": "string"},
+                               "description": "Absolute paths of .step/.stp files to copy into source/"},
+                "fcstd_path": {"type": "string",
+                               "description": "Absolute path of a .FCStd document to export to STEP"},
+                "objects": {"type": "array", "items": {"type": "string"},
+                            "description": "With fcstd_path: export only these object names (or labels). Default: every visible solid-bearing Part feature or App::Link that no other visible one consumes (a boolean operand, a Body's feature); attachment references, a mirror's or Draft clone's source and a link's target are not consumption, and the solids left out are listed in consumed_objects"},
+                "name": {"type": "string",
+                         "description": "Model title (default: the input file stem, title-cased)"},
+                "build_python": {"type": "string",
+                                 "description": "Python with build123d, as an absolute path or a bare name looked up on PATH: run model.py now and use it as the build command in enclose.json (default build: python3 model.py, not run)"},
+                "with_mcp": {"type": "boolean", "default": True,
+                             "description": "Write .mcp.json and .claude/settings.json registering the gencad server (default true)"},
+                "overwrite": {"type": "boolean", "default": False,
+                              "description": "Replace an existing model.py / enclose.json in out_dir (default false: refuse)"},
+            },
+            "required": ["out_dir"],
+        },
+    },
 ]
 
 
@@ -160,9 +196,68 @@ def tool_render_section(args):
     return "render failed (exit %d)\n%s" % (code, out), True
 
 
+def _load_enclose_project():
+    tools_dir = os.path.normpath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    import enclose_project
+    return enclose_project
+
+
+def _is_str_list(value):
+    return (isinstance(value, list)
+            and all(isinstance(v, str) and v for v in value))
+
+
+def tool_enclose_project(args):
+    """Returns (text, is_error)."""
+    out_dir = args.get("out_dir")
+    if not isinstance(out_dir, str) or not os.path.isabs(out_dir):
+        return "error: out_dir must be an absolute path, got %r" % (out_dir,), True
+    for key in ("step_paths", "objects"):
+        if args.get(key) is not None and not _is_str_list(args[key]):
+            return "error: %s must be an array of non-empty strings" % key, True
+    for key in ("fcstd_path", "name", "build_python"):
+        if args.get(key) is not None and (not isinstance(args[key], str)
+                                          or not args[key]):
+            return "error: %s must be a non-empty string" % key, True
+    for key in ("with_mcp", "overwrite"):
+        if args.get(key) is not None and not isinstance(args[key], bool):
+            return "error: %s must be a boolean" % key, True
+    paths = list(args.get("step_paths") or [])
+    if args.get("fcstd_path"):
+        paths.append(args["fcstd_path"])
+    # a bare interpreter name (python3.12) is looked up on PATH; anything
+    # with a separator in it must be absolute
+    if args.get("build_python") and os.sep in args["build_python"]:
+        paths.append(args["build_python"])
+    for p in paths:
+        if not os.path.isabs(p):
+            return "error: paths must be absolute, got %r" % p, True
+    ep = _load_enclose_project()
+    fcstd = args.get("fcstd_path")
+    try:
+        result = ep.make_project(
+            out_dir,
+            step_paths=args.get("step_paths"),
+            fcstd_path=fcstd,
+            objects=args.get("objects"),
+            name=args.get("name"),
+            build_python=args.get("build_python"),
+            with_mcp=args.get("with_mcp", True) is not False,
+            overwrite=bool(args.get("overwrite", False)),
+            # resolved lazily: only an FCStd export needs FreeCAD
+            freecadcmd=freecadcmd() if fcstd else None)
+    except (ep.EncloseProjectError, OSError, RuntimeError) as e:
+        return "error: %s" % e, True
+    return "%s\n%s" % (ep.summarize(result), json.dumps(result, indent=1)), False
+
+
 TOOL_FUNCS = {
     "freecad_run": tool_freecad_run,
     "freecad_render_section": tool_render_section,
+    "enclose_project": tool_enclose_project,
 }
 
 

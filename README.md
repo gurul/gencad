@@ -18,12 +18,14 @@ agent ──(MCP)──▶ gencad server ──▶ freecadcmd (FreeCAD headless)
 ## What's here
 
 - **`server/gencad_mcp.py`** — a zero-dependency MCP server (stdlib only,
-  stdio transport) exposing two tools:
+  stdio transport) exposing three tools:
   - `freecad_run` — execute a parametric build script inside `freecadcmd`
   - `freecad_render_section` — slice any solid in a `.FCStd` with a plane and
     render a filled cross-section PNG (material vs. void by containment
     parity), so hole patterns, wall thicknesses and debossed text can be
     visually verified before anything is printed
+  - `enclose_project` — scaffold an [Enclose](docs/enclose.md) project from
+    STEP files or a `.FCStd` (and optionally build it)
 - **`tools/render_section.py`** — the renderer itself; also usable standalone
   inside `freecadcmd`
 - **`tools/render_iso.py`** — shaded isometric renders: tessellates named
@@ -65,12 +67,23 @@ agent ──(MCP)──▶ gencad server ──▶ freecadcmd (FreeCAD headless)
   is the generative-design counterpart to gencad's scripted loop. Submodule,
   not vendored — how it is pinned and updated:
   [docs/geofield-bracket.md](docs/geofield-bracket.md)
+- **`enclose/`** — a git submodule pointing at
+  [enclosedev/enclose](https://github.com/enclosedev/enclose) (AGPL-3.0): an
+  Electron app (macOS) where a code-built CAD model — one build123d
+  `model.py` per project folder — is inspected part by part in 3D and changed
+  by asking Claude Code, which runs in that folder. gencad's bridge,
+  `tools/enclose_project.py` (also the MCP tool `enclose_project`), turns a
+  `.step` or `.FCStd` into an Enclose project and registers gencad's server
+  in it, so Claude inside Enclose keeps the FreeCAD tools:
+  [docs/enclose.md](docs/enclose.md)
 - **`models/`** — example parts built with this loop. Each `build_*.py` writes
   its `.FCStd`/`.step` beside itself (outputs are gitignored, so run the
   script to regenerate them); `section_*.png` are sample section renders.
 - **`scripts/`** — upkeep for the vendored `text-to-cad/` tree
   (`pull-text-to-cad.sh`, `apply-gencad-patches.sh`); see
-  [docs/vendoring.md](docs/vendoring.md)
+  [docs/vendoring.md](docs/vendoring.md); and `enclose.sh` — Enclose setup
+  (build123d venv), launching the app, scaffolding projects and checking
+  upstream; see [docs/enclose.md](docs/enclose.md)
 
 ## Docs
 
@@ -79,6 +92,7 @@ agent ──(MCP)──▶ gencad server ──▶ freecadcmd (FreeCAD headless)
 - [docs/pcb.md](docs/pcb.md) — pcb/Zener, the electrical side of the loop
 - [docs/chili3d.md](docs/chili3d.md) — the browser CAD app for human inspection
 - [docs/geofield-bracket.md](docs/geofield-bracket.md) — the generative bracket submodule
+- [docs/enclose.md](docs/enclose.md) — the Enclose workbench submodule and the gencad → Enclose bridge
 - [pcbtools/README.md](pcbtools/README.md) — headless KiCad layout automation
 - [scan2cad/README.md](scan2cad/README.md) — mesh scan to editable CAD draft
 

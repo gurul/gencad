@@ -5,6 +5,7 @@ __pycache__/
 *.step
 *.3mf
 .venv-viewer/
+.venv-enclose/
 models/__cadgen__/**/.*.generation.lock
 models/__cadgen__/**/.*.generation.progress.json
 pcbtools/proofs/.lake/
