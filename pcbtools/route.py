@@ -67,11 +67,14 @@ class Grid:
             m = board.edge_clearance
             self.off = ~((self.GX >= l + m) & (self.GX <= r - m) &
                          (self.GY >= t + m) & (self.GY <= bt - m))
-        self.ko_track = {lay: self._keepout_mask(lay, "no_tracks")
-                         for lay in layers}
-        self.ko_via = self._keepout_mask(None, "no_vias")
+        self._ko_cache = {}
 
-    def _keepout_mask(self, layer, kind):
+    def _keepout_mask(self, layer, kind, grow=0.0):
+        """Cells inside a rule area forbidding ``kind``, or within ``grow``
+        of its outline (``grow`` = copper half-width + clearance + slop)."""
+        key = (layer, kind, round(grow, 6))
+        if key in self._ko_cache:
+            return self._ko_cache[key]
         m = np.zeros_like(self.off)
         for ko in self.b.g.get("keepouts", []):
             if not ko.get(kind) or not ko["poly"]:
@@ -91,6 +94,11 @@ class Grid:
                 inside ^= cond & (self.GX < xin)
                 j = i
             m |= inside
+            if grow > 0:
+                for i in range(len(poly)):
+                    k = (i + 1) % len(poly)
+                    m |= self.mask_seg(px[i], py[i], px[k], py[k], grow)
+        self._ko_cache[key] = m
         return m
 
     def idx(self, x, y):
@@ -120,9 +128,9 @@ class Grid:
         b = self.b
         tb = tw / 2 + b.clearance + self.slop
         vb = vd / 2 + b.clearance + self.slop
-        blk = {lay: (self.off | self.ko_track[lay]).copy()
+        blk = {lay: self.off | self._keepout_mask(lay, "no_tracks", tb)
                for lay in self.layers}
-        vblk = (self.off | self.ko_via).copy()
+        vblk = self.off | self._keepout_mask(None, "no_vias", vb)
         for p in b.g["pads"]:
             if p["net"] == net:
                 continue
@@ -394,6 +402,13 @@ def route_all(board, grid, layers, air, classes, seed, exempt_gfx_nets=()):
         net = e["net"]
         comps = net_components(board, net, layers)
         if len(comps) < 2:
+            if len(comps) == 1 and any(r["net"] == net for r in routes):
+                continue        # an earlier route this pass joined it
+            # nothing to join in this geometry (e.g. the airwire's net name
+            # matches no item) — report it, never drop it silently
+            failed.append({"net": net, "a": e["a"], "b": e["b"],
+                           "reason": "%d component(s) found for net"
+                                     % len(comps)})
             continue
 
         def which(x, y):
@@ -467,6 +482,20 @@ def route_all(board, grid, layers, air, classes, seed, exempt_gfx_nets=()):
     return routes, failed
 
 
+def select_layers(arg, board_layers):
+    """Parse a --layers comma list; every entry must be a board copper layer.
+
+    Default (no arg): the outer copper layers present on the board."""
+    if not arg:
+        return [l for l in board_layers if l in ("F.Cu", "B.Cu")]
+    layers = [l.strip() for l in arg.split(",") if l.strip()]
+    bad = [l for l in layers if l not in board_layers]
+    if bad or not layers:
+        raise ValueError("--layers %s not on this board; board copper "
+                         "layers are %s" % (bad or arg, board_layers))
+    return layers
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("geometry")
@@ -484,8 +513,10 @@ def main():
                for c in args.classes.split(",")]
     exempt = tuple(n for n in args.exempt_gfx_nets.split(",") if n)
     geo = json.load(open(args.geometry))
-    layers = args.layers.split(",") if args.layers else \
-        [l for l in geo["layers"] if l in ("F.Cu", "B.Cu")]
+    try:
+        layers = select_layers(args.layers, geo["layers"])
+    except ValueError as e:
+        sys.exit("route.py: %s" % e)
     air = json.load(open(args.airwires))
 
     best = None

@@ -14,7 +14,8 @@ import shutil
 import subprocess
 import sys
 
-_MAC_APP = "/Applications/KiCad/KiCad.app/Contents"
+_REEXEC_MARK = "PCBTOOLS_REEXEC"   # set before execv; guards a re-exec loop
+_MAC_APP ="/Applications/KiCad/KiCad.app/Contents"
 _CANDIDATE_PYTHONS = [
     os.environ.get("KICAD_PYTHON", ""),
     _MAC_APP + "/Frameworks/Python.framework/Versions/Current/bin/python3",
@@ -45,13 +46,22 @@ def ensure_pcbnew():
     """Import and return pcbnew, re-executing under KiCad's Python if needed."""
     try:
         import pcbnew  # noqa: F401
+        os.environ.pop(_REEXEC_MARK, None)   # children start with a clean slate
         return __import__("pcbnew")
     except ImportError:
         pass
+    if os.environ.get(_REEXEC_MARK) == "1":
+        # we already re-executed once and pcbnew is still missing: the
+        # chosen interpreter is not KiCad's — stop instead of looping
+        sys.exit("pcbnew bindings unavailable under %s (re-exec target; "
+                 "KICAD_PYTHON=%s). Point KICAD_PYTHON at KiCad's bundled "
+                 "python3." % (sys.executable,
+                               os.environ.get("KICAD_PYTHON") or "<unset>"))
     py = kicad_python()
     if py is None or os.path.realpath(py) == os.path.realpath(sys.executable):
         raise RuntimeError(
             "pcbnew bindings unavailable; install KiCad or set KICAD_PYTHON")
+    os.environ[_REEXEC_MARK] = "1"
     os.execv(py, [py] + sys.argv)
 
 

@@ -66,8 +66,11 @@ def main():
                   for l in board.GetEnabledLayers().CuStack()}
 
     def layer_id(name):
-        return name_to_id.get(LAY.get(name, name),
-                              name_to_id.get(name, pcbnew.F_Cu))
+        lid = name_to_id.get(LAY.get(name, name), name_to_id.get(name))
+        if lid is None:
+            raise ValueError("unknown copper layer %r; board has %s"
+                             % (name, sorted(name_to_id)))
+        return lid
 
     nets = board.GetNetsByName()
 

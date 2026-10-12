@@ -81,11 +81,15 @@ def main():
             route_args += ["--layers", args.layers]
         if args.exempt_gfx_nets:
             route_args += ["--exempt-gfx-nets", args.exempt_gfx_nets]
+        # never let a previous round's routes.json stand in for this one
+        if os.path.exists(routes):
+            os.unlink(routes)
         cp = subprocess.run(route_args, capture_output=True, text=True)
         for line in cp.stdout.splitlines():
             print("  " + line)
-        if not os.path.exists(routes):
-            sys.exit("router failed: %s" % cp.stderr)
+        if cp.returncode != 0 or not os.path.exists(routes):
+            sys.exit("router failed (exit %d): %s"
+                     % (cp.returncode, cp.stderr))
 
         cp = sh("write_board.py", args.board, routes, "-g", geo)
         print("  " + (cp.stdout.strip().splitlines() or ["?"])[-1])

@@ -102,21 +102,35 @@ class Board:
         m = self.edge_clearance + half
         return not (l + m <= x <= r - m and t + m <= y <= b - m)
 
-    def _keepout_hit(self, x, y, layer, kind):
+    def _keepout_hit(self, seg, layer, kind, half=0.0):
+        """True when copper of half-width ``half`` along ``seg`` comes
+        within ``clearance`` of (or enters) a rule area forbidding ``kind``."""
+        x1, y1, x2, y2 = seg
         for ko in self.g.get("keepouts", []):
             if not ko.get("no_tracks" if kind == "track" else "no_vias"):
                 continue
             if kind == "track" and layer not in ko["layers"]:
                 continue
-            if ko["poly"] and _in_poly(x, y, ko["poly"]):
+            poly = ko["poly"]
+            if not poly:
+                continue
+            if _in_poly(x1, y1, poly) or _in_poly(x2, y2, poly):
                 return True
+            n = len(poly)
+            for i in range(n):
+                edge = (poly[i][0], poly[i][1],
+                        poly[(i + 1) % n][0], poly[(i + 1) % n][1])
+                if _seg_seg(seg, edge) < half + self.clearance:
+                    return True
         return False
 
     def _pad_on_layer(self, p, layer):
+        # dump_board records outer faces as "F"/"B" and inner copper by its
+        # full name ("In1.Cu"); SMD pads never list an inner layer
         short = layer.replace(".Cu", "")
         if short in ("F", "B"):
             return short in p["layers"]
-        return False        # SMD pads never obstruct inner layers; holes do
+        return layer in p["layers"]
 
     def pad_box(self, p):
         if p.get("custom") and "anchor" in p:
@@ -136,13 +150,9 @@ class Board:
             if self._off_board(px, py, half):
                 v.append("edge: (%.2f,%.2f)" % (px, py))
                 break
-        steps = max(2, int(math.hypot(x2 - x1, y2 - y1) / 0.25) + 1)
-        for k in range(steps + 1):
-            px = x1 + (x2 - x1) * k / steps
-            py = y1 + (y2 - y1) * k / steps
-            if self._keepout_hit(px, py, layer, "track"):
-                v.append("keepout: (%.2f,%.2f) on %s" % (px, py, layer))
-                break
+        if self._keepout_hit(seg, layer, "track", half):
+            v.append("keepout: (%.2f,%.2f)->(%.2f,%.2f) on %s"
+                     % (x1, y1, x2, y2, layer))
         for p in self.g["pads"]:
             if p["net"] == net or not self._pad_on_layer(p, layer):
                 continue
@@ -181,7 +191,7 @@ class Board:
         half = dia / 2.0
         if self._off_board(x, y, half):
             v.append("edge")
-        if self._keepout_hit(x, y, "F.Cu", "via"):
+        if self._keepout_hit((x, y, x, y), "F.Cu", "via", half):
             v.append("keepout")
         for p in self.g["pads"]:
             if p["net"] == net:
