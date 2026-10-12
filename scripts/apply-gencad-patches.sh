@@ -13,7 +13,15 @@ import sys
 
 revert = "--revert" in sys.argv[1:]
 
+import os
+
 path = "text-to-cad/skills/cad-viewer/scripts/viewer/dist/index.html"
+if not os.path.exists(path):
+    # Upstream 0.5.0+ rebuilt the Viewer as a source app (apps/web) whose
+    # header links come from its build environment, so this HTML patch has
+    # nothing to edit. Skip it rather than block every upstream pull.
+    print("skipped gencad patch: " + path + " not in this upstream version")
+    sys.exit(0)
 src = open(path).read()
 # strip existing patch block: marker form, or the pre-marker legacy form
 src = re.sub(r"[ \t]*<!-- gencad:patch-start -->.*?<!-- gencad:patch-end -->\n",

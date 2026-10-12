@@ -43,8 +43,14 @@ needs Settings → Actions → General → "Allow GitHub Actions to create and
 approve pull requests" enabled to open the PR; every scheduled run from
 2026-08-24 to 2026-10-05 failed on that setting.
 
-**Open as of 2026-10-11:** upstream `3eb1f9b8` ("cadgen 0.5.0") moved the
-Viewer to `apps/` and deleted
-`skills/cad-viewer/scripts/viewer/dist/index.html`, the file the local
-patch edits. Until the patch is ported to the new location (or dropped),
-the pull stops at the re-apply step and commits nothing.
+**Upstream 0.5 and later.** Upstream rebuilt the Viewer as a source app
+(`apps/web`, launched with `cadgen viewer`) and removed
+`skills/cad-viewer/`. The HTML patch that hid the header's community links
+has no file to edit there, so `apply-gencad-patches.sh` skips it and says so;
+in the new Viewer those links come from its build environment. The update
+also makes `cadgen` send usage telemetry by default. Turn it off with
+`uvx cadgen telemetry off`, or per process with `CADGEN_TELEMETRY=0` or
+`DO_NOT_TRACK=1` (upstream README, "Telemetry"). Upstream's
+`docs/migrations/migrating-0.4-to-0.5.md` covers the rest of the move; the
+README's CAD Viewer section describes the vendored 0.4.20 layout until the
+update PR is merged.
