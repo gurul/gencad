@@ -36,6 +36,22 @@ def run_drc(board_path):
     return rep
 
 
+def net_from_desc(desc):
+    """Net name from a DRC item description such as
+    ``Pad 1 [/DATA[0]] of R1 on F.Cu``. The name sits between the first
+    " [" and the last "] " (or a trailing "]"), so brackets inside the net
+    name survive. Returns "?" when no net is present."""
+    i = desc.find(" [")
+    if i < 0:
+        return "?"
+    j = desc.rfind("] ")
+    if j <= i:
+        j = len(desc) - 1 if desc.endswith("]") else -1
+    if j <= i:
+        return "?"
+    return desc[i + 2:j]
+
+
 def summarize(rep, origin=(0.0, 0.0)):
     ox, oy = origin
     errs = [v for v in rep.get("violations", [])
@@ -45,8 +61,7 @@ def summarize(rep, origin=(0.0, 0.0)):
         items = u.get("items", [])
         if len(items) < 2:
             continue
-        desc = items[0].get("description", "")
-        net = desc.split("[")[1].split("]")[0] if "[" in desc else "?"
+        net = net_from_desc(items[0].get("description", ""))
         airwires.append({
             "net": net,
             "a": {"x": round(items[0]["pos"]["x"] - ox, 3),

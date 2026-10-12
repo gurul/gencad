@@ -33,6 +33,54 @@ from kicad_env import ensure_pcbnew
 pcbnew = ensure_pcbnew()
 
 
+CIRCLE_SIDES = 32      # circle outlines are emitted as this many-gon
+
+
+def gfx_segments(g, ref, layer_name, X, Y, M):
+    """Stroked outline segments for one footprint copper PCB_SHAPE.
+
+    Segments and arcs map 1:1 (arcs keep ``arc_mid``); rects emit their four
+    sides, circles a CIRCLE_SIDES-gon, polygons every outline edge. Fill is
+    not modelled: only the outline obstructs. Raises on an unsupported shape
+    so the caller can warn."""
+    lay = layer_name[int(g.GetLayer())]
+    w = round(max(0.0, M(g.GetWidth())), 3)
+    st = g.GetShape()
+
+    def seg(ax, ay, bx, by):
+        return {"ref": ref, "layer": lay, "x1": X(ax), "y1": Y(ay),
+                "x2": X(bx), "y2": Y(by), "w": w}
+
+    def ring(pts):
+        n = len(pts)
+        return [seg(pts[i][0], pts[i][1], pts[(i + 1) % n][0],
+                    pts[(i + 1) % n][1]) for i in range(n) if n > 1]
+
+    if st in (pcbnew.SHAPE_T_SEGMENT, pcbnew.SHAPE_T_ARC):
+        s, e = g.GetStart(), g.GetEnd()
+        out = seg(s.x, s.y, e.x, e.y)
+        if st == pcbnew.SHAPE_T_ARC:
+            m = g.GetArcMid()
+            out["arc_mid"] = [X(m.x), Y(m.y)]
+        return [out]
+    if st == pcbnew.SHAPE_T_RECT:
+        return ring([(c.x, c.y) for c in g.GetRectCorners()])
+    if st == pcbnew.SHAPE_T_CIRCLE:
+        c, r = g.GetCenter(), g.GetRadius()
+        return ring([(c.x + r * math.cos(2 * math.pi * k / CIRCLE_SIDES),
+                      c.y + r * math.sin(2 * math.pi * k / CIRCLE_SIDES))
+                     for k in range(CIRCLE_SIDES)])
+    if st == pcbnew.SHAPE_T_POLY:
+        ps = g.GetPolyShape()
+        out = []
+        for oi in range(ps.OutlineCount()):
+            ol = ps.COutline(oi)
+            out += ring([(ol.CPoint(i).x, ol.CPoint(i).y)
+                         for i in range(ol.PointCount())])
+        return out
+    raise ValueError("unsupported shape type")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("board")
@@ -83,6 +131,8 @@ def main():
     for lid in board.GetEnabledLayers().CuStack():
         layer_name[int(lid)] = board.GetLayerName(lid)
     copper_ids = set(layer_name)
+    inner_ids = sorted(lid for lid in copper_ids
+                       if lid not in (int(pcbnew.F_Cu), int(pcbnew.B_Cu)))
 
     pads, holes, copper_gfx = [], [], []
     for fp in board.GetFootprints():
@@ -92,8 +142,12 @@ def main():
             sz = p.GetSize()
             entry = {
                 "ref": ref, "num": p.GetNumber(), "net": p.GetNetname(),
+                # outer faces as "F"/"B"; inner copper by canonical name
+                # (through-hole pads carry copper on In*.Cu too)
                 "layers": [s for s, lid in (("F", pcbnew.F_Cu),
                                             ("B", pcbnew.B_Cu))
+                           if p.IsOnLayer(lid)] +
+                          [layer_name[lid] for lid in inner_ids
                            if p.IsOnLayer(lid)],
                 "box": [X(bbp.GetLeft()), Y(bbp.GetTop()),
                         X(bbp.GetRight()), Y(bbp.GetBottom())],
@@ -119,16 +173,12 @@ def main():
             if g.GetClass() != "PCB_SHAPE":
                 continue
             try:
-                s, e = g.GetStart(), g.GetEnd()
-                seg = {"ref": ref, "layer": layer_name[int(g.GetLayer())],
-                       "x1": X(s.x), "y1": Y(s.y), "x2": X(e.x), "y2": Y(e.y),
-                       "w": round(M(g.GetWidth()), 3)}
-                if g.GetShape() == pcbnew.SHAPE_T_ARC:
-                    m = g.GetArcMid()
-                    seg["arc_mid"] = [X(m.x), Y(m.y)]
-                copper_gfx.append(seg)
-            except Exception:
-                pass
+                copper_gfx += gfx_segments(g, ref, layer_name, X, Y, M)
+            except Exception as exc:
+                sys.stderr.write(
+                    "dump_board: WARNING skipped %s copper shape %s on %s: "
+                    "%s\n" % (ref, g.ShowShape(),
+                              layer_name[int(g.GetLayer())], exc))
 
     tracks, vias = [], []
     for t in board.GetTracks():
@@ -145,7 +195,11 @@ def main():
                            "w": round(M(t.GetWidth()), 3)})
 
     keepouts, zones = [], []
-    for z in board.Zones():
+    # footprint-owned rule areas (e.g. a module's antenna keep-out) are not
+    # in board.Zones(); add them so checkers and routers honour them
+    fp_rule_areas = [z for fp in board.GetFootprints() for z in fp.Zones()
+                     if z.GetIsRuleArea()]
+    for z in list(board.Zones()) + fp_rule_areas:
         lays = [layer_name[int(l)] for l in z.GetLayerSet().CuStack()
                 if int(l) in layer_name]
         if z.GetIsRuleArea():
