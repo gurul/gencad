@@ -94,6 +94,14 @@ TOOLS = [
 ]
 
 
+# freecadcmd catches a script's uncaught exception, prints this line and still
+# exits 0 — so the exit code alone cannot tell success from a crashed script.
+FREECAD_EXCEPTION = "Exception while processing file"
+# printed by tools/render_section.py as its last action, after savefig
+RENDER_SENTINEL = "gencad-render-ok:"
+AXES = ("x", "y", "z")
+
+
 def run_freecad(script_path, timeout_s=600, extra_env=None):
     env = dict(os.environ)
     if extra_env:
@@ -109,14 +117,31 @@ def run_freecad(script_path, timeout_s=600, extra_env=None):
 
 
 def tool_freecad_run(args):
-    path = args["script_path"]
-    if not os.path.isfile(path):
-        return "error: no such script: %s" % path
+    """Returns (text, is_error)."""
+    path = args.get("script_path")
+    if not isinstance(path, str) or not os.path.isfile(path):
+        return "error: no such script: %s" % path, True
     code, out = run_freecad(path, args.get("timeout_s", 600))
-    return "exit %d\n%s" % (code, out)
+    if code != 0 or FREECAD_EXCEPTION in out:
+        return "script failed (exit %d)\n%s" % (code, out), True
+    return "exit %d\n%s" % (code, out), False
 
 
 def tool_render_section(args):
+    """Returns (text, is_error)."""
+    for key in ("fcstd_path", "object_name", "out_png"):
+        if not isinstance(args.get(key), str) or not args[key]:
+            return "error: %s must be a non-empty string" % key, True
+    if args.get("axis") not in AXES:
+        return ("error: axis must be one of %s, got %r"
+                % (", ".join(AXES), args.get("axis"))), True
+    offset = args.get("offset")
+    if isinstance(offset, bool) or not isinstance(offset, (int, float)):
+        return "error: offset must be a number, got %r" % (offset,), True
+    out_png = args["out_png"]
+    # a PNG left by an earlier render must never pass as this render's output
+    if os.path.lexists(out_png):
+        os.unlink(out_png)
     helper = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "..", "tools", "render_section.py")
     helper = os.path.normpath(helper)
@@ -127,13 +152,31 @@ def tool_render_section(args):
         code, out = run_freecad(helper, 300, {"GENCAD_SECTION_ARGS": cfg})
     finally:
         os.unlink(cfg)
-    if code == 0 and os.path.exists(args["out_png"]):
-        return "rendered: %s\n%s" % (args["out_png"], out[-2000:])
-    return "render failed (exit %d)\n%s" % (code, out)
+    ok = (code == 0 and FREECAD_EXCEPTION not in out
+          and (RENDER_SENTINEL + " " + out_png) in out
+          and os.path.isfile(out_png))
+    if ok:
+        return "rendered: %s\n%s" % (out_png, out[-2000:]), False
+    return "render failed (exit %d)\n%s" % (code, out), True
+
+
+TOOL_FUNCS = {
+    "freecad_run": tool_freecad_run,
+    "freecad_render_section": tool_render_section,
+}
+
+
+class RpcError(Exception):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+        self.message = message
 
 
 def handle(req):
     method = req.get("method")
+    if not isinstance(method, str):
+        raise RpcError(-32600, "invalid request: method must be a string")
     if method == "initialize":
         return {"protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {}},
@@ -141,22 +184,40 @@ def handle(req):
     if method == "tools/list":
         return {"tools": TOOLS}
     if method == "tools/call":
-        name = req["params"]["name"]
-        args = req["params"].get("arguments", {})
+        params = req.get("params")
+        if not isinstance(params, dict):
+            raise RpcError(-32602, "invalid params: params must be an object")
+        name = params.get("name")
+        args = params.get("arguments", {})
+        if args is None:
+            args = {}
+        if not isinstance(args, dict):
+            raise RpcError(-32602, "invalid params: arguments must be an object")
         try:
-            if name == "freecad_run":
-                text = tool_freecad_run(args)
-            elif name == "freecad_render_section":
-                text = tool_render_section(args)
-            else:
+            func = TOOL_FUNCS.get(name)
+            if func is None:
                 raise ValueError("unknown tool: %s" % name)
-            return {"content": [{"type": "text", "text": text}]}
+            text, is_error = func(args)
+            result = {"content": [{"type": "text", "text": text}]}
+            if is_error:
+                result["isError"] = True
+            return result
         except Exception as e:  # tool errors go back as content, not crashes
             return {"content": [{"type": "text", "text": "error: %s" % e}],
                     "isError": True}
     if method == "ping":
         return {}
-    return None
+    raise RpcError(-32601, "method not found: %s" % method)
+
+
+def respond(req_id, result=None, error=None):
+    resp = {"jsonrpc": "2.0", "id": req_id}
+    if error is not None:
+        resp["error"] = error
+    else:
+        resp["result"] = result
+    sys.stdout.write(json.dumps(resp) + "\n")
+    sys.stdout.flush()
 
 
 def main():
@@ -166,19 +227,23 @@ def main():
             continue
         try:
             req = json.loads(line)
-        except json.JSONDecodeError:
+        except ValueError:
+            print("gencad: skipped unparseable line", file=sys.stderr)
+            continue
+        if not isinstance(req, dict):
+            # no recoverable id, so there is nobody to answer — skip it
+            print("gencad: skipped non-object message", file=sys.stderr)
             continue
         if "id" not in req:      # notification — nothing to answer
             continue
-        result = handle(req)
-        if result is None:
-            resp = {"jsonrpc": "2.0", "id": req["id"],
-                    "error": {"code": -32601,
-                              "message": "method not found: %s" % req.get("method")}}
-        else:
-            resp = {"jsonrpc": "2.0", "id": req["id"], "result": result}
-        sys.stdout.write(json.dumps(resp) + "\n")
-        sys.stdout.flush()
+        req_id = req["id"]
+        try:
+            respond(req_id, result=handle(req))
+        except RpcError as e:
+            respond(req_id, error={"code": e.code, "message": e.message})
+        except Exception as e:  # never let one request take the server down
+            respond(req_id, error={"code": -32603,
+                                   "message": "internal error: %s" % e})
 
 
 if __name__ == "__main__":
