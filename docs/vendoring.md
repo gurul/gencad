@@ -34,3 +34,17 @@ recorded in `text-to-cad/.upstream-commit` and opens one; a weekly GitHub
 Action runs it automatically. The pull wraps the patch script as
 revert → apply upstream → re-apply, so local patches never conflict with
 upstream churn.
+
+The pull fails without committing when the upstream diff does not apply
+cleanly (3-way conflicts excepted, which land in the PR for review) or
+when the local patches cannot be re-applied. If PR creation fails, the
+script deletes the branch it pushed and exits non-zero. The weekly Action
+needs Settings → Actions → General → "Allow GitHub Actions to create and
+approve pull requests" enabled to open the PR; every scheduled run from
+2026-08-24 to 2026-10-05 failed on that setting.
+
+**Open as of 2026-10-11:** upstream `3eb1f9b8` ("cadgen 0.5.0") moved the
+Viewer to `apps/` and deleted
+`skills/cad-viewer/scripts/viewer/dist/index.html`, the file the local
+patch edits. Until the patch is ported to the new location (or dropped),
+the pull stops at the re-apply step and commits nothing.
