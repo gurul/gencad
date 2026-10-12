@@ -135,7 +135,8 @@ def test_initialize_and_tools_list():
     assert rc == 0
     assert resp[1]["result"]["serverInfo"]["name"] == "gencad"
     names = {t["name"] for t in resp[2]["result"]["tools"]}
-    assert names == {"freecad_run", "freecad_render_section"}
+    assert names == {"freecad_run", "freecad_render_section",
+                     "enclose_project"}
 
 
 # --- fix 2: freecad_run error paths ----------------------------------------
@@ -241,3 +242,139 @@ def test_render_bad_args_rejected_before_freecad(tmp_path, fake_env,
     res = resp[1]["result"]
     assert res.get("isError") is True
     assert res["content"][0]["text"].startswith("error:")
+
+
+# --- enclose_project: scaffold an Enclose project over MCP -----------------
+# `fake_kit` (conftest.py) stands in for the Enclose kit; the build python is
+# this interpreter running the scaffolded model.py against that stub.
+
+from conftest import step_text  # noqa: E402
+
+
+def test_enclose_project_schema_lists_every_input():
+    resp, _, _ = serve([rpc(1, "tools/list")])
+    tool = next(t for t in resp[1]["result"]["tools"]
+                if t["name"] == "enclose_project")
+    schema = tool["inputSchema"]
+    assert set(schema["properties"]) == {
+        "out_dir", "step_paths", "fcstd_path", "objects", "name",
+        "build_python", "with_mcp", "overwrite"}
+    assert schema["required"] == ["out_dir"]
+    assert schema["properties"]["with_mcp"]["default"] is True
+    assert schema["properties"]["overwrite"]["default"] is False
+
+
+def test_enclose_project_happy_path(tmp_path, fake_env, fake_kit):
+    fake_env["GENCAD_ENCLOSE_ROOT"] = str(fake_kit)
+    step = tmp_path / "pair.step"
+    step.write_text(step_text("Base plate", "Post"))
+    out = tmp_path / "proj"
+    args = {"out_dir": str(out), "step_paths": [str(step)], "name": "Pair",
+            "build_python": sys.executable}
+    resp, rc, err = serve([call(1, "enclose_project", args),
+                           call(2, "enclose_project", args), PING], fake_env)
+    assert rc == 0, err
+    res = resp[1]["result"]
+    text = res["content"][0]["text"]
+    assert not res.get("isError"), text
+    assert "built 2 parts: Base plate, Post" in text
+    detail = json.loads(text[text.index("{"):])
+    assert detail["built"] is True
+    assert detail["parts"] == ["Base plate", "Post"]
+    man = json.loads((out / "build" / "enclose.model.json").read_text())
+    assert man["title"] == "Pair"
+    mcp = json.loads((out / ".mcp.json").read_text())
+    assert mcp["mcpServers"]["gencad"]["args"] == [SERVER]
+    # the folder now holds a project: a second call without overwrite refuses
+    assert resp[2]["result"].get("isError") is True
+    assert "overwrite" in resp[2]["result"]["content"][0]["text"]
+    assert 999 in resp
+
+
+def test_enclose_project_fcstd_uses_freecadcmd(tmp_path, fake_env, fake_kit):
+    # the plain fake freecadcmd has no FreeCAD module: the export script's
+    # `import FreeCAD` raises, freecadcmd prints the exception and exits 0
+    fake_env["GENCAD_ENCLOSE_ROOT"] = str(fake_kit)
+    doc = tmp_path / "m.FCStd"
+    doc.write_bytes(b"PK")
+    out = tmp_path / "proj"
+    resp, rc, _ = serve([call(1, "enclose_project",
+                              {"out_dir": str(out), "fcstd_path": str(doc)})],
+                        fake_env)
+    res = resp[1]["result"]
+    assert res.get("isError") is True
+    assert "Exception while processing file" in res["content"][0]["text"]
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("args,needle", [
+    ({"out_dir": "relative/proj", "step_paths": ["/x.step"]}, "absolute"),
+    ({"step_paths": ["/x.step"]}, "out_dir"),
+    ({"out_dir": "/tmp/p", "step_paths": "/x.step"}, "step_paths"),
+    ({"out_dir": "/tmp/p", "step_paths": ["rel.step"]}, "absolute"),
+    ({"out_dir": "/tmp/p", "fcstd_path": 3}, "fcstd_path"),
+    ({"out_dir": "/tmp/p", "fcstd_path": "/a.FCStd",
+      "objects": [1]}, "objects"),
+    ({"out_dir": "/tmp/p", "step_paths": ["/x.step"],
+      "with_mcp": "yes"}, "with_mcp"),
+    ({"out_dir": "/tmp/p", "step_paths": ["/x.step"],
+      "overwrite": 1}, "overwrite"),
+    ({"out_dir": "/tmp/p", "step_paths": ["/x.step"],
+      "build_python": "venv/bin/python"}, "absolute"),
+])
+def test_enclose_project_bad_args_rejected(args, needle):
+    resp, rc, _ = serve([call(1, "enclose_project", args), PING])
+    assert rc == 0
+    res = resp[1]["result"]
+    assert res.get("isError") is True
+    assert res["content"][0]["text"].startswith("error:")
+    assert needle in res["content"][0]["text"]
+    assert 999 in resp
+
+
+def test_enclose_project_errors_are_tool_errors(tmp_path, fake_env, fake_kit):
+    step = tmp_path / "a.step"
+    step.write_text(step_text("A"))
+    doc = tmp_path / "m.FCStd"
+    doc.write_bytes(b"PK")
+    missing_kit = dict(fake_env, GENCAD_ENCLOSE_ROOT=str(tmp_path / "none"))
+    resp, rc, _ = serve([
+        call(1, "enclose_project", {"out_dir": str(tmp_path / "p1"),
+                                    "step_paths": [str(step)]}),
+        PING], missing_kit)
+    assert rc == 0 and 999 in resp
+    assert resp[1]["result"]["isError"] is True
+    assert "git submodule update --init enclose" in \
+        resp[1]["result"]["content"][0]["text"]
+    fake_env["GENCAD_ENCLOSE_ROOT"] = str(fake_kit)
+    resp, rc, _ = serve([
+        call(2, "enclose_project", {"out_dir": str(tmp_path / "p2"),
+                                    "step_paths": [str(step)],
+                                    "fcstd_path": str(doc)}),
+        call(3, "enclose_project", {"out_dir": str(tmp_path / "p3")}),
+        PING], fake_env)
+    assert rc == 0 and 999 in resp
+    for i in (2, 3):
+        assert resp[i]["result"]["isError"] is True
+        assert "exactly one" in resp[i]["result"]["content"][0]["text"]
+
+
+def test_enclose_project_bare_build_python_found_on_path(tmp_path, fake_env,
+                                                         fake_kit):
+    # a bare interpreter name is looked up on PATH, as the CLI does
+    fake_env["GENCAD_ENCLOSE_ROOT"] = str(fake_kit)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    os.symlink(sys.executable, str(bindir / "gencad-test-python"))
+    fake_env["PATH"] = str(bindir) + os.pathsep + fake_env.get("PATH", "")
+    step = tmp_path / "a.step"
+    step.write_text(step_text("A"))
+    out = tmp_path / "proj"
+    resp, rc, _ = serve([call(1, "enclose_project", {
+        "out_dir": str(out), "step_paths": [str(step)],
+        "build_python": "gencad-test-python", "with_mcp": False})], fake_env)
+    res = resp[1]["result"]
+    assert not res.get("isError"), res["content"][0]["text"]
+    assert "built 1 parts: A" in res["content"][0]["text"]
+    cfg = json.loads((out / "enclose.json").read_text())
+    assert cfg["build"] == "%s model.py" % (bindir / "gencad-test-python")
