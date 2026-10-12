@@ -32,6 +32,12 @@ dump_board ──▶ geometry.json ──▶ route ──▶ routes.json ──�
 Tests (pure Python, no KiCad needed):
 `uvx --with pytest --with numpy pytest pcbtools/tests -q`.
 
+Two properties are proved in Lean 4 (`pcbtools/proofs/`, no Mathlib):
+`drc.py` recovers bracketed net names such as `/DATA[0]` intact, and
+`kicad_env.py` re-execs at most once, so it cannot loop. Check them with
+`cd pcbtools/proofs && lake build`; the preconditions and modelling gaps are
+in [proofs/README.md](proofs/README.md).
+
 ## Quick start
 
 ```bash
