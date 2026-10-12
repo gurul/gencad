@@ -6,6 +6,11 @@ detected shape. There is no structured accessor: the string is the only
 description of the fitted parameters, so this module is the sole place in
 scan2cad that knows their text format. See docs/STACK_NOTES.md.
 
+Method reference: R. Schnabel, R. Wahl, R. Klein, "Efficient RANSAC for
+Point-Cloud Shape Detection", Computer Graphics Forum 26(2), 214-226, 2007,
+as cited by the CGAL Shape Detection user manual,
+https://doc.cgal.org/latest/Shape_detection/index.html
+
 Real strings from this wheel, captured 2026-08-19:
 
     Type: plane (-0.00247502, 0.00212651, 0.999995)x - -4.97749= 0 #Pts: 593

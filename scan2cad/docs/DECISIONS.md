@@ -12,16 +12,33 @@ then this file.
 Read the permanent rejection list and the embargoed claims list at the end
 before writing any new code or any new sentence about this project.
 
+Sources. On 2026-10-11 the figures below were checked against primary
+sources. A figure with a source names it in the text. A figure marked
+(unsourced) came from the 2026-08-19 research swarm and has no source this
+project has read; treat it as an estimate.
+
+[L] Luetzenburg, Kroon, Bjørk, "Evaluation of the Apple iPhone 12 Pro LiDAR
+for an Application in Geosciences", Scientific Reports 11:22221 (2021).
+https://pmc.ncbi.nlm.nih.gov/articles/PMC8593014/
+[K] Kim et al., "A Benchmark Comparison of Four Off-the-Shelf Proprietary
+Visual-Inertial Odometry Systems", Sensors 22(24):9873 (2022).
+https://doi.org/10.3390/s22249873
+[A] Apple, "Capturing photographs for RealityKit Object Capture".
+https://developer.apple.com/documentation/realitykit/capturing-photographs-for-realitykit-object-capture
+
 ## Verdict 1. The whole product, descoped
 
 The original product was a phone scan to parametric CAD pipeline whose only
 possible differentiator was precision, and the metrology killed that outright.
-iPhone LiDAR is plus or minus 10 millimetres with a feature floor around 5
-centimetres and machine learning hallucinated depth between roughly 576 real
-points; TrueDepth shows 1.8 to 4.5 millimetres of flatness error; ARKit drifts
-20 to 40 millimetres per second.
-A thirty dollar caliper delivers plus or minus 0.02 millimetres, three orders
-of magnitude better than anything this pipeline could ever emit.
+iPhone LiDAR gives about plus or minus 10 millimetres absolute accuracy on
+small objects, and accurate models only of objects above about 10 centimetres
+side length, with a detection limit around 5 centimetres [L]. The LiDAR
+emitter projects 576 points [L]; that the depth between them is filled in
+by machine learning is unsourced. TrueDepth shows 1.8 to 4.5 millimetres of flatness error
+(unsourced). ARKit drifts about 20 millimetres per second, as relative pose
+error [K].
+A thirty dollar caliper delivers plus or minus 0.02 millimetres (unsourced),
+more than two orders of magnitude better than anything this pipeline could ever emit.
 What defeated the total kill was accessibility, and only accessibility.
 Every incumbent, paid or free, terminates in an artefact a blind user cannot
 read: Backflip is a visual Fusion add in, Paramesh emits opaque STEP, Polycam
@@ -40,9 +57,9 @@ to chase a number the product no longer needs.
 
 The premise was a rewritten capture app logging 12 megapixel stills alongside
 ARKit poses, and the poses are the part that is dead on the evidence.
-ARKit VIO drifts 20 to 40 millimetres per second with discontinuous
-relocalisation jumps, so its poses are worse than useless at precision
-fidelity, and at coarse fidelity Stray Scanner already supplies ARKit poses,
+ARKit VIO drifts about 20 millimetres per second [K], with discontinuous
+relocalisation jumps (unsourced), so its poses are worse than useless at
+precision fidelity, and at coarse fidelity Stray Scanner already supplies ARKit poses,
 depth and confidence for free with zero engineering.
 The two places ARKit poses could actually plug into COLMAP are the two places
 they do damage: pose_prior_mapper is position only with manual database
@@ -55,7 +72,7 @@ reusable at all.
 It was also physically untestable on the night of the build: no phone, no
 signing, no device deployment.
 What survives is a written capture protocol rather than an app, which is step 5
-of docs/MORNING_PROTOCOL.md, plus one evidence gated contingency ticket for an
+of docs/CAPTURE_PROTOCOL.md, plus one evidence gated contingency ticket for an
 autofocus lock shim over Apple's Object Capture sample.
 
 ## Verdict 3. COLMAP and GLOMAP, killed for the build night, kept as a gate
@@ -72,24 +89,29 @@ The pose prior configurations are rejected permanently for the reasons in
 verdict 2.
 What defeats the total kill is that both cheap alternatives are exposed to the
 same optics problem: mat based PnP inherits 5 to 22 micrometre per shot
-distortion variation plus roughly 0.2 percent mat print error straight into
-scale, and PhotogrammetrySession is a black box with no published accuracy
-specification, so it may silently miss.
+distortion variation (unsourced) plus roughly 0.2 percent mat print error
+(unsourced) straight into scale, and PhotogrammetrySession is a black box with
+no published accuracy specification, so it may silently miss.
 The one capability nothing else in the stack replicates is sparse structure
 from motion with per image intrinsics refinement and mat corners as ground
 control points, so COLMAP survives in exactly that configuration and nothing
 else, behind the GeometrySource interface, activated only by a measured
 failure.
 The architecture of record is therefore PhotogrammetrySession as the black box
-geometry and scale source, mat PnP demoted to an independent audit, and COLMAP
-sparse held behind the step 10 caliper gate.
+geometry source, mat PnP demoted to an independent audit, and COLMAP sparse
+held behind the step 10 scale gate.
+PhotogrammetrySession is a scale source only when the photographs carry depth
+data; without it, Apple says "you may have to scale the object" [A]. The
+capture protocol uses stock Camera photographs, so it calibrates scale against
+a caliper measurement (docs/CAPTURE_PROTOCOL.md step 8).
 
 ## Verdict 4. LiDAR and TSDF fusion leg, killed
 
 This leg cannot see the subject matter: the user's parts are enclosures with
 1.6 to 3 millimetre walls, 2 to 6 millimetre screw bosses and 8 to 12
 millimetre port cutouts, and every one of those features sits an order of
-magnitude below the sensor's roughly 5 centimetre feature floor.
+magnitude below the roughly 10 centimetre object size above which the sensor
+gives accurate models [L].
 TSDF fusion cannot repair that, only launder it, because averaging attacks
 random noise while the dominant errors here are systematic, namely machine
 learning hallucinated edges and bias, and pose correlated, namely VIO drift and
@@ -102,7 +124,8 @@ glances at a fused mesh and sees mush, whereas a screen reader user receives
 named dimensions as fact, so a confidently wrong geometry source is an
 accessibility hazard and the one failure mode this product must never have.
 Every residual role is dominated: coarse context geometry goes to
-PhotogrammetrySession's free metric mesh at zero adapter cost, and a future
+PhotogrammetrySession's free mesh at zero adapter cost, scaled against a
+caliper when the photographs carry no depth data [A], and a future
 scale prior would consume a roughly 50 line Stray Scanner pose CSV parser, not
 a TSDF volume.
 The kill is enforced architecturally rather than by discipline: the fitting
@@ -115,8 +138,8 @@ open3d stays installed purely as a mesh and point cloud utility library.
 
 Automated primitive soup to watertight B-Rep is a research problem, not an
 engineering task: the state of the art, HoLa, reaches only 82 to 84 percent
-validity on synthetic data, Point2CAD is licence dead with dead dependencies,
-and ComplexGen needs CUDA, Gurobi, Mosek and Windows on an arm64 Mac.
+validity on synthetic data (unsourced), Point2CAD is licence dead with dead
+dependencies, and ComplexGen needs CUDA, Gurobi, Mosek and Windows on an arm64 Mac.
 Constraint inference is vacuous at this noise level, because you cannot
 statistically separate designed parallel from measured two degrees off when
 sensor angular uncertainty swamps design intent, so every inference engine
@@ -177,7 +200,7 @@ supplies free ARKit poses at coarse fidelity, so it has no remaining role.
 
 COLMAP pose_prior_mapper integration.
 Position only priors, manual database insertion, open stability bugs, and a
-prior source that drifts 20 to 40 millimetres per second.
+prior source that drifts about 20 millimetres per second [K].
 
 Frozen pose triangulation with point_triangulator.
 Deterministic, and deterministically bakes VIO drift into every triangulated
@@ -188,9 +211,9 @@ Hours of computation to feed a primitive fitter that does not benefit from it,
 on a machine with no CUDA.
 
 LiDAR derived geometry anywhere in the dimension fitting stage.
-A 10 millimetre systematic bias against a 0.2 to 0.4 millimetre print fit
-tolerance is a 25 to 50 times specification miss, and TSDF averaging cannot
-remove systematic hallucination or pose drift.
+An error of about 10 millimetres [L] against a 0.2 to 0.4 millimetre print fit
+tolerance (unsourced) is a 25 to 50 times specification miss, and TSDF
+averaging cannot remove systematic hallucination or pose drift.
 
 Silent snapping.
 Any stage that replaces a fitted number with a tidier one emits a SnapRecord
@@ -204,7 +227,8 @@ depth, correlated warp, pose drift or intrinsics jitter.
 ## Embargoed claims
 
 These sentences may not appear in the report, in the emitted script, in
-out/MORNING_REPORT.md, in the README, or in any commit message.
+the morning report (now docs/history/2026-08-19-morning-report.md), in the
+README, or in any commit message.
 This list is restated in screen-reader form from docs/PLAN.md section 7 and is
 binding. Restated, not quoted: PLAN.md writes each item as one long line, and
 the screen-reader rule in docs/SYNTHESIS.md ruling 7 asks for one fact per
@@ -215,7 +239,7 @@ not differ in meaning, and PLAN.md section 7 is the authority.
 No sentence of the form "the pipeline achieves plus or minus X millimetres".
 Synthetic numbers are plumbing verification only.
 The iPhone accuracy claim is embargoed until real capture audits exist, which
-means until step 8 of docs/MORNING_PROTOCOL.md has been performed.
+means until step 8 of docs/CAPTURE_PROTOCOL.md has been performed.
 
 No press fit claim, no mating fit claim, no sub millimetre claim, ever.
 The two channel model makes them unnecessary by design.

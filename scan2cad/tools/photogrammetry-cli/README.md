@@ -1,8 +1,17 @@
 # photogrammetry-cli
 
 A small Mac command line front end for RealityKit's PhotogrammetrySession.
-It turns a folder of photographs into a metric scaled mesh that
+It turns a folder of photographs into a mesh, in metres, that
 `scan2cad describe` and `scan2cad draft` can read.
+
+The mesh has a trusted real-world size only if the photographs carry depth
+data. Apple: "If your source images contain depth data, RealityKit uses it to
+calculate the real-world size of the scanned object. RealityKit can also
+create objects from images without depth data, but you may have to scale the
+object."
+(https://developer.apple.com/documentation/realitykit/capturing-photographs-for-realitykit-object-capture)
+Stock Camera photographs are not known to carry depth, so scale the mesh
+against a caliper measurement; docs/CAPTURE_PROTOCOL.md step 8 says how.
 
 This is scan2cad's own tool, not Apple's HelloPhotogrammetry sample. It was
 written against the RealityFoundation interface shipped in the macOS SDK, and
@@ -12,7 +21,12 @@ is plain ASCII with one fact per line so a screen reader can follow it.
 
 ## Requirements
 
-- Apple silicon. PhotogrammetrySession refuses to run otherwise, and the tool
+- A Mac that RealityKit Object Capture supports. Apple: "only available on Mac
+  computers that meet the minimum requirements for performing object
+  reconstruction, including a GPU with at least 4 GB of RAM and ray tracing
+  support."
+  (https://developer.apple.com/documentation/realitykit/creating-3d-objects-from-photographs)
+  On any other Mac, `PhotogrammetrySession.isSupported` is false, and the tool
   says so and exits with code 3.
 - macOS 14 or later, with Xcode or the command line tools installed.
 
@@ -50,9 +64,13 @@ failure.
 Both of these were found by running the thing, and both are worked around in
 the code rather than left for the user.
 
-**RealityKit writes USDZ and nothing else.** A `modelFile` request whose URL
-ends in `.obj`, `.usda`, `.usd`, or which names a directory, is rejected with
-`PhotogrammetrySession.Error.invalidOutput` before any processing starts.
+**RealityKit wrote USDZ and nothing else.** Observed on the macOS 26 SDK,
+contrary to Apple's `modelFile` documentation: a `modelFile` request whose URL
+ended in `.obj`, `.usda`, `.usd`, or which named a directory, was rejected
+with `PhotogrammetrySession.Error.invalidOutput` before any processing
+started. Apple's documentation says instead: "If `url` refers to a directory,
+the request saves an OBJ object and every texture map there."
+(https://developer.apple.com/documentation/realitykit/photogrammetrysession/request/modelfile(url:detail:geometry:))
 Asking this tool for `.obj` therefore reconstructs to a sibling `.usdz` first
 and converts it with Model I/O. Both files are kept.
 

@@ -1,19 +1,29 @@
-# Morning protocol
+# Capture protocol
 
-This is the physical checklist for the morning after the overnight build.
-It is written to be listened to, one step at a time.
+This is the physical checklist for the first real capture and accuracy audit.
+It was first written on 2026-08-19 as the morning protocol for the day after
+the overnight build. It is written to be listened to, one step at a time.
 Each step is a numbered instruction with the reason for it stated plainly.
 
 Two things to know before you start.
 Everything scan2cad prints is a draft, plus or minus the residual it states.
 The caliper and the datasheet are the only trusted numbers in this project.
 
-Run every command from the repo root, which is
-/Users/gurucharan/Documents/personal/gencad/scan2cad.
+Run every command from the scan2cad directory of the gencad repository, the
+directory that holds this project's Makefile.
 Always use the venv interpreter, .venv/bin/python, never a bare python3.
 
-Steps 2, 5, 6, 7 and 8 are the spine of the morning.
+Steps 2, 5, 6, 7 and 8 are the spine of the protocol.
 If time is short, do only those, in that order.
+
+One fact shapes steps 6 to 8. Apple's capture guide says: "If your source
+images contain depth data, RealityKit uses it to calculate the real-world size
+of the scanned object. RealityKit can also create objects from images without
+depth data, but you may have to scale the object."
+Source: https://developer.apple.com/documentation/realitykit/capturing-photographs-for-realitykit-object-capture
+This protocol uses the stock Camera app, and this project has not verified
+that its photographs carry depth data. So the mesh scale is treated as unknown,
+and the scale calibration in step 8 is mandatory.
 
 ## Step 1. Print the mat
 
@@ -28,10 +38,10 @@ The board is seven squares by five squares, 20.0 millimetre nominal squares,
 Now the correction factor. Read both options before choosing.
 
 Option A, and the default if you are working alone. Use a correction factor of
-1.0 and write that down. A home printer is commonly off by about 0.2 percent,
-so this option accepts an error of about 0.2 percent in the step 9 cross check
-and nothing else. Step 9 is itself a cross check, not a dependency, so an
-option A morning is a complete morning.
+1.0 and write that down. A home printer is commonly off by about 0.2 percent
+(an unsourced estimate), so this option accepts an error of about 0.2 percent
+in the step 9 cross check and nothing else. Step 9 is itself a cross check, not a dependency, so an
+option A run is a complete run.
 
 Option B, if a sighted person is at hand for one minute. The measurement is a
 caliper span between two printed ink edges, which cannot be found by touch, so
@@ -47,10 +57,9 @@ Write that number down. You need it again at step 9.
 To reprint the mat, or to have the tool state its own span again, run:
 .venv/bin/python tools/mat_audit.py board
 
-If out/charuco_a4.png does not exist, the mat audit tool was dropped overnight
-under the friction rule in docs/SYNTHESIS.md.
-In that case skip this step and skip step 9, and carry on from step 2.
-Nothing else in the morning depends on the mat.
+If out/charuco_a4.png does not exist, make it with the board command above.
+out/ is not tracked by git, so a fresh checkout does not have it.
+Nothing else in the protocol depends on the mat.
 
 ## Step 2. Print the reference part
 
@@ -83,10 +92,6 @@ To reprint the model or reprint the sheet, run:
 
 ## Step 3. Build the photogrammetry command line app
 
-Status as this document was written: the binary WAS built overnight, and it
-reconstructed Apple's 36 image sample set end to end in about 20 seconds.
-There is nothing to do in this step unless the binary is missing.
-
 The tool is our own, not Apple's sample. It lives at
 tools/photogrammetry-cli. It is a plain Swift package with no external
 dependencies, so it builds with no network access.
@@ -107,7 +112,10 @@ If swift itself is missing, run this once and try again:
 sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
 
 There is no signing step and no device involved. It is a Mac command line
-tool. It needs Apple silicon; it refuses to run otherwise and says so.
+tool. Apple states that Object Capture runs only on a Mac with a GPU that has
+at least 4 GB of RAM and ray tracing support. On any other Mac the tool says
+so and exits with code 3.
+Source: https://developer.apple.com/documentation/realitykit/creating-3d-objects-from-photographs
 
 ## Step 4. Install Stray Scanner
 
@@ -120,6 +128,10 @@ See docs/CONTINGENCIES.md for what would activate it.
 ## Step 5. Capture session
 
 Use the stock Camera app. Do not use a scanning app for this leg.
+The mesh it leads to has no trusted real-world scale; see the note at the top
+and step 8. A capture app that stores depth data with each photograph would
+let RealityKit set the scale itself. This protocol does not use one, because
+none has been tested with this tool.
 
 Turn Live Photos off.
 Turn the macro auto switch off in Camera settings.
@@ -162,8 +174,9 @@ own empty folder, because OBJ output writes three files side by side:
 
 tools/photogrammetry-cli/.build/release/photogrammetry-cli PHOTOS out/scan/mesh.obj --detail medium
 
-You do not need a separate converter. RealityKit itself writes USDZ only, so
-the tool reconstructs to mesh.usdz and then converts that to mesh.obj for you.
+You do not need a separate converter. The tool asks RealityKit for USDZ, then
+converts mesh.usdz to mesh.obj for you. See tools/photogrammetry-cli/README.md
+for why it does not ask RealityKit for OBJ directly.
 You end up with mesh.usdz, mesh.obj and mesh.mtl. scan2cad reads the OBJ.
 
 Useful options, none of them required:
@@ -176,7 +189,10 @@ The tool speaks as it works: it prints progress every ten percent, names each
 file it writes, and reports skipped photographs. If it fails it prints one
 line starting with the word error and exits non zero.
 
-Expect a metric scaled mesh whose units are metres.
+scan2cad reads the mesh as metres, with --units m, but its size is not
+trusted. Without depth data
+in the photographs, the overall scale can be wrong by any factor; see the note
+at the top. Step 8 measures and corrects it.
 
 Sanity check the mesh without opening it, by counting what is in it:
 grep -c "^v " mesh.obj
@@ -201,13 +217,25 @@ Listen to the whole report before judging it.
 Pay attention to the snap log section. Every number the tool tidied is listed
 there with its raw value, its snapped value, and the deviation between them.
 
-## Step 8. First real accuracy audit
+## Step 8. Scale calibration, then the first real accuracy audit
 
-This is the most important step of the morning.
+This is the most important step of the protocol. It has two parts, and the
+first part is mandatory.
 
-Take the five reference part dimensions out of the report.
-Compare each one against your caliper values in out/ground_truth.txt.
-Write down the actual error for each of the five.
+Part one, scale calibration. Find the three gap dimensions that the report
+calls width, depth and height, and match them to block_length, block_width and
+block_height by size, as described below. For each of the three, divide your
+caliper value by the report value. Write down the three ratios and their mean.
+The mean is the scale factor for this capture. Multiply every report dimension
+by it before you compare anything. If the photographs carried no depth data,
+this factor can be far from 1.0; that is the missing scale, not an error in
+the fit.
+
+Part two, the audit. After scaling, compare the two diameters, bore_diameter
+and boss_diameter, against your caliper values in out/ground_truth.txt, and
+write down the error for each. The diameters did not set the scale factor, so
+their errors are the honest per-feature figure. The three block dimensions,
+after scaling, show only how well the three ratios agree with each other.
 
 The names differ on the two sides, so here is the mapping. scan2cad names what
 it found; the design names come from tools/reference_part.py.
@@ -227,12 +255,17 @@ which face the fitter saw best. Match them by size, as above, not by name.
 If only one _diameter line appears, the scan found only one of the two round
 features; record that as a miss, it is a real result.
 
-Expect errors somewhere in the range of one to ten millimetres.
+Expect per-feature errors somewhere in the range of one to ten millimetres.
 That is the draft band this product was designed around.
 It is not a failure. It is the number this project has never had until now.
 
 Whatever comes out of this step is the first legitimate accuracy figure the
 project has ever produced. Record it honestly, including if it is bad.
+
+For an object with no reference part in the shot, such as the one in step 13,
+the scale calibration still applies: caliper one overall length of that
+object, divide by the matching report gap, and multiply every report
+dimension by the result.
 
 ## Step 9. Scale cross check
 
@@ -265,7 +298,7 @@ skipped. A usable one gives its mat corner count, its reprojection error in
 pixels, and the true distance in millimetres from that camera to the mat.
 Two facts to listen for. First, that at least a few images were usable at all:
 if fewer than two were, the mat was not detected and this cross check cannot be
-made this morning. Second, that the camera distances land near the standoff you
+made today. Second, that the camera distances land near the standoff you
 actually held, which was 250 to 300 millimetres; a set of distances far from
 that means the intrinsics are wrong, not that the mesh is.
 
@@ -277,12 +310,16 @@ Going further needs camera positions from the reconstruction, passed with
 centre in the reconstruction's own units, like this:
 {"IMG_0001.HEIC": [0.12, -0.03, 0.41], "IMG_0002.HEIC": [0.15, -0.01, 0.40]}
 Given those, the tool reports the implied millimetres per reconstruction unit,
-which for a metric mesh in metres should read near 1000.
+which for a correctly scaled mesh in metres should read near 1000.
 
-Apple's PhotogrammetrySession does not publish its camera poses, so this branch
-is for COLMAP, which writes them in images.txt, and it belongs to contingency 2
-rather than to this morning. Do not go looking for iPhone camera poses; there
-are none to find.
+Apple's PhotogrammetrySession can return its estimated camera poses on macOS 14
+and later, through the poses request: "Requests the estimated pose of the
+camera in each shot".
+Source: https://developer.apple.com/documentation/realitykit/photogrammetrysession/request/poses
+tools/photogrammetry-cli does not request or write them yet, so there is no
+pose file to pass today. Adding a pose output to the tool is an open follow-up.
+Until then this branch is for COLMAP, which writes poses in images.txt, and it
+belongs to contingency 2.
 
 This is an independent check. It is not part of the pipeline and it does not
 feed the pipeline. It only tells you whether to believe the mesh scale.
@@ -296,8 +333,22 @@ capture accuracy, and it is not evidence for step 10.
 
 Do nothing here unless the evidence demands it.
 
-Open the gate only if the photogrammetry scale error exceeds 0.3 millimetres,
-or 0.3 percent, on the roughly 100 millimetre reference dimensions from step 8.
+This gate is about scale only. It is separate from the one to ten millimetre
+per-feature band of step 8, which judges single dimensions.
+
+Apply it only to a capture whose photographs carried depth data. Without depth
+data the scale is expected to be wrong, and the step 8 calibration is the
+routine fix, not a failure. This protocol has not verified depth data in the
+stock Camera photographs of step 5, so treat this gate as closed for them.
+
+The test is the step 8 scale factor, the mean of the three caliper to scan
+ratios on the block dimensions. Open the gate only if that mean differs from
+1.0 by more than 0.3 percent.
+The reference part's largest dimension is 60 millimetres, from
+tools/reference_part.py, so 0.3 percent there is 0.18 millimetres. A single
+dimension with millimetre level error cannot show that; the mean of three
+ratios is the best this part allows, and it can still be masked by per-feature
+error.
 
 If and only if that happens, spend 30 minutes on brew install colmap and run
 sparse structure from motion only, with the mat corners as ground control
@@ -321,11 +372,19 @@ scan2cad exited non zero saying that fewer than two primitives were found.
 Half two, the failure is attributable to focus or exposure hunting rather than
 to coverage or to a shiny surface. Measure it:
 .venv/bin/python tools/frame_sharpness.py PHOTOS/*.HEIC
-That prints one sharpness number per frame and then names every frame far
-below the session median. If a third or more of the session is named, focus
-hunting is the explanation and the gate is open. If none or a handful are
-named, the frames were sharp and the problem is elsewhere; delete the named
-frames, reconstruct again, and do not open the gate.
+That prints one sharpness number per frame, the session median, and then
+names every frame far below the session median. The sharpness number is the
+variance of the Laplacian of the greyscale image, a common focus measure that
+is high for fine detail and low for blur. If a third or more of the session is
+named, focus hunting is the explanation and the gate is open. If none or a
+handful are named, focus hunting between frames is not the explanation; delete
+the named frames, reconstruct again, and do not open the gate on this evidence.
+
+This test cannot see a session in which every frame is equally out of focus,
+for example with focus locked at the wrong distance, because it only compares
+frames with each other. The tool prints a warning about this on every run.
+To rule that out, compare the median with a session of the same object, under
+the same light, that you know was sharp.
 
 If and only if both halves hold, read contingency 1 in docs/CONTINGENCIES.md.
 

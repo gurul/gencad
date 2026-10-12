@@ -85,7 +85,6 @@ threadpoolctl==3.6.0
 tqdm==4.70.0
 traitlets==5.16.1
 trianglesolver==1.2
-trimesh==5.0.0
 typing-extensions==4.16.0
 typing-inspection==0.4.4
 urllib3==2.7.0

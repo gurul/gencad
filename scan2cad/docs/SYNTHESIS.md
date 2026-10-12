@@ -17,7 +17,9 @@ and the rebuild plan (docs/PLAN.md). Where they conflict, THIS file wins, then P
 
 3. venv: `uv venv --python 3.12 .venv` (uv 0.11.x is installed; bare python3 is 3.9/3.14 traps).
    Install: `uv pip install --python .venv/bin/python numpy "open3d==0.19.*" cgal
-   "opencv-python>=4.13,<5" scipy trimesh "build123d==0.11.*" pytest`.
+   "opencv-python>=4.13,<5" "build123d==0.11.*" pytest`.
+   (Changed 2026-10-11: the ruling first also listed scipy and trimesh. No code
+   imports either, so both were removed as direct dependencies.)
    If `import cv2.aruco` fails, add `opencv-contrib-python<5` instead of opencv-python.
    Freeze requirements.txt from the venv that passes the smoke gate. The smoke gate
    (PLAN.md section 2) blocks everything.
@@ -26,11 +28,11 @@ and the rebuild plan (docs/PLAN.md). Where they conflict, THIS file wins, then P
    ~/Documents/personal/leap-input (its .venv is SDK-pinned) or gencad except read-only.
 
 5. WI-14 (Apple PhotogrammetrySession Mac CLI build) runs last, timeboxed 45 min,
-   skippable; failure is a MORNING_PROTOCOL.md note, not a build failure.
+   skippable; failure is a docs/CAPTURE_PROTOCOL.md note, not a build failure.
 
 6. Threshold freeze is real: thresholds.py values are set once at creation (PLAN.md section 3)
    and no later agent may edit them to make a test or sweep pass. The noise-0 e2e
    tolerance is max(0.05 mm, 0.1%) -- declared before any run; failures are findings.
 
-7. All emitted text (report, docs, MORNING_REPORT) is screen-reader-first: short lines,
-   one fact per line, no tables, no ASCII art, no unicode symbols beyond plain punctuation.
+7. All emitted text (report, docs, docs/history/2026-08-19-morning-report.md) is
+   screen-reader-first: short lines, one fact per line, no tables, no ASCII art, no unicode symbols beyond plain punctuation.

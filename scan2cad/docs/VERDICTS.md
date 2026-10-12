@@ -1,3 +1,15 @@
+> Dated record of the 2026-08-19 kill review, kept as written. Several figures
+> in it have no source this project has read, and some are wrong. As checked on
+> 2026-10-11: ARKit drift is about 20 mm/s, not 20-40 mm/s (Kim et al.,
+> Sensors 22(24):9873, 2022); iPhone LiDAR models are accurate above about
+> 10 cm object size, with a detection limit around 5 cm (Luetzenburg et al.,
+> Scientific Reports 11:22221, 2021); PhotogrammetrySession sets real-world
+> scale from depth data in the photographs; without it, Apple says "you may
+> have to scale the object", so its mesh scale is not trusted (Apple,
+> "Capturing photographs for RealityKit Object Capture").
+> The claim that no benchmarked ChArUco scaling implementation exists is
+> unsourced. docs/DECISIONS.md carries the sourced versions and the citations.
+
 # THE ENTIRE PRODUCT (phone-scan -> parametric CAD pipeline)
 VERDICT: DESCOPE
 
