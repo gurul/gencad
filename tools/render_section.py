@@ -10,6 +10,7 @@ Args (JSON file pointed to by $GENCAD_SECTION_ARGS):
 """
 import json
 import os
+import sys
 
 import FreeCAD as App
 import matplotlib
@@ -19,16 +20,25 @@ from matplotlib.path import Path
 
 args = json.load(open(os.environ["GENCAD_SECTION_ARGS"]))
 
+
+def fail(msg):
+    # freecadcmd drops a SystemExit message and unflushed stdout, so print
+    # the reason and flush before exiting
+    print("gencad: render error: " + msg, flush=True)
+    sys.exit(1)
+
+
 AXES = {"x": (App.Vector(1, 0, 0), lambda p: (p.y, p.z)),
         "y": (App.Vector(0, 1, 0), lambda p: (p.x, p.z)),
         "z": (App.Vector(0, 0, 1), lambda p: (p.x, p.y))}
+if args.get("axis") not in AXES:
+    fail("axis must be one of x, y, z, got %r" % args.get("axis"))
 normal, project = AXES[args["axis"]]
 
 doc = App.openDocument(args["fcstd_path"])
 obj = doc.getObject(args["object_name"])
 if obj is None:
-    raise SystemExit("no object named %r in %s"
-                     % (args["object_name"], args["fcstd_path"]))
+    fail("no object named %r in %s" % (args["object_name"], args["fcstd_path"]))
 
 wires = obj.Shape.slice(normal, float(args["offset"]))
 polys = []
@@ -67,3 +77,5 @@ ax.set_title("%s @ %s=%g" % (args["object_name"], args["axis"],
                              args["offset"]), fontsize=10)
 plt.savefig(args["out_png"], dpi=130, bbox_inches="tight", facecolor="white")
 print("gencad: wrote", args["out_png"], "(%d wires)" % len(polys))
+# success sentinel: gencad_mcp.py reports a render only when it sees this line
+print("gencad-render-ok: " + args["out_png"], flush=True)
