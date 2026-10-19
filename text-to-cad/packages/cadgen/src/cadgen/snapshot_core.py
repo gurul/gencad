@@ -49,9 +49,8 @@ from cadgen._internal.atomic_replace import write_bytes_atomic
 SNAPSHOT_ORIGIN = "http://localhost"
 SNAPSHOT_RENDER_URL = f"{SNAPSHOT_ORIGIN}/render.html"
 SNAPSHOT_ROUTE_GLOB = f"{SNAPSHOT_ORIGIN}/**"
-# Display is a sparse preset override. The shared browser resolver owns defaults.
+# Display is sparse: a mode, the grid, what modes share. The shared browser resolver owns defaults.
 DISPLAY_APPEARANCES = frozenset({"light", "dark"})
-RENDER_QUALITY_IDS = frozenset({"preview", "final"})
 DEFAULT_TIMEOUT_SECONDS = 300
 # Tearing a video sequence down is one dispose call over objects already in
 # hand, so it gets a short deadline of its own rather than the job's: the
@@ -61,14 +60,18 @@ VIDEO_TEARDOWN_TIMEOUT_SECONDS = 30
 # How often a video says where it is when nothing is painting a progress bar.
 VIDEO_NARRATE_INTERVAL_SECONDS = 15.0
 RENDER_BROWSER_STARTUP_TIMEOUT_MS = 15_000
-SUPPORTED_RENDER_MODES = {"view", "section", "list"}
-MESH_SUPPORTED_RENDER_MODES = {"view", "list"}
+SUPPORTED_RENDER_MODES = {"view", "list"}
 SUPPORTED_JOB_KEYS = frozenset(
     {
+        "annotation",
+        "measurements",
         "input",
         "mode",
         "outputs",
         "display",
+        # Preview's photographic look instead of the display mode: studio lighting, floor and
+        # environment, at Preview's defaults. View mode only.
+        "preview",
         "output",
         "quality",
         "camera",
@@ -90,9 +93,6 @@ SUPPORTED_JOB_KEYS = frozenset(
         # {fps, seconds, start, quality, loop}, encoded to the .mp4/.gif the
         # output names. Meaningless without `animation` (cadgen.snapshot_video).
         "video",
-        # Where `mode: "section"` cuts: {"plane": "XY"|"XZ"|"YZ", "offset": <model
-        # units along the plane's normal>}. Spelled the same as the --section flag.
-        "section",
         "scale",
         "debug",
         "timeoutSeconds",
@@ -166,38 +166,21 @@ RETIRED_SIZE_PROFILES = {
 # photographic preset's 2x render scale this is the 16384 px renderbuffer limit.
 MAX_OUTPUT_DIMENSION = 8192
 SIMPLE_RENDER_WIDTH, SIMPLE_RENDER_HEIGHT = SIZE_PROFILES["simple"]
-# Where section mode cuts. Mirrored as SECTION_PLANES in
-# packages/core/src/common/renderMeshScene.js (the parity is tested).
-SECTION_PLANES = ("XY", "XZ", "YZ")
-SECTION_KEYS = frozenset({"plane", "offset"})
 # What an output's extension may be, per mode. The extension decides the
 # encoding; nothing in a job does.
-STILL_OUTPUT_SUFFIXES = {"view": (".png",), "section": (".png", ".svg")}
-DISPLAY_OPTION_KEYS = frozenset({
-    "mode", "appearance", "camera", "surfaces", "edges", "lighting",
-    "background", "floor", "grid", "axes", "clip", "exploded",
-})
-DISPLAY_MODES = frozenset({"solid", "render", "xray", "hidden-line", "wireframe", "grid"})
-DISPLAY_SURFACE_STYLES = frozenset({"shaded", "flat", "hidden", "off"})
-PART_COLOR_MODES = frozenset({"original", "single", "by-part"})
-DISPLAY_CAMERA_KEYS = frozenset({"enabled", "projection", "focalLength"})
-DISPLAY_SURFACE_KEYS = frozenset({"enabled", "style", "colorMode", "color", "colors", "opacity"})
-DISPLAY_EDGE_KEYS = frozenset({"enabled", "visibility", "color"})
-DISPLAY_LIGHTING_KEYS = frozenset({"enabled", "quality", "exposure", "rotation", "size", "fill"})
-DISPLAY_BACKGROUND_KEYS = frozenset({"enabled", "color", "opacity"})
-DISPLAY_FLOOR_KEYS = frozenset({"enabled", "placement", "color", "opacity", "finish"})
-# The Viewer's Floor finish: a glossy floor also reflects the model.
-DISPLAY_FLOOR_FINISHES = frozenset({"matte", "glossy"})
-DISPLAY_GRID_KEYS = frozenset({"enabled", "color", "opacity", "density"})
-DISPLAY_AXES_KEYS = frozenset({"enabled", "color", "opacity"})
-DISPLAY_CLIP_KEYS = frozenset({"enabled", "axis", "offset", "offsets", "invert"})
+STILL_OUTPUT_SUFFIXES = {"view": (".png",)}
+# A display is a mode, the grid switch, and what every mode shares. A mode is a look at its own
+# defaults, with nothing else to set.
+DISPLAY_OPTION_KEYS = frozenset({"mode", "grid", "appearance", "camera", "clip", "exploded"})
+# The looks `display.mode` picks: Solid (shaded, with CAD edges; the default), Shaded (no edges),
+# Parts (Solid with each part its own colour), X-ray, Hidden line and Wireframe. Preview's look is
+# no display mode: it is its own request (`--preview`, a job's `"preview": true`).
+DISPLAY_MODES = frozenset({"solid", "shaded", "parts", "xray", "hidden-line", "wireframe"})
+DISPLAY_CAMERA_KEYS = frozenset({"projection", "focalLength"})
+DISPLAY_CLIP_KEYS = frozenset({"enabled", "axis", "at", "invert", "partColors"})
 DISPLAY_EXPLODED_KEYS = frozenset({"enabled", "amount"})
 DISPLAY_GROUP_KEYS = {
-    "camera": DISPLAY_CAMERA_KEYS, "surfaces": DISPLAY_SURFACE_KEYS,
-    "edges": DISPLAY_EDGE_KEYS, "lighting": DISPLAY_LIGHTING_KEYS,
-    "background": DISPLAY_BACKGROUND_KEYS, "floor": DISPLAY_FLOOR_KEYS,
-    "grid": DISPLAY_GRID_KEYS, "axes": DISPLAY_AXES_KEYS,
-    "clip": DISPLAY_CLIP_KEYS, "exploded": DISPLAY_EXPLODED_KEYS,
+    "camera": DISPLAY_CAMERA_KEYS, "clip": DISPLAY_CLIP_KEYS, "exploded": DISPLAY_EXPLODED_KEYS,
 }
 CAMERA_OPTION_KEYS = frozenset({
     "preset", "name", "position", "target", "up", "direction", "zoom", "orthographicHalfHeight",
@@ -206,17 +189,6 @@ CAMERA_OPTION_KEYS = frozenset({
 # packages/core/src/common/camera.js (the parity is tested).
 CAMERA_PRESETS = frozenset({"front", "back", "right", "left", "top", "bottom", "iso"})
 RETIRED_CAMERA_PRESETS = {"isometric": "iso", "side": "right"}
-# Keys a caller reaches for inside `display` that live somewhere else.
-DISPLAY_KEY_HOMES = {
-    "projection": "display.camera", "focalLength": "display.camera",
-    "orthographicHalfHeight": "camera",
-}
-# Display groups that were replaced, and what replaced each.
-RETIRED_DISPLAY_KEYS = {
-    "render": "display.lighting, display.background and display.floor",
-    "guides": "display.grid and display.axes",
-    "partColor": "display.surfaces",
-}
 class SnapshotError(RuntimeError):
     pass
 # What a Playwright launch failure says when the browser itself is the problem, not the job:
@@ -493,12 +465,12 @@ def _display_enum(value: object, field: str, allowed: frozenset[str]) -> None:
 
 
 def display_modes_for_kind(kind: str) -> frozenset[str]:
-    """The display presets an input of this kind can be given.
+    """The display modes an input of this kind can be given.
 
-    An error that lists modes lists THESE, so a mesh door never offers a preset it
+    An error that lists modes lists THESE, so a mesh door never offers a mode it
     is about to refuse. An unknown kind gets the full set: its own refusal comes
     first and says what the file is. A DRAWING gets none: it has no scene for a
-    preset to configure, and its whole display is ``appearance``.
+    mode to draw, and its whole display is ``appearance``.
     """
     if kind in DRAWING_KINDS:
         return frozenset()
@@ -507,97 +479,69 @@ def display_modes_for_kind(kind: str) -> frozenset[str]:
     return DISPLAY_MODES - CAD_MODEL_DISPLAY_MODES
 
 
+def _display_object(value: object, keys: frozenset[str], path: str) -> None:
+    if not is_plain_object(value):
+        raise SnapshotError(f"{path} must be an object")
+    unknown = sorted(set(value) - keys)
+    if unknown:
+        raise SnapshotError(f"{path} has unknown key(s): {', '.join(unknown)}; supported keys: {', '.join(sorted(keys))}")
+
+
+def _validate_display_group(value: object, keys: frozenset[str], path: str) -> None:
+    _display_object(value, keys, path)
+    for key, entry in value.items():
+        field = f"{path}.{key}"
+        if key in {"enabled", "invert", "partColors"}:
+            _render_boolean(entry, field)
+        elif key == "color":
+            _render_color(entry, field)
+        elif key == "colors":
+            if not isinstance(entry, list) or not 1 <= len(entry) <= 50:
+                raise SnapshotError(f"{field} must contain 1 to 50 hex colors")
+            for index, color in enumerate(entry):
+                _render_color(color, f"{field}[{index}]")
+        elif key == "at":
+            if isinstance(entry, bool) or not isinstance(entry, (int, float)) or not isfinite(float(entry)):
+                raise SnapshotError(f"{field} must be a finite number: the plane's coordinate on its axis, in millimetres")
+        elif key in {"amount", "focalLength"}:
+            bounds = {"amount": (0, 1), "focalLength": (20, 200)}
+            _render_number(entry, field, *bounds[key])
+        else:
+            choices = {"projection": frozenset({"orthographic", "perspective"}), "axis": frozenset({"x", "y", "z"})}
+            _display_enum(entry, field, choices[key])
+
+
 def validate_display_settings_values(
     payload: Mapping[str, object],
     *,
     source_label: str,
     modes: frozenset[str] | None = None,
 ) -> None:
-    """Validate the same closed, sparse preset overrides as the shared viewer.
-
-    Omitted groups inherit the preset. A present group implicitly enables itself;
-    merging group parameters and applying that enablement belongs to the shared
-    resolver, so this boundary preserves the caller's sparse request.
-
-    ``modes`` narrows the mode vocabulary an error LISTS to what the input's kind
-    accepts; a STEP-only mode on another kind is still refused by name, by
-    :func:`validate_display_for_kind`.
-    """
+    """Validate a sparse display without filling defaults."""
     if not is_plain_object(payload):
         raise SnapshotError(f"display must be a display settings object ({source_label})")
-    unknown = sorted(set(payload) - DISPLAY_OPTION_KEYS)
-    if unknown:
-        hints = [f"{key} belongs in {DISPLAY_KEY_HOMES[key]}" for key in unknown if key in DISPLAY_KEY_HOMES]
-        hints += [f"display.{key} was removed; use {RETIRED_DISPLAY_KEYS[key]}" for key in unknown if key in RETIRED_DISPLAY_KEYS]
-        raise SnapshotError(
-            f"display has unknown key(s): {', '.join(unknown)} ({source_label})"
-            + (f"; {'; '.join(hints)}" if hints else "")
-            + f"; supported keys: {', '.join(sorted(DISPLAY_OPTION_KEYS))}"
-        )
+    _display_object(payload, DISPLAY_OPTION_KEYS, "display")
     if "mode" in payload:
         mode = payload["mode"]
         if not (isinstance(mode, str) and mode in DISPLAY_MODES):
             _display_enum(mode, "display.mode", modes or DISPLAY_MODES)
+    if "grid" in payload:
+        _render_boolean(payload["grid"], "display.grid")
     if "appearance" in payload:
         _display_enum(payload["appearance"], "display.appearance", DISPLAY_APPEARANCES)
     for name, keys in DISPLAY_GROUP_KEYS.items():
-        if name not in payload:
-            continue
-        value = payload[name]
-        if not is_plain_object(value):
-            raise SnapshotError(f"display.{name} must be an object ({source_label})")
-        unknown = sorted(set(value) - keys)
-        if unknown:
-            raise SnapshotError(f"display.{name} has unknown key(s): {', '.join(unknown)}; supported keys: {', '.join(sorted(keys))}")
-        if "enabled" in value:
-            _render_boolean(value["enabled"], f"display.{name}.enabled")
-        if "color" in value:
-            _render_color(value["color"], f"display.{name}.color")
-        if "opacity" in value:
-            _render_number(value["opacity"], f"display.{name}.opacity", 0, 1)
-        for key, allowed in {
-            "camera": {"projection": frozenset({"orthographic", "perspective"})},
-            "surfaces": {"style": DISPLAY_SURFACE_STYLES, "colorMode": PART_COLOR_MODES},
-            "edges": {"visibility": frozenset({"visible", "all"})},
-            "lighting": {"quality": RENDER_QUALITY_IDS},
-            "floor": {"placement": frozenset({"origin", "lowest"}), "finish": DISPLAY_FLOOR_FINISHES},
-            "clip": {"axis": frozenset({"x", "y", "z"})},
-        }.get(name, {}).items():
-            if key in value:
-                _display_enum(value[key], f"display.{name}.{key}", allowed)
-        for key, bounds in {
-            "camera": {"focalLength": (20, 200)},
-            "lighting": {"exposure": (-5, 5), "rotation": (-180, 180), "size": (0.25, 3), "fill": (0, 1)},
-            "grid": {"density": (0.25, 4)},
-            "exploded": {"amount": (0, 1)}, "clip": {"offset": (0, 1)},
-        }.get(name, {}).items():
-            if key in value:
-                _render_number(value[key], f"display.{name}.{key}", *bounds)
-        if name == "surfaces" and "colors" in value:
-            colors = value["colors"]
-            if not isinstance(colors, list) or not 1 <= len(colors) <= 50:
-                raise SnapshotError("display.surfaces.colors must contain 1 to 50 hex colors")
-            for index, color in enumerate(colors):
-                _render_color(color, f"display.surfaces.colors[{index}]")
-        if name == "clip":
-            if "invert" in value:
-                _render_boolean(value["invert"], "display.clip.invert")
-            if "offsets" in value:
-                offsets = value["offsets"]
-                if not is_plain_object(offsets) or set(offsets) - {"x", "y", "z"}:
-                    raise SnapshotError("display.clip.offsets must be an object containing only x, y, z")
-                for axis, offset in offsets.items():
-                    _render_number(offset, f"display.clip.offsets.{axis}", 0, 1)
+        if name in payload:
+            _validate_display_group(payload[name], keys, f"display.{name}")
 
 
-# What belongs to a CAD model (STEP) alone. Edges are drawn from B-rep topology,
-# Explode separates an assembly's parts and Clip sections its solids; a mesh, a robot
-# description or a drawing has none of those. The shared viewer does not offer them
-# for such a file, and the presets built from edges with them.
-CAD_MODEL_DISPLAY_GROUPS = ("edges", "clip", "exploded")
-CAD_MODEL_DISPLAY_MODES = frozenset({"xray", "hidden-line", "wireframe"})
-# "hidden" and "off" let the edges carry the picture; without edges they draw nothing.
-CAD_MODEL_SURFACE_STYLES = frozenset({"hidden", "off"})
+# What a 3D input's view offers, as the shared viewer offers it (`viewFeaturesForKind` in
+# @text-to-cad/core's viewSettings.js). Edges are drawn from B-rep topology, so the modes that
+# draw them, or are told apart by having none (Shaded), are a STEP's alone: any other 3D input
+# is Solid, or Parts with each of its parts, objects or links its own colour. Clip cuts whatever
+# any 3D input draws; Explode moves parts apart, which a STEP assembly and a GLB's nodes have and
+# an STL, a 3MF or a robot description (whose links are posed, not separated) do not.
+CAD_MODEL_DISPLAY_MODES = frozenset({"shaded", "xray", "hidden-line", "wireframe"})
+EXPLODABLE_KINDS = frozenset({"step", "stp", "glb"})
 CAD_MODEL_KINDS = frozenset({"step", "stp"})
 # Inputs that are DRAWN rather than staged. Nothing in `display` but
 # ``appearance`` reaches them, which is a stricter rule than the one below and is
@@ -607,32 +551,30 @@ DRAWING_KINDS = frozenset({"dxf"})
 
 
 def validate_display_for_kind(display: Mapping[str, object], *, kind: str, input_label: str) -> None:
-    """Refuse STEP-only display settings for an input that is not a STEP model.
+    """Refuse the display settings an input's view does not offer.
 
-    Asking for a section of a mesh would otherwise render a picture that silently
+    Asking to explode an STL would otherwise render a picture that silently
     ignores the request, so the request is refused by name, as the viewer refuses
-    to offer the control.
+    to offer the control. (How many parts a GLB has is known only once it is read:
+    the render refuses Explode on a GLB of one.)
 
     A drawing is skipped, not exempt: its own check refuses the whole of
     ``display`` but ``appearance``, and would otherwise be pre-empted here by a
-    message offering it the 'solid' and 'render' presets it cannot take either.
+    message offering it the 'solid' preset it cannot take either.
     """
     if kind in CAD_MODEL_KINDS or kind in DRAWING_KINDS or not is_plain_object(display):
         return
-    requested = [f"display.{name}" for name in CAD_MODEL_DISPLAY_GROUPS if name in display]
+    if "exploded" in display and kind not in EXPLODABLE_KINDS:
+        raise SnapshotError(
+            f"display.exploded moves a model's parts apart; {input_label} has none to move "
+            "(Explode takes a STEP model or a GLB of several parts). Remove the setting; "
+            "Clip (display.clip) cuts it."
+        )
     mode = display.get("mode")
     if isinstance(mode, str) and mode in CAD_MODEL_DISPLAY_MODES:
-        requested.append(f"display.mode {mode!r}")
-    surfaces = display.get("surfaces")
-    style = surfaces.get("style") if is_plain_object(surfaces) else None
-    if isinstance(style, str) and style in CAD_MODEL_SURFACE_STYLES:
-        requested.append(f"display.surfaces.style {style!r}")
-    if requested:
         raise SnapshotError(
-            f"{', '.join(requested)} {'applies' if len(requested) == 1 else 'apply'} to STEP models only; "
-            f"{input_label} has no CAD edges, parts to explode or solids to section. "
-            "Remove the setting; the modes available here are 'solid' and 'render', "
-            "and the surface styles 'shaded' and 'flat'."
+            f"display.mode {mode!r} applies to STEP models only; {input_label} has no CAD edges. "
+            "Its display mode is 'solid' or 'parts' (or draw Preview's look with --preview)."
         )
 
 
@@ -670,8 +612,8 @@ def _find_display_object(
         display = str(raw_display or "").strip()
         if not display:
             raise SnapshotError("--display requires a JSON object, JSON file path, or display mode")
-        # Preset names are unambiguous even when the working directory contains a
-        # folder with the same name (for example an output folder called render).
+        # Mode names are unambiguous even when the working directory contains a
+        # folder with the same name (for example an output folder called parts).
         if display in DISPLAY_MODES:
             return {"mode": display}
         if display.startswith("{"):
@@ -785,57 +727,6 @@ def validate_size_profile(value: object) -> str:
         )
     sizes = ", ".join(f"{name} ({width}x{height})" for name, (width, height) in SIZE_PROFILES.items())
     raise SnapshotError(f"Unknown size profile: {value!r}. Size profiles: {sizes}")
-
-
-def validate_section(value: object) -> dict[str, object]:
-    """``{"plane": "XY"|"XZ"|"YZ", "offset": <number>}`` — where section mode cuts.
-
-    The plane is named by the two axes it contains; the offset moves it along its
-    own normal (Z for XY, Y for XZ, X for YZ) in model units, and defaults to 0.
-    These are exactly the two fields the renderer reads.
-    """
-    if not is_plain_object(value):
-        raise SnapshotError(
-            'section must be a {"plane": "XY"|"XZ"|"YZ", "offset": number} object, '
-            f"got {json.dumps(value)}"
-        )
-    unknown = sorted(set(value) - SECTION_KEYS)
-    if unknown:
-        raise SnapshotError(
-            f"section has unknown key(s): {', '.join(unknown)}; "
-            f"supported keys: {', '.join(sorted(SECTION_KEYS))}"
-        )
-    plane = value.get("plane", SECTION_PLANES[0])
-    if not isinstance(plane, str) or plane not in SECTION_PLANES:
-        raise SnapshotError(f"section.plane must be one of: {', '.join(SECTION_PLANES)}; got {plane!r}")
-    offset = value.get("offset", 0)
-    if isinstance(offset, bool) or not isinstance(offset, (int, float)) or not isfinite(float(offset)):
-        raise SnapshotError(f"section.offset must be a finite number in model units; got {offset!r}")
-    return {"plane": plane, "offset": offset}
-
-
-def parse_section_option(raw_section: object) -> dict[str, object]:
-    """``--section PLANE[:OFFSET]`` in job form.
-
-    Already an object when it came from a ``step.snapshot(section={...})`` call.
-    From argv it is one string shaped like ``--camera``'s angle pair: the plane,
-    then optionally a colon and the offset along its normal (``XZ:12.5``).
-    """
-    if is_plain_object(raw_section):
-        return validate_section(raw_section)
-    text = str(raw_section or "").strip()
-    if not text:
-        raise SnapshotError("--section requires PLANE[:OFFSET], for example XZ or XZ:12.5")
-    plane, separator, raw_offset = text.partition(":")
-    request: dict[str, object] = {"plane": plane.strip()}
-    if separator:
-        try:
-            request["offset"] = float(raw_offset)
-        except ValueError as exc:
-            raise SnapshotError(
-                f"--section offset must be a number in model units, got {raw_offset!r} (PLANE[:OFFSET])"
-            ) from exc
-    return validate_section(request)
 
 
 def normalize_render_mode(value: object) -> str:
@@ -1115,7 +1006,17 @@ def normalize_snapshot_job_packet(raw_payload: object) -> tuple[bool, list[objec
     if isinstance(raw_payload, list):
         return False, raw_payload
     if is_plain_object(raw_payload) and isinstance(raw_payload.get("jobs"), list):
-        return False, list(raw_payload["jobs"])
+        # Shared data is stored once on disk. A job replaces a whole field, never
+        # merges marks or measurements; an explicit empty value suppresses it.
+        shared_keys = {"input", "annotation", "measurements"}
+        unknown = sorted(set(raw_payload) - shared_keys - {"jobs"})
+        if unknown:
+            raise SnapshotError(f"snapshot packet has unknown key(s): {', '.join(unknown)}")
+        shared = {key: raw_payload[key] for key in shared_keys if key in raw_payload}
+        return False, [
+            {**shared, **job} if is_plain_object(job) else job
+            for job in raw_payload["jobs"]
+        ]
     return True, [raw_payload]
 def validate_render_tessellation(value: object) -> None:
     """Refuse an unusable ``quality.tessellation`` here, where the caller still
@@ -1155,7 +1056,7 @@ def normalize_common_job(
     job_count: int = 1,
 ) -> dict[str, object]:
     """Kind-independent job normalization shared by every input kind: the outputs
-    guard, output/quality/section validation, output-path resolution, and the
+    guard, output/quality validation, output-path resolution, and the
     common return shape.
     Job preparation runs the kind's capability checks first, then calls this, so a
     STEP/mesh/robot job all normalize identically; the kind resolver attaches its
@@ -1204,19 +1105,14 @@ def normalize_common_job(
     quality = validate_quality_settings(job.get("quality"))
     if not is_plain_object(job.get("display", {})):
         raise SnapshotError("display must be a display settings object")
-    # Every mode shares its preset defaults with the Viewer; only appearance is
-    # fixed to Light for deterministic CLI output.
+    # Every mode is drawn at the Viewer's defaults; only appearance is fixed to Light for
+    # deterministic CLI output.
     display = {"mode": "solid", "appearance": "light", **job.get("display", {})}
+    # Preview's look is its own request, drawn over the same display at Preview's defaults: the
+    # page takes it as `preview`, never as a display mode.
+    if "preview" in job:
+        _render_boolean(job["preview"], "preview")
 
-    # Where section mode cuts. The key means nothing to a view or a list, and a
-    # request that carries it there expected a cut it would not get.
-    if mode == "section":
-        job["section"] = validate_section(job.get("section", {}))
-    elif "section" in job:
-        raise SnapshotError(
-            f"section positions the cut of section mode, and this job's mode is {mode}; "
-            'set "mode": "section" (--mode section), or clip a view with display.clip'
-        )
     if "timeoutSeconds" in job:
         job["timeoutSeconds"] = validate_timeout_seconds(job["timeoutSeconds"])
     if "debug" in job:
@@ -1300,7 +1196,6 @@ def normalize_common_job(
                 raise SnapshotError(
                     f"{mode} mode writes {' or '.join(allowed)}: render output {index} names "
                     f"{output_path.strip()!r}"
-                    + ("; a section can also be written as .svg with --mode section" if mode == "view" and suffix == ".svg" else "")
                 )
         explicit_camera = output_object.get("camera")
         if explicit_camera is None:
@@ -1310,7 +1205,9 @@ def normalize_common_job(
         normalized_outputs.append(normalized_output)
 
     return {
-        **job,
+        **{key: value for key, value in job.items() if key != "preview"},
+        # Preview, the page's own flag beside the display; absent, the display's mode.
+        **({"preview": True} if job.get("preview") is True else {}),
         "mode": mode,
         "output": output_settings,
         "quality": quality,
@@ -1364,7 +1261,6 @@ def selection_filter_values(job: Mapping[str, object]) -> list[str]:
 def refuse_cad_model_requests(
     job: Mapping[str, object],
     *,
-    mode: str,
     subject: str,
     pose_hint: str,
     tessellation_hint: str,
@@ -1378,10 +1274,15 @@ def refuse_cad_model_requests(
     the plural the message talks about ("STL mesh inputs"); ``joints`` says whether
     the input is a robot, the one thing ``jointValues`` poses.
     """
-    if selection_filter_values(job):
+    selection = job.get("selection") if is_plain_object(job.get("selection")) else {}
+    # A robot's parts can be hidden, as its Links panel hides them (a Quick Edit's view names
+    # them); focus, and anything of any other input, needs a STEP's occurrences.
+    if (selection_value_list(selection.get("focus"))
+            or (selection_value_list(selection.get("hide")) and not joints)):
         raise SnapshotError(
             f"selection focus/hide require STEP topology; {subject} have no "
             "part/subassembly selectors"
+            + (" (a robot's selection.hide takes its part ids)" if joints else "")
         )
     if has_kinematics_render_values(job.get("kinematics")):
         raise SnapshotError(f"kinematics values require a STEP model; {pose_hint}")
@@ -1402,9 +1303,6 @@ def refuse_cad_model_requests(
         raise SnapshotError(
             f"quality.tessellation requires an exact-surface STEP package; {tessellation_hint}"
         )
-    if mode not in MESH_SUPPORTED_RENDER_MODES or job.get("section") is not None:
-        supported = ", ".join(sorted(MESH_SUPPORTED_RENDER_MODES))
-        raise SnapshotError(f"section mode requires STEP topology; {subject} support: {supported}")
 
 
 def check_mesh_render_job(job: Mapping[str, object], *, kind: str, mode: str, **_context: object) -> None:
@@ -1412,7 +1310,6 @@ def check_mesh_render_job(job: Mapping[str, object], *, kind: str, mode: str, **
     label = kind.upper()
     refuse_cad_model_requests(
         job,
-        mode=mode,
         subject=f"{label} mesh inputs",
         pose_hint=f"{label} mesh inputs are not parametric",
         tessellation_hint=f"{label} is an existing mesh",
@@ -1778,6 +1675,22 @@ async def with_snapshot_timeout(awaitable: Any, timeout_seconds: object, label: 
         return await asyncio.wait_for(awaitable, timeout=timeout)
     except asyncio.TimeoutError as exc:
         raise SnapshotError(f"{label} timed out after {timeout_seconds}s") from exc
+_ANNOTATION_REFUSAL = re.compile(r"\bError: (annotation: [^\n]*)")
+
+
+async def _refusing_annotation(job: Mapping[str, object], evaluation: Any) -> object:
+    """Report invalid annotation data as a request error naming its source file."""
+    try:
+        return await evaluation
+    except Exception as error:
+        match = _ANNOTATION_REFUSAL.search(str(error)) if job.get("annotation") is not None else None
+        if match is None:
+            raise
+        resolved = job.get("resolved") if is_plain_object(job.get("resolved")) else {}
+        source = str(resolved.get("annotationSource") or "")
+        raise SnapshotError(f"{source}: {match.group(1)}" if source else match.group(1)) from None
+
+
 class BatchSnapshotRenderer:
     def __init__(self, runtime_dir: Path) -> None:
         # The driver is told where render.html/snapshot-render.js are rather than locating
@@ -1930,7 +1843,7 @@ class BatchSnapshotRenderer:
         await self.page.set_viewport_size({"width": width, "height": height})
         timeout_seconds = job.get("timeoutSeconds") or DEFAULT_TIMEOUT_SECONDS
         result = await with_snapshot_timeout(
-            self.page.evaluate("(renderJob) => window.__snapshotRender(renderJob)", dict(job)),
+            _refusing_annotation(job, self.page.evaluate("(renderJob) => window.__snapshotRender(renderJob)", dict(job))),
             timeout_seconds,
         )
         if not is_plain_object(result) or not result.get("ok"):
@@ -1993,7 +1906,7 @@ class BatchSnapshotRenderer:
         report.detail(f"{job.get('input') or ''} (preparing)")
         say(f"video: preparing {job.get('input') or ''}")
         prepared = await with_snapshot_timeout(
-            self.page.evaluate("(renderJob) => window.__snapshotRenderSequence(renderJob)", dict(job)),
+            _refusing_annotation(job, self.page.evaluate("(renderJob) => window.__snapshotRenderSequence(renderJob)", dict(job))),
             timeout_seconds,
             "video preparation",
         )
@@ -2234,7 +2147,8 @@ async def render_resolved_job_packet(
                 result = {**result, "debug": debug_info}
             results.append(result if packet["single"] else {"input": job.get("input"), **result})
     finally:
-        await snapshot_renderer.close()
+        if renderer is None:
+            await snapshot_renderer.close()
     if packet["single"]:
         return results[0]
     return {
@@ -2264,10 +2178,6 @@ def write_output_payload(output: Mapping[str, object]) -> None:
         # point: a 1800-frame sequence has no payload that could ride a result.
         return
     path = Path(output_path)
-    text = output.get("text")
-    if isinstance(text, str):
-        write_bytes_atomic(path, text.encode("utf-8"))
-        return
     data_url = str(output.get("dataUrl") or "")
     match = re.match(r"^data:([^;]+);base64,(.+)$", data_url)
     if not match:
@@ -2307,12 +2217,12 @@ def _output_kind(output: Mapping[str, object], path: Path) -> str:
     """What was actually encoded: the mime subtype, else the path's suffix.
 
     The renderer's mime type is authoritative because the encoding follows the
-    RENDER, not the request -- an SVG served under a ``.png`` name is still SVG.
+    RENDER, not the request -- a PNG keeps its encoding even if its path is renamed.
     """
     mime = str(output.get("mimeType") or "")
     subtype = mime.rsplit("/", 1)[-1].strip().lower() if "/" in mime else ""
     if subtype:
-        return "svg" if subtype.startswith("svg") else subtype
+        return subtype
     return path.suffix.lstrip(".").lower()
 
 

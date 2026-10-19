@@ -56,6 +56,12 @@ updates:
       npm-minor-patch:
         patterns: ["*"]
         update-types: [minor, patch]
+    # @types/node tracks the oldest Node we run (CI pins 22, the README says 20+),
+    # not the newest: types for a later major let code typecheck against APIs the
+    # runtime lacks. Move it by hand when the minimum Node moves.
+    ignore:
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: pip
     directory: /packages/cadgen

@@ -3,10 +3,14 @@ import assert from 'node:assert/strict';
 import { restoreMotionAnimation, restoreMotionParameters } from './motionRestore.js';
 const definition = { parameterMap: { x: { id: 'x', type: 'number', defaultValue: 2, min: -100, max: 100 } }, defaultParameterValues: { x: 2 } };
 const clips = { turn: { id: 'turn', duration: 5, update() {} } };
-test('a routine that owns the pose keeps Position\'s values off the model, and a load never resumes it', () => {
+test('a load never resumes a routine: it comes back at rest, its choice and speed kept, and Position\'s values come through', () => {
   const animation = restoreMotionAnimation({ enabled: true, activeClipId: 'turn', elapsedSec: 3, playing: true, speed: 2 }, clips);
-  assert.deepEqual([animation.elapsedSec, animation.playing, animation.speed, animation.activeClipId], [0, false, 2, 'turn']);
-  assert.deepEqual(restoreMotionParameters(definition, { x: 50 }, animation), { x: 2 });
+  assert.deepEqual([animation.enabled, animation.elapsedSec, animation.playing, animation.speed, animation.activeClipId], [false, 0, false, 2, 'turn']);
+  assert.deepEqual(restoreMotionParameters(definition, { x: 50 }, animation), { x: 50 });
+});
+
+test('a routine that owns the pose keeps Position\'s values off the model', () => {
+  assert.deepEqual(restoreMotionParameters(definition, { x: 50 }, { enabled: true, activeClipId: 'turn' }), { x: 2 });
 });
 test('a pose owned by Position comes through, whatever the clock says', () => {
   const animation = restoreMotionAnimation({ enabled: false, activeClipId: 'turn', elapsedSec: 3 }, clips);

@@ -23,7 +23,7 @@ boundaries, never preset names:
 | Surface style/color source, crossing opaque/transparent | Surface color, opacity within one transparency class |
 | Edge enable/visibility | Edge color |
 | Floor enable | Floor color, opacity, placement |
-| Clip enable/disable | Clip position and Flip after preparation |
+| Clip enable/disable | Clip position, Reverse and Part colors after preparation |
 | Appearance shader change | Projection, background, grid, axes, Explode |
 
 Both paths yield until the controls have painted, then apply the latest recipe.
@@ -75,8 +75,9 @@ outside FileViewer retain their own scene setup lifecycle.
 ## Status placement
 
 `kit/status/ViewUpdateStatus.jsx` only takes `status`, `onRetry`, and
-`className`. It has no scene/store knowledge. RendererShell draws it centred at the top of the viewport,
-level with the tool strip, without changing scheduling. It appears after 150ms with “Updating view…” (or
+`className`. It has no scene/store knowledge. RendererShell draws it centred under the tool
+strip and the tool in hand's sub-toolbar, or at the top of the viewport in the strip's row
+where there is no strip (preview, a load), without changing scheduling. It appears after 150ms with “Updating view…” (or
 “Preparing section view…” for Clip), stays nonmodal, and never disables controls.
 Fast changes produce no spinner. Failures show a retry action.
 

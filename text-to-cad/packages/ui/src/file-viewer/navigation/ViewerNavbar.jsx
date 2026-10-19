@@ -1,8 +1,9 @@
-import { ArrowLeft, ArrowRight, Ellipsis } from "lucide-react";
+import { ArrowLeft, ArrowRight, ChevronDown, Ellipsis } from "lucide-react";
 import { useState } from "react";
 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@text-to-cad/ui/primitives/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@text-to-cad/ui/primitives/popover";
+import { useI18n } from "@text-to-cad/ui/i18n";
 import { cn } from "@text-to-cad/ui/utils";
 
 import logo from "../../assets/logo-c.svg";
@@ -15,8 +16,9 @@ import { entryMenu } from "./entry-menu.js";
 import { FolderExplorer } from "./FolderExplorer.jsx";
 
 /**
- * The row above a file: ONE navbar, the same in every app, so a person finds each control in the
- * same place whatever is open. A host's home has none; it holds its menu itself.
+ * The row above a file and above the host's home: ONE navbar, the same in every app, so a person
+ * finds each control in the same place whatever is open. Over the home it has only the logo (its
+ * menu without Back to files), Back and Forward, the host's update and Full size.
  *
  * Left, in this order: the text-to-cad logo, which opens the app's menu (`AppMenu`: Back to files
  * where the host has a home, then the person's settings, feedback and links); Back and Forward,
@@ -27,9 +29,9 @@ import { FolderExplorer } from "./FolderExplorer.jsx";
  * Right, only what a host or a file adds: the host's update button while its install is behind
  * (`update`, the blue `UpdateButton` from `@text-to-cad/ui/update`); the file's own actions (the
  * CAD viewer's one: a dismissed alert's icon, which brings its card back); the host's way to show
- * the view full size (`fullSize`), where it shows it small; and last the renderer's own view
- * controls (`controlsRef`, the box it draws them into: a 3D view's Display and Preview). Preview
- * takes the whole page, this row with it, and draws its own controls where these sat.
+ * the view full size (`fullSize`), where it shows it small; last, the renderer's own view controls,
+ * drawn into the box it is handed (`controlsRef`: a 3D view's Display and Preview, or in Preview
+ * its settings and the way out). The colour scheme is the app menu's.
  *
  * Nothing here is drawn for its own sake: a control appears only where it does something.
  */
@@ -44,7 +46,8 @@ const NAV_ITEM_CLASS = "flex h-6 shrink-0 cursor-pointer items-center rounded-md
 
 /** The text-to-cad logo, the size of the row's other icon buttons: the app's menu. */
 function LogoMenu({ onHome, menu }) {
-  return <AppMenu onHome={onHome} {...menu} trigger={<button type="button" aria-label="Menu" className={cn(NAV_ITEM_CLASS, "w-6 justify-center")} data-navbar-menu="">
+  const { t } = useI18n();
+  return <AppMenu onHome={onHome} {...menu} trigger={<button type="button" aria-label={t("navbar.menu")} className={cn(NAV_ITEM_CLASS, "w-6 justify-center")} data-navbar-menu="">
     <img src={logo} alt="" className="size-4" draggable={false} />
   </button>} />;
 }
@@ -57,11 +60,12 @@ const HISTORY_CLASS = cn(NAV_ITEM_CLASS, "w-5 justify-center text-muted-foregrou
  * nowhere to go. The history is the host's (`viewHistory`), never the page's.
  */
 function HistoryButtons({ viewHistory }) {
+  const { t } = useI18n();
   return <span className="flex shrink-0 items-center" data-navbar-history="">
-    <button type="button" aria-label="Back" disabled={!viewHistory.canGoBack} onClick={() => viewHistory.back()} className={HISTORY_CLASS}>
+    <button type="button" aria-label={t("navbar.back")} disabled={!viewHistory.canGoBack} onClick={() => viewHistory.back()} className={HISTORY_CLASS}>
       <ArrowLeft className="size-3.5" aria-hidden="true" />
     </button>
-    <button type="button" aria-label="Forward" disabled={!viewHistory.canGoForward} onClick={() => viewHistory.forward()} className={HISTORY_CLASS}>
+    <button type="button" aria-label={t("navbar.forward")} disabled={!viewHistory.canGoForward} onClick={() => viewHistory.forward()} className={HISTORY_CLASS}>
       <ArrowRight className="size-3.5" aria-hidden="true" />
     </button>
   </span>;
@@ -69,10 +73,11 @@ function HistoryButtons({ viewHistory }) {
 
 /** The ⋯ after the file's name: what the host can do with the file. A host that can do nothing has none. */
 function FileMenu({ path, platform, capabilities, onAction }) {
-  const items = entryMenu(platform, capabilities);
+  const { t } = useI18n();
+  const items = entryMenu(platform, capabilities, t);
   if (!items.length) return null;
   return <DropdownMenu modal={false}>
-    <DropdownMenuTrigger asChild><button aria-label="File actions" data-testid="file-actions" type="button"
+    <DropdownMenuTrigger asChild><button aria-label={t("navbar.fileActions")} data-testid="file-actions" type="button"
       className={cn(NAV_ITEM_CLASS, "w-5 justify-center text-muted-foreground")}>
       <Ellipsis className="size-3.5" />
     </button></DropdownMenuTrigger>
@@ -103,6 +108,8 @@ function FileName({ path, explorer }) {
     <PopoverTrigger asChild>
       <button type="button" className={cn(NAV_ITEM_CLASS, "min-w-0 shrink px-1 text-left")} data-file-name="">
         <span className="truncate">{name}</span>
+        {/* The name opens the explorer; the chevron says so. A plain name (no explorer) has none. */}
+        <ChevronDown className="ml-0.5 size-3 shrink-0 text-muted-foreground" aria-hidden="true" />
       </button>
     </PopoverTrigger>
     <PopoverContent align="start" sideOffset={8} data-file-explorer="" onOpenAutoFocus={focusFilter}
@@ -116,7 +123,7 @@ function FileName({ path, explorer }) {
 /**
  * @param {object} props
  * @param {(() => void) | undefined} [props.onHome] The host's home, where it has one: the menu's Back to files.
- * @param {{ links?: import("../../host/types.js").ViewerLinks, appSettings?: readonly import("../types.js").AppSetting[], platform?: string } | null} [props.menu]
+ * @param {{ links?: import("../../host/types.js").ViewerLinks, appSettings?: readonly import("../types.js").AppSetting[], colorScheme?: import("../types.js").ColorSchemeSetting, platform?: string } | null} [props.menu]
  *   The rest of the app's menu: the host's links and the person's settings.
  * @param {import("../types.js").ViewerHistory | null} [props.history] The view's own history, where the host keeps one: Back and Forward after the logo.
  * @param {string | null} [props.file] The open file, by its absolute path.
@@ -131,9 +138,10 @@ function FileName({ path, explorer }) {
  * @param {string} [props.className]
  */
 export function ViewerNavbar({ onHome, menu = null, history = null, file = null, explorer = null, fileMenu = null, trailing = null, update = null, fullSize = null, controlsRef, className }) {
+  const { t } = useI18n();
   return (
     <header className={cn(NAVBAR_ROW_CLASS, "border-border bg-background text-foreground", className)} data-viewer-navbar="">
-      <nav aria-label="Viewer" className="flex min-w-0 flex-1 items-center overflow-hidden text-sm">
+      <nav aria-label={t("navbar.viewer")} className="flex min-w-0 flex-1 items-center overflow-hidden text-sm">
         {onHome || menu ? <LogoMenu onHome={onHome} menu={menu} /> : null}
         {history ? <HistoryButtons viewHistory={history} /> : null}
         {file ? <span className="flex min-w-0 items-center">
@@ -145,7 +153,7 @@ export function ViewerNavbar({ onHome, menu = null, history = null, file = null,
         {update}
         {trailing}
         {fullSize}
-        <div ref={controlsRef} className="contents" data-view-controls="" />
+        {controlsRef ? <div ref={controlsRef} className="contents" data-view-controls="" /> : null}
       </div>
     </header>
   );

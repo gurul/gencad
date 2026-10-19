@@ -34,8 +34,8 @@ Use the corresponding robot-description skill for URDF, SRDF or SDF.
 Run cadgen through [uv](https://docs.astral.sh/uv/), so this skill's commands share
 one installation, and its warm build daemon, with the CAD app's server:
 
-- `cadgen` below means `uvx --no-config --managed-python --python 3.13 --from cadgen==0.7.21 cadgen`
-- `python` below means `uvx --no-config --managed-python --python 3.13 --from cadgen==0.7.21 python`
+- `cadgen` below means `uvx --no-config --managed-python --python 3.13 --from cadgen==0.7.24 cadgen`
+- `python` below means `uvx --no-config --managed-python --python 3.13 --from cadgen==0.7.24 python`
 
 The first run downloads that installation and the first snapshot its headless
 browser; later runs reuse both.
@@ -125,22 +125,48 @@ for decorator examples, mesh tolerances and animated GLB.
 A reference such as `/work/robot/STEP/assembly.step#o1.2.f7` identifies geometry
 in a particular saved document. Its file part is the document's absolute path as
 the CAD viewer copied it, with the file's real name and extension (in quotes when it
-holds a space or `#`). Open that path with `read_scene`, and pass the whole reference
-to `resolve()`:
+holds a space or `#`). A selection of several entities is copied as one line, its
+refs comma-separated (`/work/robot/STEP/assembly.step#o1.2.f7,o1.2.f8`). Open that
+path with `read_scene`, and pass the whole line to `resolve()`, which returns a tuple
+of one selection per ref, in order:
 
 ```python
 from cadgen import read_scene
 
 scene = read_scene("/work/robot/STEP/assembly.step")
-selection = scene.resolve("/work/robot/STEP/assembly.step#o1.2.f7")
-face = selection.shape()  # owned native geometry, in document world coordinates
-print(selection.ref, face.area)
+for selection in scene.resolve("/work/robot/STEP/assembly.step#o1.2.f7,o1.2.f8"):
+    face = selection.shape()  # owned native geometry, in document world coordinates
+    print(selection.ref, face.area)
+
+(selection,) = scene.resolve("/work/robot/STEP/assembly.step#o1.2.f7")  # one ref
 ```
 
-A note from the viewer's Quick Edit reads: what the person wants, then
-`File:` (the document it is about), `References:` (one per line, as above) and,
-when they sketched on the view, `Sketch: <path>`: a PNG of the view with their
-markup (or the image itself, attached). Look at the sketch before changing the model.
+A Quick Edit prompt names its document under `File:`, selected entities under
+`References:`, and snapshot context as inline JSON or a `.snapshot.json` path.
+Read `measurements` for endpoints in model units and displayed labels; these are
+reference dimensions, not constraints automatically applied to geometry.
+To render, save inline JSON to a temporary `.snapshot.json` and run
+`cadgen snapshot --job <snapshot file>` (`--job` takes a file path).
+Inspect supplied annotations before editing. Without annotations, the captured
+view is optional context; render it when useful to the request. After editing,
+replay relevant views to check the change. See
+[annotations and Quick Edit views](references/snapshot-review.md#annotations-and-quick-edit-views)
+for the packet schema and capture behavior.
+
+A reference into a file that is not a STEP names what the viewer picked in it, in that
+file's own terms (none is a STEP selector `read_scene` resolves):
+
+| File | Reference | Means |
+| --- | --- | --- |
+| URDF, SRDF, SDF | `/work/arm/arm.urdf#upper_arm` | the link `upper_arm` |
+| GLB | `/work/out/model.glb#n12` | the glTF node `nodes[12]` (0-based, the file's own index) |
+| 3MF | `/work/out/plate.3mf#o2.1` | the 2nd `<build><item>`'s 1st `<component>` (1-based); `#o3` is the 3rd build item |
+| STL | the file alone, on `File:` | one mesh: nothing in it is picked |
+
+A measurement taken on a mesh (a GLB, a 3MF or a robot's links) is between two points of
+its triangles, in the file's unit, and APPROXIMATE: its label starts with `≈` ("≈ 0.0425 m").
+Never read a width across two facets of a tessellated curve as an exact diameter; measure
+the source model for that.
 
 For a bare `#o1.2.f7`, use the identified target file. Do not guess between
 ambiguous files or labels. Numeric refs belong to that saved revision;
@@ -203,5 +229,5 @@ validation don't replace this.
   file return `url?file=<its URL-encoded absolute path>`. If it fails to launch, say so.
 
 Generate changed artifacts first: the viewer never runs model scripts. Existing
-STEP files compile on open when needed. Topology selection and measurement
-require STEP; meshes support visual review.
+STEP files compile on open when needed. Exact topology selection and measurement
+require STEP; supported mesh viewers also offer approximate measurements on triangles.

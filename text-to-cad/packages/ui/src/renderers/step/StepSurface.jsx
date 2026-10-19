@@ -1,12 +1,12 @@
 import { buildEdgeChainGraph } from "./workbench/edgeChainSelection.js";
 "use client";
 
-import { MeasureModeIcon, MeasureModeMenu, SelectModeIcon, SelectModeMenu } from "./components/workbench/SelectionModes.jsx";
-import { NO_CONNECTED_SELECTION, connectedSelectionApplies } from "./workbench/selectionFilter.js";
-import { PositionToolIcon, positionValuesAreDefault } from "../kit/inspector/kinematicsControls.jsx";
+import { MeasureIcon, SelectIcon, SelectModeMenu, STEP_SELECT_DEFAULT } from "./components/workbench/SelectionModes.jsx";
+import { selects } from "../kit/tools/select/selectFilter.js";
+import { NO_CONNECTED_SELECTION, connectedSelectionApplies, selectGeometryMode } from "./workbench/selectionFilter.js";
+import { positionValuesAreDefault } from "../kit/inspector/kinematicsControls.jsx";
 import { filterSelectionReferences, toggleReferenceGroupSelection, connectedReferenceIds } from "./workbench/selectionFilter.js";
 import { buildTangentFaceGraph } from "./workbench/tangentFaceSelection.js";
-import { explodablePartCount } from "./workbench/explodableParts.js";
 import { createHoverStore } from "./workbench/hoverStore.js";
 
 import * as THREE from "three";
@@ -19,6 +19,7 @@ import { normalizePartIdList } from "@text-to-cad/core/lib/viewer/partVisualStat
 import RendererShell from "../kit/shell/RendererShell.jsx";
 import { usePreviewState, useRendererShell } from "../kit/shell/useRendererShell.js";
 import StepSceneLayers, { releaseStepRuntime } from "./scene/StepSceneLayers.jsx";
+import StepPreviewLayers from "./scene/StepPreviewLayers.jsx";
 import { displayRecordExplodedViewTranslation } from "./scene/useStepExplode.js";
 import { createStepScene, stepSceneView } from "./scene/stepScene.js";
 import { useStepViewPolicy, viewDrawsHairlines } from "./scene/useStepViewPolicy.js";
@@ -30,21 +31,24 @@ import { viewportMenuEntries } from "./components/workbench/AssemblyContextMenuI
 import { useViewportLod } from "./render/useViewportLod.js";
 import { lodSceneMayMove, sampleLodCamera } from "./render/lodCameraSample.js";
 import { registerLodDisplaySource } from "./render/lodSceneAdoption.js";
-import { ALL_VIEW_FEATURES } from "@text-to-cad/core/common/viewSettings.js";
-import { useModelTools } from "./components/workbench/ModelTools.jsx";
-import { useStepPanels } from "./components/workbench/StepPanels.js";
+import { ALL_VIEW_FEATURES, STEP_PART_VIEW_FEATURES } from "@text-to-cad/core/common/viewSettings.js";
+import { useModelTools } from "../kit/tools/model-effects/ModelTools.jsx";
+import { useStepPanels, useStepSelectionChips } from "./components/workbench/StepPanels.js";
 import { stepMotionSources, useStepMotion } from "./workbench/useStepMotion.js";
-import { animationControlsHaveContent } from "../kit/tools/playbar/ViewportAnimationBar.js";
+import { useStepPreviewMotion } from "./workbench/useStepPreviewMotion.js";
+import { useSettledValue } from "./workbench/settledValue.js";
+import { animationControlsHaveContent } from "../kit/tools/playbar/AnimationTimeControl.js";
 import { useCadAssets } from "./components/workbench/hooks/useCadAssets.js";
 import { useEditingPreview } from "./components/workbench/hooks/useEditingPreview.js";
 import { useViewportQualityStatus } from "./components/workbench/hooks/useViewportQualityStatus.js";
 import { editingBuildActive } from "./workbench/editingPreview.js";
-import MeasurePanel from "./components/workbench/MeasurePanel.jsx";
+import { useQuickEditMeasurements } from "../kit/tools/measure/measurementChips.jsx";
+import { measureSelectHandlers } from "../kit/tools/measure/measureSelection.js";
 import { useCadWorkspaceSelection } from "./components/workbench/hooks/useCadWorkspaceSelection.js";
 import { useCadWorkspaceSelectors } from "./components/workbench/hooks/useCadWorkspaceSelectors.js";
 import { useAppliedViewSettings } from "../kit/view-settings/useAppliedViewSettings.js";
 import { useViewSettings } from "../kit/view-settings/useViewSettings.js";
-import { VIEWER_RENDER_PROFILE, sceneForRenderProfile } from "../kit/viewport/renderProfile.js";
+import { previewSceneQuality } from "../kit/viewport/previewViewScene.js";
 import {
   ASSET_STATUS,
   CAD_TOOL_MODES,
@@ -80,8 +84,7 @@ import {
   isLargeStepGlbEntry
 } from "@text-to-cad/core/lib/render/meshCost.js";
 import { createAnimationClock, AnimationClockProvider } from "./workbench/animationClockStore.js";
-import { measureFilterSnaps } from "./workbench/measureRulerState.js";
-import { useStepMeasure } from "./workbench/useStepMeasure.js";
+import { useMeasureSession } from "../kit/tools/measure/useMeasureSession.js";
 import { fileKey } from "./workbench/entryPaths.js";
 import {
   stepModuleTopologyOccurrenceIds
@@ -128,8 +131,12 @@ import { modelMenuDescriptor, partMenuDescriptor, topologyMenuDescriptor } from 
 import { nodeCopyText, selectionCopyPayload } from "./file-view/stepCopy.js";
 import { referenceLabel, referencesFromCopyText, resolveSelectorSelection } from "./file-view/hostReference.js";
 import { applySourceAppearanceToMeshData, sourceAppearanceGeometry } from "@text-to-cad/core/common/sourceSidecar.js";
-// The selection filters that pick faces or edges, never the part.
-const TOPOLOGY_FILTERS = new Set(["faces", "edges"]);
+import { stepPartNameFromFile } from "@text-to-cad/core/lib/step/productName.js";
+// The geometry modes that pick faces or edges, never the part (`selectGeometryMode`).
+const TOPOLOGY_FILTERS = new Set(["faces", "edges", "topology"]);
+// The shape a geometry mode gives the model tree: one that picks no geometry leaves the
+// person's own tree, as All does; Faces and Edges together open it as either does.
+const treeShape = mode => (mode === "none" ? "all" : mode === "topology" ? "faces" : mode);
 const EMPTY_MATERIAL_OVERRIDES = Object.freeze({});
 const EMPTY_ID_SET = new Set();
 const TOPOLOGY_EXPANSION_INTERVAL_MS = 150;
@@ -247,9 +254,12 @@ function StepSurfaceBody({ view, data }) {
     setModelPartId: setHoveredModelPartId,
     setListPartId: setHoveredListPartId
   } = hoverStore;
-  // The Select tool's mode (`workbench/selectionFilter.js`: All, Parts, Faces or Edges), and how a
-  // face or edge pick grows (Group faces, Group edges), which is independent of it.
-  const [selectionFilter, setSelectionFilter] = useState("all");
+  // What Select picks, its selection filter (`kit/tools/select/selectFilter.js`): Parts, Faces,
+  // Edges, Position's knobs, the annotations and measurements, each ticked on its own.
+  // `selectionFilter` is how the geometry ticked is picked (`selectGeometryMode`); how a face or
+  // edge pick grows (Group faces, Group edges) is independent of it.
+  const [selectFilter, setSelectFilter] = useState(STEP_SELECT_DEFAULT);
+  const selectionFilter = selectGeometryMode(selectFilter);
   const [connectedSelection, setConnectedSelection] = useState(NO_CONNECTED_SELECTION);
   // A press under a face or edge filter on an assembly part whose faces are not loaded yet:
   // `{ partId, clientX, clientY, pointerType, multiSelect }`, replayed once they can be picked.
@@ -282,8 +292,8 @@ function StepSurfaceBody({ view, data }) {
   const preview = usePreviewState();
   const previewing = preview.previewing;
   // The scene as this mode's render profile draws it: preview raises the LOD's detail with the rest.
-  const resolvedScene = useMemo(() => sceneForRenderProfile(viewUpdate.scene,
-    previewing ? VIEWER_RENDER_PROFILE.PREVIEW : VIEWER_RENDER_PROFILE.TOOLS), [viewUpdate.scene, previewing]);
+  // What the editor's viewport draws; Preview is a view of its own and draws itself.
+  const resolvedScene = viewUpdate.scene;
   const [stepUpdateInProgress, setStepUpdateInProgress] = useState(false);
   // The viewport's own alert, kept HERE: this renderer folds it into an alert of its own
   // (`viewerAlert` below) and hands the shell the composed result.
@@ -372,14 +382,10 @@ function StepSurfaceBody({ view, data }) {
   );
   // This renderer is only ever handed a STEP (its `matches`, index.ts), keyed per file, and an
   // entry is always present: so every capability a STEP has (parts, topology, Measure, a
-  // sidecar's parameters, the Select and Draw tools) is simply on here, and nothing below asks
+  // sidecar's parameters, the Select and Annotate tools) is simply on here, and nothing below asks
   // the format again.
   // The URL's path IS the directory, so there is nothing to select and no state to
   // reconcile — the Viewer always has exactly one directory, the one it was opened at.
-  // What this file's view opts into: a B-rep model takes every Display section, preset and
-  // surface style. The shell configures the store with it (`features`).
-  const viewFeatures = ALL_VIEW_FEATURES;
-  const isAssemblyView = selectedEntry?.kind === "assembly";
   // Where this entry's motion comes from; the motion itself is `useStepMotion`'s, below.
   const {
     moduleUrl: selectedStepModuleUrl, sourceAnimation: selectedSourceAnimation, animationKey: selectedAnimationSourceKey
@@ -409,15 +415,23 @@ function StepSurfaceBody({ view, data }) {
     meshState?.assemblyBackgroundErrorMeshHash === selectedMeshHash
     ? String(meshState?.assemblyBackgroundError || "").trim()
     : "";
-  const stepInteractionBlocked = stepUpdateInProgress || retainingPreviousStepMesh;
-  const selectedAssemblyStructureReady =
-    selectedEntry?.kind === "assembly" &&
-    selectedMeshMatches &&
-    !!meshState?.assemblyStructureReady;
-  const selectedAssemblyInteractionReady =
-    selectedEntry?.kind === "assembly" &&
-    selectedMeshMatches &&
-    !!meshState?.assemblyInteractionReady;
+  // While it is held, the model on screen is the previous revision: the next one is listed as a bare
+  // part with no mesh until it is built, and stays listed so when its build fails. The view describes
+  // the model it shows -- its kind, its tree, its parts (`meshState`) -- never the listing of a
+  // revision that has none, which left the tree one row under a model that had not changed.
+  const isAssemblyView = (retainingPreviousStepMesh ? meshState?.kind : selectedEntry?.kind) === "assembly";
+  // What this file's view opts into: a B-rep model takes every Display section, preset and surface
+  // style, and an assembly Explode too. A part file has none, as it has no Model tree: one part
+  // separates nothing. The shell configures the store with it (`features`).
+  const viewFeatures = isAssemblyView ? ALL_VIEW_FEATURES : STEP_PART_VIEW_FEATURES;
+  const shownMeshCurrent = selectedMeshMatches || retainingPreviousStepMesh;
+  // A rebuild still running holds the view: what is picked now would not outlive its revision. One
+  // that failed leaves the previous revision on screen for good, with nothing coming to replace it:
+  // that is the model to work with -- picked from, hidden, isolated -- until the file is fixed.
+  const previousRevisionStands = retainingPreviousStepMesh && selectedArtifact.status === "failed";
+  const stepInteractionBlocked = (stepUpdateInProgress || retainingPreviousStepMesh) && !previousRevisionStands;
+  const selectedAssemblyStructureReady = isAssemblyView && shownMeshCurrent && !!meshState?.assemblyStructureReady;
+  const selectedAssemblyInteractionReady = isAssemblyView && shownMeshCurrent && !!meshState?.assemblyInteractionReady;
   const selectedAssemblyHydrationFailed =
     selectedEntry?.kind === "assembly" &&
     !!meshState?.assemblyBackgroundError &&
@@ -437,11 +451,28 @@ function StepSurfaceBody({ view, data }) {
   const selectedMeshPartial = selectedMeshMatches && !meshStateIsComplete(meshState);
 
   // ---- motion: the kinematics module and Position, the routines and playback -------------------
+  // One motion at a time: Explode, Position and a routine's frame replace each other. Taking
+  // One of four at a time: Explode, the routine, Position and Clip each move the model's parts or
+  // cut its box, and whichever is SET off its default — its value changed, never merely its tool
+  // taken up or its panel pressed — puts the other three back at theirs. A frame left by the
+  // Animation section stays on the model, as a pose does. Position and the routine are the motion
+  // hook's (a joint moved rewinds the routine; the routine played puts the pose back); Explode and
+  // Clip are the view settings', so the hook says when one of its two was used and they go off
+  // here, and Explode or Clip set puts the hook's two at rest and the other off (below). Preview's
+  // pose and routine are its own (`useStepPreviewMotion`), on its own scene.
+  const explodeAppliedRef = useRef(false);
+  const clipAppliedRef = useRef(false);
+  const motionHost = useMemo(() => ({
+    onUse: () => {
+      if (explodeAppliedRef.current) viewSettingsStore.patch({ exploded: { enabled: false, amount: 0 } });
+      if (clipAppliedRef.current) viewSettingsStore.patch({ clip: { enabled: false, axis: "x", invert: false } });
+    }
+  }), [viewSettingsStore]);
   const motion = useStepMotion({
     entry: selectedEntry, fileKey: selectedKey, resources: client.resources,
     meshData: selectedMeshData, meshPartial: selectedMeshPartial,
     readStored: () => session.readStored(), clipboard: host.clipboard,
-    reportError: (message) => shellRef.current?.reportActionError(message)
+    reportError: (message) => shellRef.current?.reportActionError(message), host: motionHost
   });
   const {
     definition: selectedStepModuleDefinition, loading: selectedStepModuleLoading,
@@ -746,7 +777,7 @@ function StepSurfaceBody({ view, data }) {
     isAssemblyView &&
     viewerSelectableAssemblyNodeIds.length > 0;
   const viewerMode = viewerInAssemblyMode ? "assembly" : "part";
-  const drawModeActive = tabToolMode === TAB_TOOL_MODE.DRAW;
+  const annotateModeActive = tabToolMode === TAB_TOOL_MODE.ANNOTATE;
 
   // What the context menu's "Zoom to selection" frames, as it stands right now. It is
   // read when a menu descriptor is built — on the press, or when a tree row's menu
@@ -769,16 +800,22 @@ function StepSurfaceBody({ view, data }) {
   const lodSelectedPartIdsRef = useRef(EMPTY_LIST);
   // Declared here, above the LOD scheduler that is handed it: it reads only refs, so it is
   // safe this early, and a `const` read before its declaration is a TDZ crash, not undefined.
+  // The camera detail is loaded for: the view on screen, Preview's while it is open (its own
+  // viewport, `previewRuntimeRefRef`), where nothing is selected.
+  const previewRuntimeRefRef = useRef(null);
   const sampleViewportLodCamera = useCallback((options) => {
-    const runtime = runtimeRefRef.current?.current;
+    const previewOpen = preview.now();
+    const runtime = (previewOpen ? previewRuntimeRefRef : runtimeRefRef).current?.current;
     if (!runtimeModelKeyMatches(runtime, selectedKey)) return null;
-    return sampleLodCamera(THREE, runtime, { ...options, selectedPartIds: lodSelectedPartIdsRef.current });
-  }, [selectedKey]);
+    return sampleLodCamera(THREE, runtime, { ...options, selectedPartIds: previewOpen ? EMPTY_LIST : lodSelectedPartIdsRef.current });
+  }, [selectedKey, preview.now]);
+  // The detail asked for is the view on screen's: Preview raises it a tier (`previewViewScene.js`).
+  const lodQuality = previewing ? previewSceneQuality(resolvedScene.quality) : resolvedScene.quality;
   const { onCameraMoved: onLodCameraMoved } = useViewportLod({
     resources: client.resources,
     sampleCamera: sampleViewportLodCamera,
     modelKey: viewportQualityModelKey,
-    quality: resolvedScene.quality,
+    quality: lodQuality,
     lodPackage,
     tessellationCache: cadRenderSession.tessellationCache,
     applyComponentLodBatch,
@@ -792,7 +829,7 @@ function StepSurfaceBody({ view, data }) {
   // Publishes the readiness moments (first geometry, standard detail) that harnesses read.
   useViewportQualityStatus({
     modelKey: viewportQualityModelKey,
-    quality: resolvedScene.quality,
+    quality: lodQuality,
     file: selectedEntry?.file || "",
     hasGeometry: Boolean(selectedMeshData),
     // A progressive assembly's first paint is a real preview, but more
@@ -816,7 +853,7 @@ function StepSurfaceBody({ view, data }) {
     setHoveredModelPartId("");
   }, []);
 
-  // A routine that failed to load has no playbar to say so on: the viewport's card says so, one
+  // A routine that failed to load has no Animation section to say so in: the viewport's card says so, one
   // the person can put away (the geometry is all there).
   const annotationAlert = useMemo(() => (selectedAnimationError ? {
     severity: "warning", blocking: false,
@@ -864,9 +901,9 @@ function StepSurfaceBody({ view, data }) {
 
     if (stepChanged) {
       resetSelectionForStepUpdate();
-      // Ink drawn over the previous revision does not describe this one: the sketch goes, and its
-      // history with it, so Undo cannot bring it back over the new model. Draw stays the tool.
-      shellRef.current?.frame.drawing.discard();
+      // Ink drawn over the previous revision does not describe this one: the annotation goes, and its
+      // history with it, so Undo cannot bring it back over the new model. Annotate stays the tool.
+      shellRef.current?.frame.annotation.discard();
       setStepUpdateInProgress(true);
     } else if (!sameEntry) {
       setStepUpdateInProgress(false);
@@ -900,8 +937,8 @@ function StepSurfaceBody({ view, data }) {
     }
   }, [retainedPreviousStepMeshError, selectedEntry, selectedMeshMatches, status, stepUpdateInProgress]);
 
-  // A drawing lives in the mounted editor and nowhere else, and a routine belongs
-  // to its file, so a file change always ends those sessions: neither Draw nor
+  // An annotation lives in the mounted editor and nowhere else, and a routine belongs
+  // to its file, so a file change always ends those sessions: neither Annotate nor
   // preview carries over onto another file.
   useEffect(() => {
     setViewerRuntimeAlert(null);
@@ -992,18 +1029,13 @@ function StepSurfaceBody({ view, data }) {
   ) ? selectedSelectorRuntime : null;
   const artifactRevision = buildReferenceCacheKey(selectedEntry);
 
-  // The Select mode is the person's for as long as the file is open: another file starts in All,
-  // an update of this one keeps it (its tree is shaped by it again below, `changeSelectMode`).
+  // The selection filter is the person's for as long as the file is open: another file starts with
+  // every kind ticked, an update of this one keeps it (its tree is shaped by it again below,
+  // `changeSelectFilter`).
   useEffect(() => {
-    setSelectionFilter("all");
+    setSelectFilter(STEP_SELECT_DEFAULT);
   }, [selectedKey]);
-  // A mode the file no longer offers goes back to All: Parts, once an update has made the file a
-  // single part. Only a built entry says what the file is: one between builds (no hash) is
-  // listed as a part whatever it holds.
-  const selectedKindKnown = Boolean(selectedEntry?.hash);
-  useEffect(() => {
-    if (selectedKindKnown && !isAssemblyView) setSelectionFilter(current => (current === "parts" ? "all" : current));
-  }, [selectedKindKnown, isAssemblyView]);
+  // The pose runtime combines the sidecar definition with the Position values.
   const selectedStepParameterRuntime = useMemo(() => {
     if (
       !selectedStepModuleDefinition ||
@@ -1026,6 +1058,11 @@ function StepSurfaceBody({ view, data }) {
     selectedStepModuleUrl,
     stepModuleParameterValues
   ]);
+  // Preview's own pose and routine, on its own scene (`StepPreviewLayers`): the model at rest each
+  // time Preview opens, moved and played by Preview's Position and Animation sections — the
+  // tools view's are never touched.
+  const previewMotion = useStepPreviewMotion({ definition: selectedStepModuleDefinition, clips: motion.clips,
+    meshPartial: selectedMeshPartial, open: previewing });
   const selectedStepPartRootActive = !isAssemblyView && expandedStepTreeNodeIds.includes(STEP_MODEL_ROOT_ID);
   const plainStepReferencePickingEnabled = selectedEntryHasReferences && !isAssemblyView;
   const plainStepReferencePickingRequested =
@@ -1376,20 +1413,17 @@ function StepSurfaceBody({ view, data }) {
     Boolean(selectedMeshData) &&
     !stepInteractionBlocked &&
     !viewerLoading;
-  const measure = useStepMeasure({ fileKey: selectedKey, revision: selectedEntry?.hash, picking: measureModeActive });
+  const measure = useMeasureSession({ fileKey: selectedKey, revision: selectedEntry?.hash, picking: measureModeActive });
   const measureMeasurements = measure.measurements;
 
-  const filteredViewerReferences = useMemo(() => filterSelectionReferences(viewerPickableReferences, selectionFilter),
-    [viewerPickableReferences, selectionFilter]);
+  const filteredViewerReferences = useMemo(() => filterSelectionReferences(viewerPickableReferences, selectFilter),
+    [viewerPickableReferences, selectFilter]);
   const filteredViewerFaces = useMemo(() => filteredViewerReferences.filter(isFaceReference), [filteredViewerReferences, isFaceReference]);
   const filteredViewerEdges = useMemo(() => filteredViewerReferences.filter(isEdgeReference), [filteredViewerReferences, isEdgeReference]);
-  // What the tool in hand may pick: Measure snaps to what its own filter says, Select to what
-  // the selection filter allows.
-  const measureSnaps = measureFilterSnaps(measure.filter);
-  const viewerPickableFacesForTool = measureModeActive
-    ? (measureSnaps.faces ? viewerPickableFaces : EMPTY_LIST) : filteredViewerFaces;
-  const viewerPickableEdgesForTool = measureModeActive
-    ? (measureSnaps.edges ? viewerPickableEdges : EMPTY_LIST) : filteredViewerEdges;
+  // What the tool in hand may pick: Measure snaps to no edge or face (points on the model), Select
+  // to what the selection filter allows.
+  const viewerPickableFacesForTool = measureModeActive ? EMPTY_LIST : filteredViewerFaces;
+  const viewerPickableEdgesForTool = measureModeActive ? EMPTY_LIST : filteredViewerEdges;
   const measureToolDisabled = viewerLoading || !selectedMeshData;
   const topologySelectionActive =
     (isAssemblyView && requestedStepTreeTopologyNodeIds.length > 0) ||
@@ -1432,24 +1466,18 @@ function StepSurfaceBody({ view, data }) {
   const displayedResourceRef = useRef(promptResource);
   if (!retainingPreviousStepMesh) displayedResourceRef.current = promptResource;
   const viewportAnimation = motion.animationControls;
-  // Routines play in preview mode alone: the viewer with its tools put away. There is no
-  // Animate tool — the regular view is for editing, preview for watching.
-  const animationAvailable = animationControlsHaveContent(viewportAnimation);
-  const animateModeActive = animationAvailable && previewing;
-  // A routine owns the model's pose only inside preview. Outside it the clip is
-  // released — stopped, rewound, the pose back with Position — so selection,
-  // topology and Position never meet an animated model and need no special case
-  // for one. Of the playback only the routine, speed and loop survive: coming back plays
-  // from the start, and a restored session that was mid-routine is released the same way.
-  const releaseAnimation = motion.releaseAnimation;
-  const animationOwnsPose = animationAvailable && viewportAnimation?.enabled !== false;
+  // The routine owns the tools view's model while its frame is on it, playing or kept (the
+  // Animation section's); a kept frame, paused past its start, is what a prompt's view records.
+  const animationOwnsPose = animationControlsHaveContent(viewportAnimation) && viewportAnimation?.enabled !== false;
+  const animationKept = animationOwnsPose && viewportAnimation?.playing !== true && Number(viewportAnimation?.elapsedSec) > 0;
 
   // Pose: drag the joints by their handles. Present only where something can be
   // driven (a STEP's mate DOFs). The handles are rebuilt from the pose on screen,
   // so sliders, presets, Reset and a handle up the chain all carry them along.
-  const stepPoseDefinition = selectedStepParameterRuntime?.definition || null;
+  const stepPoseDefinition = selectedStepModuleDefinition;
   const poseAvailable = stepPosableDofs(stepPoseDefinition).length > 0;
-  const poseToolActive = !previewing && poseAvailable && tabToolMode === TAB_TOOL_MODE.POSE;
+  // Its knobs are Select's, while Select picks Position.
+  const positionShown = poseAvailable && tabToolMode === TAB_TOOL_MODE.REFERENCES && selects(selectFilter, "position");
 
   const shellRef = useRef(null);
   // The two things only a STEP can answer about its viewport. Both read the live runtime's own
@@ -1500,10 +1528,10 @@ function StepSurfaceBody({ view, data }) {
   ), []);
   const promptReferencesRef = useRef(() => EMPTY_LIST);
   const escapeRef = useRef(() => false);
-  // Escape has something to do here whenever there is a selection to clear or a Measure session
-  // to leave.
+  // Escape has something to do here whenever there is a selection to clear or a tool other than
+  // Select in hand.
   const escapeActive = selectedPartIds.length > 0 || selectedReferenceIds.length > 0 || focusedAssemblyNodeIds.length > 0
-    || tabToolMode === TAB_TOOL_MODE.MEASURE;
+    || tabToolMode !== TAB_TOOL_MODE.REFERENCES || measure.selected.length > 0;
 
 
   // ---- the shell --------------------------------------------------------------------------
@@ -1511,6 +1539,8 @@ function StepSurfaceBody({ view, data }) {
   // HERE, in the middle of this function, and not at the top: the hook needs a load report,
   // and what this renderer's load IS depends on the resolved view above it. Nothing about
   // hook order says otherwise — there is one function, and no early return in it.
+  // Measure's results, as Quick Edit's chips and the marks a note's views are drawn with.
+  const quickEditMeasurements = useQuickEditMeasurements(measure);
   const shell = useRendererShell({
     previewable: true, preview,
     view, services, resource: promptResource, modelKey: selectedKey, revisionKey: presentationRevisionKey,
@@ -1531,9 +1561,8 @@ function StepSurfaceBody({ view, data }) {
       editPending: editingBuildActive(editingPreview.state),
       finding: !catalogHydrated
     },
-    // The playbar belongs to preview here, not to every file with routines: leaving preview
-    // puts the model back at rest.
-    animation: animateModeActive ? viewportAnimation : null,
+    // The routines, which the shell plays in preview.
+    animation: viewportAnimation,
     live: {
       commands: stepLiveCommands,
       // What the viewport is SHOWING, which is not always what is loading: a rebuild that
@@ -1543,9 +1572,21 @@ function StepSurfaceBody({ view, data }) {
     },
     promptReferences: () => promptReferencesRef.current(),
     promptContext: createCadPromptContext,
+    // A prompt's view: the one motion on screen — the pose Position holds off its default, or the
+    // routine's kept frame (Explode is the view settings') — the parts hidden, and those isolated
+    // (a snapshot ghosts the rest, as isolation dims it).
+    viewState: () => ({
+      kinematics: !animationOwnsPose && !positionValuesAreDefault(stepModuleParameterValues,
+        selectedStepModuleDefinition?.defaultParameterValues) ? stepModuleParameterValues : null,
+      animation: animationKept ? { clip: viewportAnimation.activeClipId, time: Number(viewportAnimation.elapsedSec) } : null,
+      hide: hiddenPartIds, focus: isolatedAssemblyNodeIds
+    }),
     escape: { active: escapeActive, handle: () => escapeRef.current() },
     rendererState: session.rendererState,
     onCameraSettled: () => onLodCameraMoved(),
+    // Delete takes the measurements Select picked, beside the annotations the shell deletes.
+    deleteSelection: measure.removeSelected,
+    measurements: quickEditMeasurements,
     preserveInteractionPixelRatio: viewPolicy.wireframeMode || viewPolicy.edgesVisible,
     runtimeLifecycle: stepRuntimeLifecycle,
     onRuntimeAlert: handleViewerAlertChange,
@@ -1553,14 +1594,26 @@ function StepSurfaceBody({ view, data }) {
   shellRef.current = shell;
   const reportActionError = shell.reportActionError;
 
-  // Position is put down once the file has nothing left to move. A rebuild is not that: its
-  // sidecar is read behind the kinematics in hand (`useStepMotion`), so the tool survives it.
+  // Explode or Clip set — Explode's amount taken off zero, Clip turned on, never merely its tool
+  // taken up — puts the pose back at its default, the routine at rest and the other one off. Only a
+  // change on this file is setting it: another file opening exploded or cut is that file's view.
+  const exploded = desiredScene.view.exploded;
+  const explodeApplied = Boolean(exploded?.enabled && exploded.amount > 0);
+  explodeAppliedRef.current = explodeApplied;
+  const clipApplied = Boolean(desiredScene.view.clip?.enabled);
+  clipAppliedRef.current = clipApplied;
+  const viewMotionSeen = useRef({ file: selectedKey, explode: explodeApplied, clip: clipApplied });
+  const resetMotion = motion.resetMotion;
   useEffect(() => {
-    if (!poseAvailable && shellRef.current?.toolMode === TAB_TOOL_MODE.POSE) shellRef.current.selectTool(TAB_TOOL_MODE.REFERENCES);
-  }, [poseAvailable]);
-  useEffect(() => {
-    if (!animateModeActive && animationOwnsPose) releaseAnimation?.();
-  }, [animateModeActive, animationOwnsPose, releaseAnimation]);
+    const seen = viewMotionSeen.current;
+    viewMotionSeen.current = { file: selectedKey, explode: explodeApplied, clip: clipApplied };
+    if (seen.file !== selectedKey) return;
+    const explodeSet = explodeApplied && !seen.explode, clipSet = clipApplied && !seen.clip;
+    if (!explodeSet && !clipSet) return;
+    resetMotion();
+    if (explodeSet && clipApplied) viewSettingsStore.patch({ clip: { enabled: false, axis: "x", invert: false } });
+    else if (clipSet && explodeApplied) viewSettingsStore.patch({ exploded: { enabled: false, amount: 0 } });
+  }, [explodeApplied, clipApplied, selectedKey, resetMotion, viewSettingsStore]);
   const selectedWholeTopologyReferencePartIds = useMemo(() => (
     uniqueStringList(
       selectedReferenceIds.flatMap((referenceId) => renderPartIdsForWholeTopologyReference(referenceId))
@@ -1632,12 +1685,11 @@ function StepSurfaceBody({ view, data }) {
     })();
     const effectiveHoveredReferenceId = String(viewerContextMenu?.referenceId || "").trim() || hoveredReferenceId;
     return {
-      hoveredPartId: !previewing ? viewerHoveredPartIds : "",
-      hoveredReferenceId: !previewing && !retainingPreviousStepMesh ? effectiveHoveredReferenceId : ""
+      hoveredPartId: viewerHoveredPartIds,
+      hoveredReferenceId: !retainingPreviousStepMesh ? effectiveHoveredReferenceId : ""
     };
   }, [
     isAssemblyView,
-    previewing,
     renderPartIdsForAssemblySelection,
     renderPartIdsForWholeTopologyReference,
     resolvePickedAssemblyPartId,
@@ -1671,8 +1723,6 @@ function StepSurfaceBody({ view, data }) {
     () => copyTextLines(copySelectionPayload.lines, fileRefPrefix),
     [copySelectionPayload.lines, fileRefPrefix]
   );
-  // The Reference panel's foot: Copy, or Copy All with more than one reference selected.
-  const copyButtonLabel = (copySelectionPayload.copiedCount || canonicalCopySelectionLines.length) > 1 ? "Copy All" : "Copy";
   const copySelectedReferences = useCallback(async () => {
     const text = canonicalCopySelectionLines.join("\n");
     if (!text || stepInteractionBlocked) return false;
@@ -1711,7 +1761,7 @@ function StepSurfaceBody({ view, data }) {
     if (!normalizedNodeId) {
       return;
     }
-    // The picked row is scrolled to in the Features tree, which is on screen whenever Select is.
+    // The picked row is scrolled to in the model tree, which an assembly shows whenever Select is up.
     setActiveTreeNodeScrollKey(source === "viewer" || source === "reference" ? `${source}:${Date.now()}:${normalizedNodeId}` : "");
     if (expandAncestors || expandSelf || source === "reference") {
       expandStepTreeAroundNode(normalizedNodeId, { expandSelf });
@@ -1768,6 +1818,29 @@ function StepSurfaceBody({ view, data }) {
       const label = referenceLabel(reference.selector, displayStepTreeRoot || stepTreeRoot);
       return { ...reference, ...(label ? { label } : {}) };
     }), [selectedEntry, displayStepTreeRoot, stepTreeRoot]);
+  // A reference into this file as the view names it, for its pill in Quick Edit's note, its kind's
+  // glyph first: a part or subassembly by its tree name (the solid's, "cam"), a face, an edge or a
+  // solid compactly, by its part and its number ("◧ cam 3"), several of one kind on one part counted
+  // ("◧ cam ×4").
+  // "" for one into another file, or one it has no name for.
+  const nameReference = useCallback(reference => {
+    if (reference?.resource?.path !== promptResource.path || reference.target?.kind !== "cad-selector") return "";
+    const root = displayStepTreeRoot || stepTreeRoot;
+    const KINDS = { f: "face", e: "edge", v: "vertex", s: "solid" };
+    const named = reference.target.selectors.map(selector => {
+      const own = referenceLabel(selector, root);
+      const match = String(selector).match(/^(.+)\.([fevs])(\d+)$/);
+      if (own) return { own, kind: match ? KINDS[match[2]] : "solid" };
+      // A part file's one part has no node of its own in the tree: it goes by the file's name.
+      const part = match ? referenceLabel(match[1], root) || (isAssemblyView ? "" : stepPartNameFromFile(promptResource.path)) : "";
+      return part ? { part, kind: KINDS[match[2]], number: match[3] } : null;
+    });
+    if (!named.length || named.some(entry => !entry)) return "";
+    if (named.length === 1) return named[0].own ? { name: named[0].own, kind: named[0].kind } : { name: named[0].part, kind: named[0].kind, number: named[0].number };
+    const [first] = named;
+    return first.part && named.every(entry => entry.part === first.part && entry.kind === first.kind)
+      ? { name: first.part, kind: first.kind, count: named.length } : named.map(entry => entry.own || `${entry.part} · ${entry.kind} ${entry.number}`).join(", ");
+  }, [promptResource.path, displayStepTreeRoot, stepTreeRoot, isAssemblyView]);
   // What is selected, in the prompt grammar: the references a Quick Edit attaches.
   const promptSelection = useMemo(() => referencesForHost(canonicalCopySelectionLines.join("\n")).map(reference => ({
     resource: { ...promptResource },
@@ -1863,15 +1936,16 @@ function StepSurfaceBody({ view, data }) {
       : [...current, normalizedNodeId]);
   }, []);
 
-  // The Select mode sets the Features tree's shape (`ModelingTree.jsx`), and the expansion here
+  // The geometry Select's filter picks sets the model tree's shape (`ModelingTree.jsx`), and the expansion here
   // with it: expansion is also what the viewport can pick and whose topology is loaded. Leaving
   // All keeps the person's own expansion to put back on the way in. Parts opens every assembly
   // and shuts every part, so no topology is loaded; Faces and Edges open every assembly and keep
   // the parts already open — the tree then asks for each part's topology as its row comes on
   // screen, never for a whole large assembly at once.
   const savedTreeExpansionRef = useRef(null);
-  const changeSelectMode = useCallback((next) => {
-    const previous = selectionFilter;
+  const changeSelectFilter = useCallback((filter) => {
+    const previous = treeShape(selectionFilter), next = treeShape(selectGeometryMode(filter));
+    setSelectFilter(filter);
     if (next === previous) return;
     const root = displayStepTreeRoot || stepTreeRoot;
     const assemblies = collectStepTreeAssemblyNodeIds(stepTreeRoot);
@@ -1890,16 +1964,15 @@ function StepSurfaceBody({ view, data }) {
     } else {
       setExpandedStepTreeNodeIds(current => uniqueStringList([...(previous === "parts" ? [] : current), ...assemblies]));
     }
-    setSelectionFilter(next);
   }, [selectionFilter, displayStepTreeRoot, stepTreeRoot, expandedStepTreeNodeIds, isAssemblyView, referencePartId, effectiveActiveReferenceMap]);
   // The mode outlives an update, and so does the shape it gives the tree: when an update brings
-  // other assemblies under Parts, Faces or Edges, the tree is opened as `changeSelectMode` opened
+  // other assemblies under Parts, Faces or Edges, the tree is opened as `changeSelectFilter` opened
   // the last one, so an assembly the update added is not left shut under a disclosure the mode
   // locks. It answers to the assemblies changing, not to every new tree object.
   const treeAssemblyIds = useMemo(() => (stepTreeRoot ? collectStepTreeAssemblyNodeIds(stepTreeRoot) : EMPTY_LIST), [stepTreeRoot]);
   const treeAssemblyKey = treeAssemblyIds.join("\n");
-  const selectModeRef = useRef({ mode: selectionFilter, assembly: isAssemblyView, assemblies: treeAssemblyIds });
-  selectModeRef.current = { mode: selectionFilter, assembly: isAssemblyView, assemblies: treeAssemblyIds };
+  const selectModeRef = useRef({ mode: treeShape(selectionFilter), assembly: isAssemblyView, assemblies: treeAssemblyIds });
+  selectModeRef.current = { mode: treeShape(selectionFilter), assembly: isAssemblyView, assemblies: treeAssemblyIds };
   useEffect(() => {
     const { mode, assembly, assemblies } = selectModeRef.current;
     // Parts on a file that is no longer an assembly is going back to All (above): nothing to shape.
@@ -2166,13 +2239,9 @@ function StepSurfaceBody({ view, data }) {
     clearAssemblySelectionForFocus();
   }, [clearAssemblySelectionForFocus]);
 
-  // A selection exists only while Select is the tool. Leaving Select drops it, in
-  // the viewport and the Model tree alike; choosing something in the tree under
-  // another tool comes back to Select first (`ensureSelectTool`), so this effect
-  // never sees that selection under the tool it was leaving.
-  useEffect(() => {
-    if (tabToolMode !== TAB_TOOL_MODE.REFERENCES) clearAssemblySelectionForFocus();
-  }, [tabToolMode, clearAssemblySelectionForFocus]);
+  // A selection outlives Select: it is what Quick Edit's chips name and what the view lights, under
+  // any tool, until it is cleared. Picking is Select's alone — a pick under another tool takes up
+  // Select first (`ensureSelectTool`).
 
   const clearSelectionForHiddenLeafIds = useCallback((leafIds, nodeId = "") => {
     const hiddenLeafIds = new Set(
@@ -2430,8 +2499,8 @@ function StepSurfaceBody({ view, data }) {
 
   // A connected option grows a pick only where it applies (`connectedSelectionApplies`): the graph
   // is built only then.
-  const tangentFacesActive = connectedSelection.tangentFaces && connectedSelectionApplies("tangentFaces", selectionFilter);
-  const edgeChainActive = connectedSelection.edgeChain && connectedSelectionApplies("edgeChain", selectionFilter);
+  const tangentFacesActive = connectedSelection.tangentFaces && connectedSelectionApplies("tangentFaces", selectFilter);
+  const edgeChainActive = connectedSelection.edgeChain && connectedSelectionApplies("edgeChain", selectFilter);
   const tangentFaces = useMemo(() => buildTangentFaceGraph(
     tangentFacesActive ? [...effectiveActiveReferenceMap.values()] : EMPTY_LIST
   ), [tangentFacesActive, effectiveActiveReferenceMap]);
@@ -2474,6 +2543,8 @@ function StepSurfaceBody({ view, data }) {
       clearAssemblySelection();
       return;
     }
+    // Select picking no geometry, just its knobs, the ink or measurements: a press on the model is none of them.
+    if (selectionFilter === "none") return;
     if (selectionFilter === "parts") {
       const partId = isAssemblyView ? resolvePickedAssemblyPartId(nextReferenceId) : STEP_MODEL_ROOT_ID;
       togglePartSelection(partId, { multiSelect, renderPartId: nextReferenceId, source: "viewer" });
@@ -2495,7 +2566,7 @@ function StepSurfaceBody({ view, data }) {
     if (TOPOLOGY_FILTERS.has(selectionFilter)) {
       // A face or edge filter never falls back to the part. A press on an assembly part whose
       // faces and edges are not loaded asks for that part's topology — that part alone, as its
-      // Features row would — and picks again at the same point once they can be picked.
+      // model tree row would — and picks again at the same point once they can be picked.
       if (isAssemblyView && loadableStepTreeTopologyNodeIdSet.has(nextReferenceId) &&
         !pickableTopologyPartIds.has(nextReferenceId) && Number.isFinite(clientX) && Number.isFinite(clientY)) {
         setPendingTopologyPick({ partId: nextReferenceId, clientX, clientY, pointerType, multiSelect });
@@ -2601,7 +2672,7 @@ function StepSurfaceBody({ view, data }) {
 
   // The three menus, as descriptors built from the surface as it stands (`file-view/stepMenus.js`):
   // the model as a whole (a press on empty space, over a loaded model), one node's part menu
-  // (the viewport and a Features row alike), and topology (a pick's faces and edges, or a row's).
+  // (the viewport and a model tree row alike), and topology (a pick's faces and edges, or a row's).
   const openGlobalViewerContextMenu = useCallback(({ clientX = 0, clientY = 0 } = {}) => {
     setViewerContextMenu(selectedMeshData ? {
       x: Number(clientX) || 0,
@@ -2611,8 +2682,8 @@ function StepSurfaceBody({ view, data }) {
         loadableIds: loadableStepTreeTopologyNodeIds, hiddenCount: hiddenPartIds.length,
         zoomSelectionAvailable: zoomSelectionRef.current.available, entry: selectedEntry
       }),
-      // Outside All the Select mode holds the tree's shape: there is nothing to expand or collapse.
-      ...(selectionFilter !== "all" ? { showExpandCollapse: false } : {})
+      // Picking only parts or only topology, the filter holds the tree's shape: there is nothing to expand or collapse.
+      ...(treeShape(selectionFilter) !== "all" ? { showExpandCollapse: false } : {})
     } : null);
   }, [
     selectionFilter,
@@ -2635,8 +2706,8 @@ function StepSurfaceBody({ view, data }) {
       root: displayStepTreeRoot, isAssemblyView, expandedIds: expandedStepTreeNodeIds, loadableIds: loadableStepTreeTopologyNodeIds,
       copyReferenceMap: stepTreeCopyReferenceMap, entry: selectedEntry, zoomSelectionAvailable: zoomSelectionRef.current.available
     });
-    // Outside All the Select mode holds the tree's shape: there is nothing to expand or collapse.
-    return descriptor && selectionFilter !== "all" ? { ...descriptor, showExpandCollapse: false } : descriptor;
+    // Picking only parts or only topology, the filter holds the tree's shape: there is nothing to expand or collapse.
+    return descriptor && treeShape(selectionFilter) !== "all" ? { ...descriptor, showExpandCollapse: false } : descriptor;
   }, [
     selectionFilter,
     assemblyPartMap,
@@ -2931,7 +3002,7 @@ function StepSurfaceBody({ view, data }) {
 
   /**
    * The actions behind the one part menu, wherever it was opened: the viewport
-   * under Select, and a Features tree row under any tool. A tree row's menu can
+   * under Select, and a model tree row under any tool. A tree row's menu can
    * therefore ask for something the active tool cannot show, so every action
    * lands in Select first — exactly what clicking a tree row already does.
    */
@@ -3000,13 +3071,14 @@ function StepSurfaceBody({ view, data }) {
   // What Escape means in this renderer, innermost first: a measurement in progress, then
   // the Measure tool, then the selection, then isolation.
   escapeRef.current = () => {
-    if (!previewing && tabToolMode === TAB_TOOL_MODE.MEASURE) {
-      // Escape cancels the measurement in progress and leaves the tool armed, the way it does
-      // in a CAD measure tool. Only once there is nothing to cancel does it leave the tool.
-      if (measure.drafting) measure.cancelDraft();
-      else shellRef.current?.selectTool(TAB_TOOL_MODE.REFERENCES);
-      return true;
-    }
+    // Escape cancels the measurement in progress and leaves the tool armed, the way it does in a CAD
+    // measure tool. Only once there is nothing to cancel does it leave the tool.
+    if (!previewing && tabToolMode === TAB_TOOL_MODE.MEASURE && measure.drafting) { measure.cancelDraft(); return true; }
+    // Then the tool in hand, whatever it is: Escape puts it down and takes Select up, what it set
+    // (an explosion, a cut, the ink, a paused frame) kept.
+    if (!previewing && tabToolMode !== TAB_TOOL_MODE.REFERENCES) { shellRef.current?.selectTool(TAB_TOOL_MODE.REFERENCES); return true; }
+    // Then what Select has picked: measurements, then the parts and references.
+    if (measure.selected.length > 0) { measure.select([]); return true; }
     if (selectedPartIds.length > 0 || selectedReferenceIds.length > 0) { clearAssemblySelection(); return true; }
     // Then isolation: Escape backs out one layer at a time, selection first.
     if (focusedAssemblyNodeIds.length > 0) { handleExitIsolate(); return true; }
@@ -3068,30 +3140,55 @@ function StepSurfaceBody({ view, data }) {
   const selectionToolActive = tabToolMode === TAB_TOOL_MODE.REFERENCES;
   const selectionCount = selectedReferences.length + selectedParts.length
     + (!isAssemblyView && selectedPartIds.includes(STEP_MODEL_ROOT_ID) ? 1 : 0);
+  // A file of one part -- a part file, or an assembly of one -- has nothing to choose before its
+  // faces and edges: they load once Select is up, once per revision, so a pick reaches them in
+  // every mode.
+  const onlyPartId = useMemo(() => {
+    if (!isAssemblyView) return STEP_MODEL_ROOT_ID;
+    const leaves = flattenAssemblyLeafParts(assemblyRoot);
+    return leaves.length === 1 ? String(leaves[0].id || "") : "";
+  }, [isAssemblyView, assemblyRoot]);
+  const loadedOnlyPart = useRef("");
+  useEffect(() => {
+    const key = `${selectedKey}:${artifactRevision}:${onlyPartId}`;
+    if (!onlyPartId || loadedOnlyPart.current === key || !selectionToolActive || previewing
+      || viewerLoading || assemblyTreeLoading || stepInteractionBlocked) return;
+    loadedOnlyPart.current = key;
+    loadInspectionTopology([onlyPartId]);
+  }, [selectedKey, artifactRevision, onlyPartId, selectionToolActive, previewing, viewerLoading, assemblyTreeLoading,
+    stepInteractionBlocked, loadInspectionTopology]);
   // Every CAD format shares the View settings and camera contract.
 
   // A mated child's label names its parts, and the mesh here is the model at
   // rest (the viewer poses display records, never this data): the child's centre.
   const stepPoseSelectorRuntime = selectedStepParameterRuntime?.selectorRuntime || null;
-  const stepPoseFeatures = useMemo(() => (stepPoseDefinition && poseToolActive
+  const stepPoseFeatures = useMemo(() => (stepPoseDefinition && positionShown
     ? resolveStepModuleFeatures(stepPoseDefinition, { meshData: selectedMeshData, selectorRuntime: stepPoseSelectorRuntime })
-    : null), [stepPoseDefinition, poseToolActive, selectedMeshData, stepPoseSelectorRuntime]);
+    : null), [stepPoseDefinition, positionShown, selectedMeshData, stepPoseSelectorRuntime]);
+  // The knobs are drawn at the pose's joints, on parts at rest: an explosion or a routine's frame
+  // has moved those parts, so while either is on the model there are no knobs (Position's sidebar
+  // controls stay, and reaching for them puts the other motion back at rest).
+  const knobsShown = positionShown && !explodeApplied && !animationOwnsPose;
   const jointHandles = useMemo(() => {
-    if (!poseToolActive) return null;
+    if (!knobsShown || !selectedStepParameterRuntime) return null;
+    const write = motion.onParameterChange;
     return stepJointHandles({
       definition: stepPoseDefinition,
       parameterValues: selectedStepParameterRuntime.parameterValues,
       features: stepPoseFeatures,
-      onParameterChange: motion.onParameterChange
+      // A knob dragged sets Position: the motion hook puts the routine at rest and the host takes
+      // Explode and Clip off.
+      onParameterChange: write
     });
-  }, [poseToolActive, stepPoseDefinition, selectedStepParameterRuntime, stepPoseFeatures, motion.onParameterChange]);
+  }, [knobsShown, stepPoseDefinition, selectedStepParameterRuntime, stepPoseFeatures, motion.onParameterChange]);
 
   // ---- the viewport ---------------------------------------------------------------------------
   // What the viewport is ALLOWED to show and pick just now: nothing of the model under Pose
   // or in preview; no topology while a previous mesh is held over an update.
   const topologySelectionDeferred = Boolean(selectedTopologyDeferredByCost && selectedMeshData);
-  // Preview is watching, and Pose offers its knobs alone.
-  const watching = previewing || Boolean(jointHandles);
+  // A routine playing is watching. Position's knobs share Select with its picks: a press on a knob is
+  // the knob's (`useJointHandles`), anywhere else a pick.
+  const watching = viewportAnimation?.playing === true;
   const pickMode = watching || retainingPreviousStepMesh ? VIEWER_PICK_MODE.NONE : viewerPickModeForRenderPane({
     selectionFilter,
     topologySelectionPending: referenceSelectionPending,
@@ -3108,7 +3205,28 @@ function StepSurfaceBody({ view, data }) {
   const pickable = list => (!retainingPreviousStepMesh && !watching ? list : EMPTY_LIST);
   // Part-state lists pass through by IDENTITY: what reaches the layers is already stable for as
   // long as its contents hold, because every one of them is derived through a memo above.
+  const toolsWork = {
+    stepParameterRuntime: selectedStepParameterRuntime,
+    hiddenPartIds: viewerHiddenPartIdsForRenderPane({ inspectionEnabled: true, hasParts: true, hiddenPartIds: hiddenPartIds }),
+    focusedPartIds: focusedAssemblyRenderPartIds,
+    selectedPartIds: viewerSelectedPartIdsForRenderPane({ hasParts: true, selectedPartIds: viewerSelectedPartIds }),
+    selectedReferenceIds: !retainingPreviousStepMesh ? selectedReferenceIds : EMPTY_LIST,
+    // Hover is not a prop: the layers subscribe to it and resolve it through the surface.
+    resolveHover: resolveViewerHover,
+    jointHandles,
+    measureState: measure.state,
+    activeMeasurementId: measure.activeId,
+    selectedMeasurementIds: measure.selected,
+    hoveredMeasurementId: measure.hovered,
+    measureModeActive,
+    onHoverReferenceChange: handleModelHoverChange,
+    onActivateReference: handleModelReferenceActivate,
+    onDoubleActivateReference: handleModelReferenceDoubleActivate,
+    onMeasurePick: measure.onPick,
+    onMeasureHoverPoint: measure.onHoverPoint
+  };
   const layerProps = {
+    ...toolsWork,
     meshData: selectedDisplayMeshData,
     modelKey: selectedKey,
     isLoading: viewportIsLoading,
@@ -3117,36 +3235,22 @@ function StepSurfaceBody({ view, data }) {
     appearance: resolvedScene.appearance,
     materialOverrides: resolvedMaterialOverrides,
     receiveShadows: resolvedScene.view.lighting.enabled,
-    previewMode: previewing,
     pickMode,
     pickableParts: !retainingPreviousStepMesh ? viewerAssemblyRenderParts : EMPTY_LIST,
-    hiddenPartIds: viewerHiddenPartIdsForRenderPane({ inspectionEnabled: true, hasParts: true, hiddenPartIds: hiddenPartIds }),
-    selectedPartIds: previewing ? EMPTY_LIST : viewerSelectedPartIdsForRenderPane({ hasParts: true, selectedPartIds: viewerSelectedPartIds }),
-    // Hover is not a prop: the layers subscribe to it and resolve it through the surface.
     hoverStore,
-    resolveHover: resolveViewerHover,
-    selectedReferenceIds: !previewing && !retainingPreviousStepMesh ? selectedReferenceIds : EMPTY_LIST,
     selectorRuntime: viewerSelectorRuntimeForRenderPane({ hasTopology: true,
       retainingPreviousStepMesh: retainingPreviousStepMesh, selectorRuntime: effectiveSelectorRuntime }),
-    stepParameterRuntime: selectedStepParameterRuntime,
     // {clip, elapsedSec, playing} or null. Null means no clip is selected, and the evaluator never runs.
+    // Preview's routine is its own (`kit/shell/useRendererShell.js`), never the tools view's.
     stepAnimationRuntime: selectedAnimationRuntime,
-    animateMode: previewing,
-    jointHandles: previewing ? null : jointHandles,
-    measureState: previewing ? null : measure.state,
-    activeMeasurementId: measure.activeId,
-    measureModeActive: !previewing && measureModeActive,
+    // Nothing is picked and a routine may own the pose: pick-only state stands still (`useStepPose`).
+    animateMode: watching,
     onLodCameraChange: onLodCameraMoved,
     onMeshSourceAdoption: handleDisplayMeshAdoption,
     onViewerAlertChange: handleViewerAlertChange,
-    onHoverReferenceChange: !previewing ? handleModelHoverChange : null,
-    onActivateReference: !previewing ? handleModelReferenceActivate : null,
-    onDoubleActivateReference: !previewing ? handleModelReferenceDoubleActivate : null,
     // Under another tool a pick takes up Select (`ensureSelectTool`): it waits the double-click
     // window first, so a double-click there isolates and leaves the tool as it was.
     deferActivation: !selectionToolActive,
-    onMeasurePick: !previewing ? measure.onPick : null,
-    onMeasureHoverPoint: !previewing ? measure.onHoverPoint : null,
     pickAtRef
   };
   const viewPolicyResolved = useStepViewPolicy({
@@ -3158,94 +3262,84 @@ function StepSurfaceBody({ view, data }) {
     pickMode, pickableParts: layerProps.pickableParts,
     pickableFaces: pickable(viewerPickableFacesForTool), pickableEdges: pickable(viewerPickableEdgesForTool),
     hiddenPartIds: layerProps.hiddenPartIds, selectedPartIds: layerProps.selectedPartIds,
-    focusedPartId: focusedAssemblyRenderPartIds
+    focusedPartId: layerProps.focusedPartIds
   });
   lodSelectedPartIdsRef.current = layerProps.selectedPartIds;
 
   // ---- the strip ------------------------------------------------------------------------------
-  // An assembly, as the catalog says or as the model on screen shows (several parts, as Explode
-  // counts them): the model survives an update the catalog has not finished, or one that failed,
-  // so the tree's start does not change under the person while a rebuild is pending.
-  const assemblyOnScreen = isAssemblyView || explodablePartCount(selectedDisplayMeshData) > 1;
   const selectDisabled = viewerLoading || !selectedMeshData || referenceSelectionPending ||
     referenceSelectionUnavailable || topologySelectionDeferred;
   const toolIdle = viewerLoading || !selectedMeshData;
-  const removeMeasurements = () => {
-    measure.clear();
-    if (tabToolMode === TAB_TOOL_MODE.MEASURE) handleSelectTabToolMode(TAB_TOOL_MODE.REFERENCES);
-  };
-  const modelEffects = useModelTools({ modelKey: selectedEntry?.file, view: desiredScene.view,
+  const modelEffects = useModelTools({ view: desiredScene.view,
     features: viewFeatures, store: viewSettingsStore, mesh: selectedDisplayMeshData,
-    disabled: toolIdle, selectedTool: tabToolMode, onSelect: handleSelectTabToolMode,
-    measure: {
-      // Up while Measure is the tool, empty or not, and kept while it has results.
-      shown: tabToolMode === TAB_TOOL_MODE.MEASURE || measureMeasurements.length > 0,
-      onRemove: removeMeasurements,
-      // Its snapping, a mode menu in the panel's heading beside the fold chevron.
-      actions: <MeasureModeMenu mode={measure.filter} disabled={measureToolDisabled} onModeChange={value => {
-        measure.setFilter(value); measure.cancelDraft();
-        handleSelectTabToolMode(TAB_TOOL_MODE.MEASURE);
-      }} />,
-      controls: <MeasurePanel measurements={measureMeasurements} activeId={measure.activeId}
-        onActivate={measure.setActiveId} onDelete={measure.onDelete} />
-    } });
+    disabled: toolIdle, selectedTool: tabToolMode, onSelect: handleSelectTabToolMode });
+  // What Select picks, and its options: a chevron after its button on the strip, whose menu takes the
+  // tool up as it changes the filter. One element until what it shows changes.
+  const selectModeMenu = useMemo(() => <SelectModeMenu value={selectFilter} assembly={isAssemblyView} posable={poseAvailable} disabled={selectDisabled}
+    onChange={value => { changeSelectFilter(value); handleSelectTabToolMode(TAB_TOOL_MODE.REFERENCES); }}
+    connected={connectedSelection} onConnectedChange={(id, checked) => setConnectedSelection(current => ({ ...current, [id]: checked }))} />,
+  [selectFilter, isAssemblyView, poseAvailable, selectDisabled, connectedSelection, changeSelectFilter, handleSelectTabToolMode]);
   const tools = [
     shell.tools.own({
       id: TAB_TOOL_MODE.REFERENCES,
       label: referenceSelectionPending ? "Preparing selection" : "Select",
-      // The button shows the mode in hand; nothing under the strip names it.
-      icon: <SelectModeIcon mode={selectionFilter} className="size-3.5" aria-hidden="true" />,
+      // The pointer, whatever it picks: the filter is its chevron's menu.
+      icon: <SelectIcon className="size-3.5" aria-hidden="true" />,
       active: !topologySelectionDeferred && selectionToolActive, disabled: selectDisabled,
-      // Its modes and options are a menu in the Features panel's filter row.
+      menu: selectModeMenu,
       onSelect: () => handleSelectTabToolMode(TAB_TOOL_MODE.REFERENCES),
-      // Its own panel, which a person can close (`ModelingTree.jsx`'s Features, by its X): a press
-      // on Select while it is the tool opens it again. A single part opens with it closed.
-      panel: { id: "tree", label: "Features", startsClosed: !assemblyOnScreen },
     }),
-    // Position comes straight after Select; only files with movable joints offer it.
-    poseAvailable ? shell.tools.own({ id: TAB_TOOL_MODE.POSE, label: "Position",
-      icon: <PositionToolIcon custom={!positionValuesAreDefault(motion.positionControls?.parameterValues, motion.positionControls?.definition?.defaultParameterValues)} />,
-      active: poseToolActive, disabled: toolIdle,
-      // Its panel is in the tool stack for as long as it is the tool.
-      onSelect: () => { if (!poseToolActive) handleSelectTabToolMode(TAB_TOOL_MODE.POSE); } }) : null,
-    { ...shell.tools.draw, disabled: toolIdle },
+    { ...shell.tools.annotate, disabled: toolIdle },
     shell.tools.own({ id: TAB_TOOL_MODE.MEASURE, label: "Measure",
-      // Like Select's, the button shows the snapping mode in hand.
-      icon: <MeasureModeIcon mode={measure.filter} className="size-3.5" aria-hidden="true" />,
-      active: tabToolMode === TAB_TOOL_MODE.MEASURE || measureMeasurements.length > 0, disabled: measureToolDisabled,
-      // Like Explode and Clip, a press on it while it is up puts it down, with its results; its
-      // snapping is a menu in its panel's heading.
-      onSelect: () => tabToolMode === TAB_TOOL_MODE.MEASURE || measureMeasurements.length
-        ? removeMeasurements() : handleSelectTabToolMode(TAB_TOOL_MODE.MEASURE) }),
+      icon: <MeasureIcon className="size-3.5" aria-hidden="true" />,
+      active: tabToolMode === TAB_TOOL_MODE.MEASURE, disabled: measureToolDisabled,
+      // A press takes it up — again, results and all, where they are kept — and does nothing while
+      // it is the tool.
+      onSelect: () => { if (tabToolMode !== TAB_TOOL_MODE.MEASURE) handleSelectTabToolMode(TAB_TOOL_MODE.MEASURE); } }),
+    // Position is Select's: its knobs, where Select picks it. Routines play in preview.
     ...modelEffects.tools,
   ].filter(Boolean);
 
   // ---- copying the selection ----------------------------------------------------------------
-  // The Reference panel's Copy (Copy All) and the copy key, under Select, while the selection's
-  // references can be read; Quick Edit attaches them only then, too.
-  const selectionActionVisible = selectionToolActive && selectionCount > 0 && !stepUpdateInProgress && !referenceSelectionPending
+  // The copy key, under Select, while the selection's references can be read; Quick Edit attaches
+  // them only then, too.
+  const selectionActionVisible = selectionCount > 0 && !stepUpdateInProgress && !referenceSelectionPending
     && !referenceSelectionUnavailable && !topologySelectionDeferred;
   const copySelection = selectionActionVisible ? copySelectedReferences : null;
-  const selectionCopy = useMemo(() => copySelection ? { label: copyButtonLabel, shortcut: shell.frame.copyShortcut, onCopy: copySelection } : null,
-    [copySelection, copyButtonLabel, shell.frame.copyShortcut]);
+  // What is selected, as Quick Edit's chips: a chip's X drops its picks, and resting on it lights
+  // them — a face or edge by its reference, a part, a subassembly or a run on one part by its node.
+  const removeFromSelection = useCallback(ids => {
+    const gone = new Set(ids);
+    setSelectedReferenceIds(current => current.filter(id => !gone.has(id)));
+    setSelectedPartIds(current => current.filter(id => !gone.has(id)));
+  }, [setSelectedReferenceIds, setSelectedPartIds]);
+  // What a chip copies: its picks' references, as Copy References writes the whole selection.
+  const chipCopyText = useCallback(ids => {
+    const referenceIds = ids.filter(id => selectedReferenceIds.includes(id));
+    const partIds = ids.filter(id => selectedPartIds.includes(id));
+    return copyTextLines(selectionCopyPayload(copyContext, { referenceIds, partIds }).lines, fileRefPrefix).join("\n");
+  }, [copyContext, fileRefPrefix, selectedReferenceIds, selectedPartIds]);
+  const hoverChip = useCallback(target => {
+    setHoveredModelReferenceId(target?.referenceId || "");
+    setHoveredListPartId(target?.nodeId || "");
+  }, [setHoveredModelReferenceId, setHoveredListPartId]);
+  const referenceChips = useStepSelectionChips({ stepTreeRoot: displayStepTreeRoot, selectedMeshData: selectedDisplayMeshData,
+    geometryInspection: { parts: !viewerLoading && !stepUpdateInProgress ? selectedMeshData?.parts || EMPTY_LIST : EMPTY_LIST },
+    references: selectionActionVisible ? selectedReferenceItems : EMPTY_LIST, onRemove: removeFromSelection, onHover: hoverChip,
+    copyText: chipCopyText });
 
-  // ---- the tool stack ---------------------------------------------------------------------------
-  // Under the strip: Select's Features and Reference, Position's joints, then the kept effects.
-  const stepPanels = useStepPanels({
-    // Select's mode and options: a menu in the Features filter row, beside its fold chevron.
-    onClosePosition: () => handleSelectTabToolMode(TAB_TOOL_MODE.REFERENCES),
-    // One element until the mode or its options change: the Features panel is memoized.
-    selectModeMenu: useMemo(() => <SelectModeMenu mode={selectionFilter} assembly={isAssemblyView} disabled={selectDisabled}
-      onModeChange={value => { changeSelectMode(value); handleSelectTabToolMode(TAB_TOOL_MODE.REFERENCES); }}
-      connected={connectedSelection} onConnectedChange={(id, checked) => setConnectedSelection(current => ({ ...current, [id]: checked }))} />,
-    [selectionFilter, isAssemblyView, selectDisabled, connectedSelection, changeSelectMode, handleSelectTabToolMode]),
-    selectActive: selectionToolActive && !previewing,
-    positionActive: poseToolActive,
-    selectMode: selectionFilter,
+  // ---- the file sidebar --------------------------------------------------------------------------
+  // Down the left: the model tree and Position's joints, whatever the tool; the kept effects are
+  // the tool stack's.
+  const stepSidebar = useStepPanels({
+    selectActive: !previewing,
+    selectMode: treeShape(selectionFilter),
     // In an assembly, a part's faces and edges load when a press under Faces or Edges first
-    // reaches it; the Features panel says so until the press can be picked.
+    // reaches it; the model tree says so until the press can be picked.
     loadingGeometry: Boolean(pendingTopologyPick),
-    positionRuntime: motion.positionControls,
+    positionRuntime: previewing ? previewMotion.positionControls : motion.positionControls,
+    // Position's tile dot: the joints off the default pose.
+    positionChanged: !positionValuesAreDefault(stepModuleParameterValues, selectedStepModuleDefinition?.defaultParameterValues),
     selectedMeshData: selectedDisplayMeshData,
     client,
     geometryInspection: { revision: artifactRevision,
@@ -3265,9 +3359,6 @@ function StepSurfaceBody({ view, data }) {
     hiddenPartIds,
     focusedNodeIds: focusedAssemblyNodeIds,
     onSelectTreeNode: selectStepTreeNode,
-    onSelectReferenceGroup: selectReferenceGroup,
-    onCopySelection: copySelectedReferences,
-    selectionCopy,
     onFocusTreeNode: focusStepTreeNode,
     onUnfocusTreeNode: handleExitSingleIsolate,
     onExitAllIsolate: handleExitIsolate,
@@ -3283,8 +3374,47 @@ function StepSurfaceBody({ view, data }) {
     showAllHiddenParts: handleShowAllHiddenParts
   });
 
-  return <RendererShell shell={shell} tools={tools} playback={viewportAnimation} toolPanels={<>{stepPanels}{modelEffects.panels}</>}
-    references={selectionActionVisible ? promptSelection : EMPTY_LIST} onClearReferences={clearAssemblySelection} copySelection={copySelection}
+  // Under Select a press on a measurement picks it before any part under it, and resting on one
+  // lights it (`measureSelection.js`); only while Select picks measurements.
+  const { press: selectPress, hover: selectHover } = measureSelectHandlers(measure, () => runtimeRefRef.current?.current,
+    clearAssemblySelection, { picks: selects(selectFilter, "measurement") });
+  // Everything picked goes: the parts and references, and the measurements.
+  const clearSelected = () => { clearAssemblySelection(); measure.select([]); };
+
+  // ---- Preview ----------------------------------------------------------------------------
+  // Its own scene while it is open, filled by its own layers inside its own viewport from the same
+  // published mesh (`StepPreviewLayers`), posed and played by its own motion.
+  const previewStepScene = useMemo(() => (previewing ? createStepScene(THREE) : null), [previewing]);
+  const previewSceneView = useMemo(() => (previewStepScene ? stepSceneView(previewStepScene, keepsAuthoredFinish) : null),
+    [previewStepScene, keepsAuthoredFinish]);
+  const previewAnimation = animationControlsHaveContent(previewMotion.animationControls) ? previewMotion.animationControls : null;
+  // Finer detail reaches Preview's scene in a few grouped steps (`settledValue.js`): each one
+  // starts its converging picture again, and a large model's detail arrives as a burst of batches.
+  const previewMeshData = useSettledValue(selectedDisplayMeshData, { grouped: previewing });
+  // Preview's runtime going away takes its scene's build with it, and says nothing to the
+  // detail loader: the editor's scene is the one that adopted the detail.
+  const previewRuntimeLifecycle = useMemo(() => ({
+    onRelease(runtime) { if (previewStepScene) releaseStepRuntime(runtime, previewStepScene); }
+  }), [previewStepScene]);
+  const previewView = {
+    scene: viewportScene ? previewSceneView : null,
+    overlay: (viewport, drawn) => {
+      previewRuntimeRefRef.current = viewport.runtimeRef;
+      return previewStepScene ? <StepPreviewLayers viewport={viewport} drawn={drawn} previewStepScene={previewStepScene}
+        meshData={previewMeshData} modelKey={selectedKey} isLoading={viewportIsLoading}
+        selectorRuntime={layerProps.selectorRuntime} stepParameterRuntime={selectedStepParameterRuntime} motion={previewMotion}
+        renderPartsIndividually={Boolean(selectedStepParameterRuntime) || Boolean(Object.keys(selectedDisplayMeshData?.appearance?.materials || {}).length)}
+        hoverStore={hoverStore} onLodCameraChange={onLodCameraMoved} /> : null;
+    },
+    animation: previewAnimation,
+    runtimeLifecycle: previewRuntimeLifecycle,
+    onCameraSettled: onLodCameraMoved
+  };
+
+  return <RendererShell shell={shell} tools={tools} subToolbar={modelEffects.subToolbar} sidebar={stepSidebar} previewView={previewView}
+    references={selectionActionVisible ? promptSelection : EMPTY_LIST} referenceChips={referenceChips} nameReference={nameReference}
+    onClearReferences={clearSelected} copySelection={copySelection} onSelectPress={selectPress} onSelectHover={selectHover}
+    selectsAnnotations={selects(selectFilter, "annotation")}
     contextMenuItems={selectionToolActive
       ? press => viewportContextMenuItems(press, pickAtRef.current?.(press.clientX, press.clientY) || "") : null}
     onContextMenuOpenChange={handleViewportContextMenuOpenChange}

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react';
 import { Maximize } from 'lucide-react';
 import { useAnalyticsConsent } from '@text-to-cad/ui/consent';
-import { useFeatures } from '@text-to-cad/ui/features';
+import { useLanguage } from '@text-to-cad/ui/i18n';
 import { UpdateButton, useUpdateNotice } from '@text-to-cad/ui/update';
 import { viewerLinks } from '@text-to-cad/ui/links';
 import { Button } from '@text-to-cad/ui/primitives/button';
@@ -23,16 +23,17 @@ import { Banner } from './Notice';
 
 interface Showing { launch: Launch; sequence: number }
 
+declare const __TEXT_TO_CAD_BUILD__: string | undefined;
+// Which build this page is, where it is not the release's own: vite.config.mjs names it
+// (`@text-to-cad/ui/build-id`), and the version then reads `0.7.15-dev.<build>`.
+const BUILD = typeof __TEXT_TO_CAD_BUILD__ === 'string' ? __TEXT_TO_CAD_BUILD__ : '';
+
 // The host's sandbox need not be a secure context, where randomUUID is missing.
 const newViewId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
 export function useHostContext(bridge: Pick<Bridge, 'hostContext' | 'onHostContext'>): HostContext {
   return useSyncExternalStore(listener => bridge.onHostContext(listener), () => bridge.hostContext, () => bridge.hostContext);
 }
-
-// A tab host's composer floats over the bottom of the page, its middle this far above the edge: the
-// viewer's playback bars sit on that same line (Codex: a 45px box, 17px up).
-const TAB_BOTTOM_CENTER = '40px';
 
 // What to do once this view's server has gone: the host started it, and only the host starts it again.
 const LOST: Record<Presentation, string> = {
@@ -51,10 +52,14 @@ export function inlineHeight(width: number, maxHeight?: number): number {
  * Room for what the host draws over the page (`insets`). Inline, a card whose height the host is
  * told. The one element either way, so going full size keeps the view (and its model) as it is.
  */
-function Frame({ bridge, context, insets, inline = false, bottomCenter, overlay = null, children }: { bridge: Bridge; context: HostContext; insets: NonNullable<HostContext['safeAreaInsets']>; inline?: boolean; bottomCenter?: string; overlay?: ReactNode; children: ReactNode }) {
-  // Where the host's composer floats over the page instead of taking room from it: the line the
-  // viewer's playback bars sit on, and the strip lists scroll clear of.
-  const floating = bottomCenter ? { '--cad-viewport-bottom-center': bottomCenter, '--cad-host-bottom-inset': `${context.safeAreaInsets?.bottom || 0}px` } as CSSProperties : {};
+function Frame({ bridge, context, insets, inline = false, floatingComposer = false, overlay = null, children }: { bridge: Bridge; context: HostContext; insets: NonNullable<HostContext['safeAreaInsets']>; inline?: boolean; floatingComposer?: boolean; overlay?: ReactNode; children: ReactNode }) {
+  // Where the host's composer floats over the page instead of taking room from it: the room it
+  // covers, which lists scroll clear of. Keep the cube in the opposite corner so a tab's
+  // composer or sidebar chat button never covers it.
+  const floating = {
+    ...(floatingComposer ? { '--cad-host-bottom-inset': `${context.safeAreaInsets?.bottom || 0}px`,
+      '--cad-viewport-corner-left': '2px', '--cad-viewport-corner-right': 'auto' } : {}),
+  } as CSSProperties;
   const [width, setWidth] = useState(() => window.innerWidth);
   useEffect(() => {
     if (!inline) return;
@@ -76,7 +81,7 @@ function Frame({ bridge, context, insets, inline = false, bottomCenter, overlay 
 
 /**
  * Inline, the card's way to full size: the last of the navbar's own controls (the view's follow it), and the home's.
- * Corner brackets, never the diagonal arrows: those are Preview's, a button along.
+ * Corner brackets, the host's own way to full size.
  */
 function FullSizeButton({ bridge }: { bridge: Bridge }) {
   const expand = () => void bridge.request('ui/request-display-mode', { mode: 'fullscreen' }).catch(() => {});
@@ -109,14 +114,25 @@ export default function App({ bridge, server, launch: initial, presentation = 't
   const live = useMemo(createLiveRegistry, []);
   const tabStore = useMemo(() => createTabStore(memoryTabRecord()), []);
   const context = useHostContext(bridge);
-  const colorScheme = context.theme === 'dark' ? 'dark' : 'light';
+  // The person's theme, from the app menu: System follows the host's; Light or Dark is theirs, over
+  // it, for as long as this view is open (its tab store is the view's own).
+  const tabSettings = useSyncExternalStore(tabStore.settings.subscribe, tabStore.settings.getSnapshot, tabStore.settings.getSnapshot);
+  const preference = tabSettings.appearance;
+  const colorScheme = preference === 'light' || preference === 'dark' ? preference : context.theme === 'dark' ? 'dark' : 'light';
+  // After every host context too: the page's first theme is the host's (`main.tsx`), and a host
+  // change of theme must not undo the person's.
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', colorScheme === 'dark');
+    document.documentElement.style.colorScheme = colorScheme;
+  }, [colorScheme, context]);
+  const theme = useMemo(() => ({ preference, onPreferenceChange: (value: typeof preference) => tabStore.settings.update({ appearance: value }) }), [preference, tabStore]);
   const inline = presentation === 'inline' && context.displayMode !== 'fullscreen';
-  // A tab runs the page's full height: what a tab host draws over its bottom (its composer) sits
-  // clear of the viewer's centred playbar. A host that mounts views inline draws its composer
+  // A tab runs the page's full height, its host's composer floating over its bottom; nothing of the
+  // viewer sits at the bottom centre under it. A host that mounts views inline draws its composer
   // across the bottom of a full-size view, so that view keeps clear of it.
   const insets = presentation === 'inline' ? context.safeAreaInsets || {} : { ...context.safeAreaInsets, bottom: 0 };
   const chat = useMemo(() => chatReach(bridge.hostCapabilities, presentation), [bridge, presentation]);
-  const bottomCenter = presentation === 'tabs' ? TAB_BOTTOM_CENTER : undefined;
+  const floatingComposer = presentation === 'tabs';
   // Once a newer view of this chat is up: this one's last frame (or null), and nothing else.
   const [still, setStill] = useState<string | null | undefined>(undefined);
   const superseded = still !== undefined;
@@ -186,11 +202,12 @@ export default function App({ bridge, server, launch: initial, presentation = 't
 
   // The usage stats cadgen sends (its telemetry), the same as the browser viewer's: nothing asks here (a
   // cadgen command says it once), and the app menu's switch changes it.
-  const { appSettings: analyticsSettings } = useAnalyticsConsent(client.consent);
-  // The app menu's features (Quick edit), on until the person turns one off: kept by the server beside
-  // the analytics answer, one choice for the sidebar, every thread's tab and the browser viewer.
-  const { features, appSettings: featureSettings } = useFeatures(client.features);
-  const appSettings = useMemo(() => [...analyticsSettings ?? [], ...featureSettings ?? []], [analyticsSettings, featureSettings]);
+  // The person's language: inferred from the host's locale (its context's `locale`), else the frame's
+  // browser languages, until they choose one in the app menu, which their settings keep for every CAD
+  // view (`useLanguage`, the same as the browser viewer's).
+  const { locale, language } = useLanguage(client.language, { preferred: [context.locale, ...(navigator.languages ?? [navigator.language])] });
+  useEffect(() => { document.documentElement.lang = locale; }, [locale]);
+  const { appSettings } = useAnalyticsConsent(client.consent, locale);
   // A newer text-to-cad (`cadgen/updates.py`): the blue update button, first in the navbar and a row of
   // its own on the home while this install is behind, from the launch's notice at once. Its prompt goes
   // to the chat where the host takes messages, so the agent updates CAD; elsewhere it is copied.
@@ -201,19 +218,19 @@ export default function App({ bridge, server, launch: initial, presentation = 't
   const openLink = (url: string) => void bridge.request('ui/open-link', { url }).catch(() => {});
   // The navbar's links: the same as every app's (X, Discord, GitHub and a new issue), followed through the
   // host (a frame cannot open one itself).
-  const links = useMemo(() => viewerLinks({ version, open: url => bridge.request('ui/open-link', { url }).then(() => {}) }),
+  const links = useMemo(() => viewerLinks({ version, build: BUILD, open: url => bridge.request('ui/open-link', { url }).then(() => {}) }),
     [bridge]);
   const { launch } = showing;
   if (superseded) {
-    return <Frame bridge={bridge} context={context} insets={insets} inline={inline} bottomCenter={bottomCenter}><Superseded still={still} /></Frame>;
+    return <Frame bridge={bridge} context={context} insets={insets} inline={inline} floatingComposer={floatingComposer}><Superseded still={still} /></Frame>;
   }
-  return <Frame bridge={bridge} context={context} insets={insets} inline={inline} bottomCenter={bottomCenter}
+  return <Frame bridge={bridge} context={context} insets={insets} inline={inline} floatingComposer={floatingComposer}
     overlay={lost ? <Banner message={LOST[presentation]} /> : null}>
     <ModelView launch={launch} sequence={showing.sequence} alone={alone} bridge={bridge} client={client} tunnel={tunnel}
-      tabStore={tabStore} live={live} links={links} appSettings={appSettings} features={features}
+      tabStore={tabStore} live={live} links={links} appSettings={appSettings}
       update={updateNotice ? <UpdateButton notice={updateNotice} send={sendPrompt} copy={prompt => frameClipboard.writeText(prompt)}
         onLink={openLink} /> : null}
       fullSize={inline && context.availableDisplayModes?.includes('fullscreen') !== false ? <FullSizeButton bridge={bridge} /> : null}
-      colorScheme={colorScheme} platform={initial.platform || 'darwin'} reporter={reporter} sync={sync} chat={chat} />
+      colorScheme={colorScheme} theme={theme} locale={locale} language={language} platform={initial.platform || 'darwin'} reporter={reporter} sync={sync} chat={chat} />
   </Frame>;
 }

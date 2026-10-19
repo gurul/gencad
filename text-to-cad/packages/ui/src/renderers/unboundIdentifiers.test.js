@@ -51,7 +51,7 @@ const RUNTIME_GLOBALS = new Set([
   // DOM and BOM
   "window", "document", "navigator", "location", "history", "screen", "customElements",
   "HTMLElement", "HTMLInputElement", "HTMLCanvasElement", "Element", "Node", "NodeList",
-  "Event", "CustomEvent", "MouseEvent", "KeyboardEvent", "PointerEvent", "WheelEvent",
+  "EventTarget", "Event", "CustomEvent", "MouseEvent", "KeyboardEvent", "PointerEvent", "WheelEvent",
   "DOMParser", "XMLSerializer", "DOMException", "CSS", "getComputedStyle", "matchMedia",
   "localStorage", "sessionStorage", "alert", "confirm", "prompt",
   // Timers and scheduling
@@ -63,7 +63,7 @@ const RUNTIME_GLOBALS = new Set([
   "URL", "URLSearchParams", "WebSocket", "EventSource", "Worker", "MessageChannel",
   "BroadcastChannel", "postMessage", "self", "crypto",
   // Files and encoding
-  "Blob", "File", "FileReader", "FileList", "Image", "ImageData", "OffscreenCanvas",
+  "Blob", "File", "FileReader", "FileList", "Image", "ImageData", "OffscreenCanvas", "ImageBitmapRenderingContext",
   "TextEncoder", "TextDecoder", "atob", "btoa", "ReadableStream", "WritableStream",
   // Observers
   "ResizeObserver", "IntersectionObserver", "MutationObserver", "PerformanceObserver",

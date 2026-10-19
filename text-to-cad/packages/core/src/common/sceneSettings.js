@@ -126,9 +126,9 @@ export const DEFAULT_RENDER_LIGHTING = Object.freeze({
   fill: 0.25
 });
 
-// Render's floor stands at the model's lowest point, following the current model bounds, as the
-// Display preset's does (`RENDER_FLOOR_PLACEMENT`); "origin" keeps it at the authored Z=0 plane,
-// where its opacity lets geometry below that plane remain visible.
+// Render's floor stands at the authored Z=0 plane, as the Display preset's does
+// (`RENDER_FLOOR_PLACEMENT`), its opacity letting geometry below that plane remain visible;
+// "lowest" follows the current model bounds instead.
 export const DEFAULT_RENDER_BACKDROP = Object.freeze({
   transparent: false,
   ground: true,
@@ -139,12 +139,12 @@ export const DEFAULT_RENDER_BACKDROP = Object.freeze({
 
 const STUDIO_BACKDROP_COLORS = Object.freeze({
   [RENDER_STUDIO.LIGHT]: "#ffffff",
-  [RENDER_STUDIO.DARK]: "#121315"
+  [RENDER_STUDIO.DARK]: "#202226"
 });
 
 const STUDIO_GROUND_COLORS = Object.freeze({
   [RENDER_STUDIO.LIGHT]: "#e7e7e5",
-  [RENDER_STUDIO.DARK]: "#121315"
+  [RENDER_STUDIO.DARK]: "#202226"
 });
 
 const HEX_COLOR_PATTERN = /^#(?:[0-9a-fA-F]{3}){1,2}$/;
@@ -537,13 +537,17 @@ export function resolveSceneSettings({
   };
 }
 
-/** Public grouped preset policy; historical display modes are draw details. */
+/**
+ * Public grouped preset policy; historical display modes are draw details. `preview` asks for
+ * Preview's photographic look (Render) over the same display, with Preview's own settings
+ * (`previewSettings`): Preview's scene, a snapshot's `--preview`. No file is in Render.
+ */
 export function resolveViewSceneSettings({
   display = {}, appearance = "light", prefersDark = false, camera = null, quality = null,
-  lightingQuality = "final", features = undefined
+  lightingQuality = "final", features = undefined, preview = false, previewSettings = {}
 } = {}) {
   const view = resolveViewSettings(display ?? {}, {
-    appearance: normalizeSceneAppearance(appearance, { prefersDark }), lightingQuality, features
+    appearance: normalizeSceneAppearance(appearance, { prefersDark }), lightingQuality, features, preview, previewSettings
   });
   const surface = view.surfaces;
   const mode = surface.style === "off" ? CAD_DISPLAY_MODE.WIREFRAME

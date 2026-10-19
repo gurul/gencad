@@ -1,7 +1,8 @@
 import { createContext, useCallback, useContext, useLayoutEffect, useState } from "react";
 
-// The viewer's layout follows its own width, never the window's.
-export const VIEWER_MOBILE_BREAKPOINT = 720;
+// The viewer's layout follows its own width, never the window's: under 600px it is a phone's, the
+// compact window class of Material's layout guidance, including a narrow desktop panel.
+export const VIEWER_MOBILE_BREAKPOINT = 600;
 export const ViewerMobileContext = createContext(false);
 export const useViewerMobile = () => useContext(ViewerMobileContext);
 

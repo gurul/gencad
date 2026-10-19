@@ -1,0 +1,224 @@
+/**
+ * The viewer's English strings, the source of every locale's key set: a locale
+ * missing a key here falls back to it, and the parity test
+ * (`../i18n.test.mjs`) fails when a key lands on one side only. Keys are flat
+ * and grouped by the surface that shows them; `{name}` braces mark what `t`
+ * fills in.
+ */
+export default {
+  // The page before the viewer answers (`apps/web`'s starting view).
+  "app.start.notAnswering": "The CAD Viewer is not answering",
+
+  // The file view: opening, and the states where it stops.
+  "file.opening": "Opening…",
+  "file.missing": "File does not exist",
+  "file.openFailed": "Could not open that file",
+  "file.displayFailed": "Could not display that file",
+  "file.goHome": "Go home",
+
+  // The navbar over every file.
+  "navbar.viewer": "Viewer",
+  "navbar.menu": "Menu",
+  "navbar.back": "Back",
+  "navbar.forward": "Forward",
+  "navbar.fileActions": "File actions",
+
+  // The ⋯ menu's actions on the file.
+  "file.copyPath": "Copy path",
+  "file.revealFinder": "Reveal in Finder",
+  "file.revealExplorer": "Show in Explorer",
+  "file.revealFileManager": "Show in file manager",
+
+  // The app's menu, from the navbar's logo.
+  "menu.backToFiles": "Back to files",
+  "menu.theme": "Theme",
+  "menu.language": "Language",
+  "menu.languageAutomatic": "Automatic ({language})",
+  "menu.feedback": "Send feedback",
+  "menu.madeBy": "Made by @{handle}",
+
+  // The menu's on/off settings (the host's app settings).
+  "consent.shareUsage": "Telemetry",
+  "consent.shareUsageEnvironment": "Telemetry (set by your environment)",
+  "consent.telemetryInfo": "Anonymous usage data and crash reports that help improve text-to-cad. Your prompts, models and files are never sent.",
+
+  // The colour schemes (the app menu's Theme, the web home's appearance button).
+  "appearance.label": "Appearance",
+  "appearance.current": "Appearance: {scheme}",
+  "appearance.system": "System",
+  "appearance.light": "Light",
+  "appearance.dark": "Dark",
+
+  // Each language under its own name, the same in every dictionary.
+  "language.en": "English",
+  "language.zh-CN": "简体中文",
+  "language.zh-TW": "繁體中文",
+  "language.ja": "日本語",
+  "language.ko": "한국어",
+
+  // The file explorer, from the navbar's file name.
+  "explorer.folders": "Folders",
+  "explorer.foldersAbove": "Folders above",
+  "explorer.filterLabel": "Filter files",
+  "explorer.filterPlaceholder": "Filter files...",
+  "explorer.loading": "Loading…",
+  "explorer.searching": "Searching…",
+  "explorer.readFailed": "Couldn't read this folder",
+  "explorer.searchFailed": "Couldn't search this folder",
+  "explorer.noCadFiles": "No CAD files",
+  "explorer.noCadFilesHere": "No CAD files here",
+  "explorer.noMatches": "No files match",
+  "explorer.noMatchesYet": "No files match yet. Keep typing to narrow the search.",
+  "explorer.stoppedEarly": "Stopped early. Keep typing to narrow the search.",
+
+  // The home: the library of models opened before.
+  "home.byline": "Build anything.",
+  "home.bylineOpenSource": "100% open source and free.",
+  "home.recentFiles": "Recent Files",
+  "home.searchAria": "Search models",
+  "home.searchPlaceholder": "Search",
+  "home.layout": "Layout",
+  "home.grid": "Grid",
+  "home.list": "List",
+  "home.open": "Open",
+  "home.openFile": "Open File",
+  "home.openAria": "Open {name}",
+  "home.emptyNoPicker": "Open a CAD file to see it here.",
+  "home.noMatchingModels": "No matching models.",
+  "home.filesAria": "Files",
+  "home.loadingFiles": "Loading files",
+  "home.modelsAria": "CAD models",
+  "home.linksAria": "CAD links",
+  "home.pinAria": "Pin {name}",
+  "home.unpinAria": "Unpin {name}",
+  "home.removeAria": "Remove {name}",
+  "home.fileUnavailable": "File unavailable",
+  "home.openingAria": "Opening {name}",
+  "home.editedJustNow": "Edited just now",
+  "home.editedMinutesAgo": "Edited {n}m ago",
+  "home.editedHoursAgo": "Edited {n}h ago",
+  "home.editedDaysAgo": "Edited {n}d ago",
+  "home.editedOn": "Edited {date}",
+
+  // The update button and its card.
+  "update.label": "Update",
+  "update.toAria": "Update to {version}",
+  "update.available": "Update available",
+  "update.close": "Close",
+  "update.description": "A new version of text-to-cad is available. Send a message to your agent asking it to update to the latest version:",
+  "update.copy": "Copy",
+  "update.copied": "Copied",
+  "update.copyPrompt": "Copy prompt",
+  "update.sendToAgent": "Send to agent",
+  "update.manualInstallation": "Manual installation",
+  "update.sendFailed": "It could not be sent to the chat. Copy the prompt instead.",
+  "update.copiedHint": "Copied. Paste it into your agent's chat.",
+  "update.copyFailed": "It could not be copied. Select the prompt above and copy it.",
+
+  // The alert card over the viewport.
+  "alert.undisplayable": "Couldn’t display the model",
+  "alert.dismiss": "Dismiss",
+  "alert.details": "Details",
+  "alert.copy": "Copy",
+  "alert.copied": "Copied",
+  "alert.copyDetails": "Copy error details",
+  "alert.detailsCopied": "Error details copied",
+  "alert.copyFailed": "The details could not be copied. Select them above and copy them.",
+  "alert.retry": "Retry",
+  "alert.reportIssue": "Report Issue",
+
+  // The loading indicator under the loading mark.
+  "loading.lastStep": "Last step: {label}",
+  "loading.openingModel": "Opening model",
+  "loading.preparingView": "Preparing view",
+  "loading.waitingForResponse": "Waiting for a response. Retrying…",
+  "loading.findingFile": "Finding file",
+  "loading.readingModel": "Reading model",
+  "loading.importingModel": "Importing model",
+  "loading.buildingModel": "Building model",
+  "loading.meshingParts": "Meshing parts",
+  "loading.loadingGeometry": "Loading geometry",
+  "loading.readingDrawing": "Reading drawing",
+  "viewUpdate.updatingModel": "Updating model…",
+  "viewUpdate.updatingDrawing": "Updating drawing…",
+  "viewUpdate.updatingView": "Updating view…",
+  "viewUpdate.meshingParts": "Meshing parts{counts}…",
+  "viewUpdate.failed": "Couldn’t update view",
+  "viewUpdate.failedWith": "Couldn’t update view: {error}",
+  "viewUpdate.retry": "Retry view update",
+
+  // Display: its tile and menu, the modes (`DisplayModeOptions.js`, by value) and the Grid switch.
+  "display.label": "Display",
+  "display.mode": "Display mode",
+  "display.modeCurrent": "Display mode: {mode}",
+  "display.grid": "Grid",
+  "mode.solid": "Solid",
+  "mode.shaded": "Shaded",
+  "mode.parts": "Parts",
+  "mode.xray": "X-ray",
+  "mode.hidden-line": "Hidden line",
+  "mode.wireframe": "Wireframe",
+
+  // Projection, a menu of its own beside Display.
+  "projection.label": "Projection",
+  "projection.current": "Projection: {mode}",
+  "projection.orthographic": "Orthographic",
+  "projection.perspective": "Perspective",
+
+  // Preview: its tile, its corner controls and its settings panel.
+  "preview.label": "Preview",
+  "preview.settings": "Preview settings",
+  "preview.exit": "Exit preview",
+  "preview.settingsTitle": "Settings",
+  "preview.close": "Close preview settings",
+  "preview.orbit": "Orbit",
+  "preview.speed": "Speed",
+  "preview.orbitSpeed": "Orbit speed",
+
+  // Preview's Render settings (`PreviewRenderSettings.jsx`).
+  "render.partColours": "Part colours",
+  "render.source": "Source",
+  "render.colourSource": "Colour source",
+  "render.source.original": "Original",
+  "render.source.single": "Single colour",
+  "render.source.byPart": "By part",
+  "render.palette": "Palette",
+  "render.partColour": "Part colour",
+  "render.partColourN": "Part colour {n}",
+  "render.addColour": "Add colour",
+  "render.removeLastColour": "Remove last colour",
+  "render.colour": "Colour",
+  "render.opacity": "Opacity",
+  "render.valueOf": "{name} value",
+  "render.lighting": "Lighting",
+  "render.quality": "Quality",
+  "render.quality.preview": "Preview",
+  "render.quality.final": "Final",
+  "render.exposure": "Exposure",
+  "render.rotation": "Rotation",
+  "render.softbox": "Softbox",
+  "render.softboxSize": "Softbox size",
+  "render.fill": "Fill",
+  "render.background": "Background",
+  "render.backgroundColour": "Background colour",
+  "render.backgroundOpacity": "Background opacity",
+  "render.floor": "Floor",
+  "render.floorColour": "Floor colour",
+  "render.floorOpacity": "Floor opacity",
+  "render.placement": "Placement",
+  "render.placement.lowest": "Lowest point",
+  "render.placement.origin": "Model origin",
+  "render.finish": "Finish",
+  "render.finish.matte": "Matte",
+  "render.finish.glossy": "Glossy",
+  "render.reset": "Reset to default",
+
+  // The colour picker's controls.
+  "colorPicker.saturationBrightness": "Saturation and brightness",
+  "colorPicker.hue": "Hue",
+  "colorPicker.opacity": "Color opacity",
+  "colorPicker.hex": "Hex color",
+  "colorPicker.eyedropper": "Eyedropper",
+  "colorPicker.pickFromScreen": "Pick color from screen",
+  "colorPicker.opacityHeading": "Opacity",
+};
