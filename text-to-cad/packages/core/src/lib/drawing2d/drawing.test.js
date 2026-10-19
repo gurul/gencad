@@ -71,7 +71,10 @@ function payload(primitives, extra = {}) {
     schemaVersion: DRAWING_SCHEMA_VERSION,
     units: { insunits: 4, name: "Millimeters", toMillimetres: 1 },
     bounds: [0, 0, 10, 10],
-    layers: [{ name: "0", color: null, count: primitives.length }],
+    layers: [{ name: "0", color: null, entities: primitives.length }],
+    // Every entity a primitive names, in first-seen order, as the server lists them.
+    entities: [...new Set(primitives.map((primitive) => primitive.entity).filter(Boolean))]
+      .map((handle) => ({ handle, type: "LINE", layer: "0" })),
     fonts: [{ family: "Arial", weight: 400, italic: false }, { family: "sans-serif", weight: 700, italic: true }],
     primitives,
     ...extra
@@ -149,12 +152,40 @@ test("a filled polygon is an explicitly closed ring", () => {
   ]);
 });
 
-test("points are collected per colour as flat coordinates", () => {
+test("points are collected per layer and colour as flat coordinates", () => {
   const drawable = prepare([
     { type: "point", layer: "0", color: null, geometry: [1, 2] },
     { type: "point", layer: "0", color: null, geometry: [3, 4] }
   ]);
-  assert.deepEqual(drawable.points, [{ color: null, coordinates: [1, 2, 3, 4] }]);
+  assert.deepEqual(drawable.points, [{ layer: "0", color: null, coordinates: [1, 2, 3, 4] }]);
+});
+
+test("strokes batch per layer as well as colour, so a hidden layer is not drawn", () => {
+  const drawable = prepare([
+    { type: "lines", layer: "CUT", color: null, geometry: [[0, 0, 1, 0]] },
+    { type: "lines", layer: "BEND", color: null, geometry: [[0, 1, 1, 1]] }
+  ]);
+  assert.deepEqual(drawable.strokes.map((entry) => entry.layer), ["CUT", "BEND"]);
+  const ctx = recordingContext();
+  drawDrawing(ctx, drawable, { transform: { scale: 1, offsetX: 0, offsetY: 0 }, foreground: "#000000", hiddenLayers: new Set(["BEND"]) });
+  assert.equal(ctx.calls.filter(([name]) => name === "stroke").length, 1);
+});
+
+test("each primitive's entity is indexed by handle with what it drew and its box", () => {
+  const drawable = prepareDrawing(payload([
+    { type: "lines", layer: "CUT", color: null, entity: "2F", geometry: [[0, 0, 4, 0]] },
+    { type: "path", layer: "CUT", color: null, entity: "30", geometry: [["M", 5, 5], ["L", 6, 7]] }
+  ], { entities: [{ handle: "2F", type: "LINE", layer: "CUT" }, { handle: "30", type: "CIRCLE", layer: "CUT", center: [5, 6], radius: 1 }] }),
+  { Path2D: RecordingPath });
+  assert.deepEqual([...drawable.entities.keys()], ["2F", "30"]);
+  assert.deepEqual(drawable.entities.get("2F").box, [0, 0, 4, 0]);
+  assert.deepEqual(drawable.entities.get("30").center, [5, 6]);
+  assert.equal(drawable.entities.get("30").primitives.length, 1);
+});
+
+test("a primitive naming an entity the payload does not list is refused", () => {
+  assert.throws(() => prepareDrawing(payload([{ type: "lines", layer: "0", color: null, entity: "99", geometry: [[0, 0, 1, 1]] }],
+    { entities: [] }), { Path2D: RecordingPath }), /entity "99", which the payload's `entities` does not list/);
 });
 
 test("the default pen stays null through prepare, so one payload serves both themes", () => {

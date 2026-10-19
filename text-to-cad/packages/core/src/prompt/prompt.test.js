@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPromptContext, createPromptDeliveryLedger, referencePart, textPart, validatePromptContext, formatPromptContextText, formatPromptMessage, formatPromptReference, promptReferenceIds } from './index.js';
+import { createPromptContext, createPromptDeliveryLedger, referencePart, textPart, validatePromptContext, formatPromptContextText, formatPromptMessage, formatPromptReference, promptReferenceIds, resolveAttachmentPaths } from './index.js';
 
 const reference = { resource: { kind: 'workspace-file', path: '/work/STEP/my part.step', revision: 'v1' }, target: { kind: 'cad-selector', selectors: ['o1.2.f45'] } };
 test('one context retains image/reference relationships and formats canonical references', () => {
@@ -13,12 +13,24 @@ test('one context retains image/reference relationships and formats canonical re
 });
 test('a message says what the person wrote, then the file, its references and a picture saved as a file', () => {
   const file = { resource: reference.resource, target: { kind: 'whole-resource' } };
-  const sketch = { id: 'sketch', kind: 'attachment', name: 'part-sketch.png', mimeType: 'image/png', content: new Blob(), about: ['file'], label: 'Sketch' };
-  const context = createPromptContext([textPart('Round this edge.\n'), referencePart(file, 'file'), referencePart(reference, 'face'), sketch]);
+  const annotation = { id: 'annotation', kind: 'attachment', name: 'part-annotation.png', mimeType: 'image/png', content: new Blob(), about: ['file'], label: 'Annotation' };
+  const context = createPromptContext([textPart('Round this edge.\n'), referencePart(file, 'file'), referencePart(reference, 'face'), annotation]);
   assert.equal(formatPromptMessage(context, { attachmentPath: part => `/tmp/${part.name}` }),
-    'Round this edge.\n\nFile: "/work/STEP/my part.step"\nReferences:\n"/work/STEP/my part.step"#o1.2.f45\nSketch: /tmp/part-sketch.png');
+    'Round this edge.\n\nFile: "/work/STEP/my part.step"\nReferences:\n"/work/STEP/my part.step"#o1.2.f45\nAnnotation: /tmp/part-annotation.png');
   // A picture sent beside the text is not named in it.
-  assert.equal(formatPromptMessage(createPromptContext([textPart('Why?'), referencePart(file, 'file'), sketch])), 'Why?\n\nFile: "/work/STEP/my part.step"');
+  assert.equal(formatPromptMessage(createPromptContext([textPart('Why?'), referencePart(file, 'file'), annotation])), 'Why?\n\nFile: "/work/STEP/my part.step"');
+});
+
+test('a file already saved says where, as soon as it is; one that never will be fails the context', async () => {
+  const file = { resource: reference.resource, target: { kind: 'whole-resource' } };
+  const views = { id: 'views', kind: 'attachment', name: 'part.job.json', mimeType: 'application/json', content: new Blob(), about: ['file'],
+    label: 'Views', path: Promise.resolve('/tmp/p/part-1.job.json') };
+  const context = createPromptContext([textPart('Thicker.'), referencePart(file, 'file'), views]);
+  const paths = await resolveAttachmentPaths(context);
+  assert.deepEqual([...paths], [['views', '/tmp/p/part-1.job.json']]);
+  assert.equal(formatPromptMessage(context, { attachmentPath: part => paths.get(part.id) }),
+    'Thicker.\n\nFile: "/work/STEP/my part.step"\nViews: /tmp/p/part-1.job.json');
+  assert.throws(() => validatePromptContext({ ...context, parts: [...context.parts.slice(0, 2), { ...views, path: 7 }] }), /attachment path/);
 });
 test('code targets preserve explicit ranges rather than borrowing the CAD fragment grammar', () => {
   const code = { resource: { kind: 'workspace-file', path: '/work/src/bracket.py' }, target: { kind: 'text-range', start: { line: 4, character: 2 }, end: { line: 6, character: 0 } } };
@@ -61,4 +73,18 @@ test('a delivery ledger delivers each operation once, bounds work in flight, and
   let restarted = 0;
   await ledger.deliver('a', () => { restarted += 1; return { status: 'copied', partIds: [] }; });
   assert.equal(restarted, 1, 'the oldest completed operation was evicted');
+});
+
+
+test('prompt serialization prefers inline text and preserves references without reading file bytes', async () => {
+  const { resolvePromptMessage } = await import('./index.js');
+  const small = { id: 'snapshot', kind: 'attachment', name: 'a.snapshot.json', mimeType: 'application/json',
+    content: { then() { throw new Error('must not fetch bytes'); } },
+    inlineText: Promise.resolve('Snapshot JSON:\n{"jobs":[]}'), path: Promise.resolve('') };
+  const context = createPromptContext([textPart('Keep it.'), small]);
+  assert.equal(await resolvePromptMessage(context), 'Keep it.\n\nSnapshot JSON:\n{"jobs":[]}');
+  assert.equal(await resolvePromptMessage(createPromptContext([textPart('Keep it.'), { ...small,
+    inlineText: Promise.resolve(null), path: Promise.resolve('/tmp/a.snapshot.json'), label: 'Snapshot' }])),
+    'Keep it.\n\nSnapshot: /tmp/a.snapshot.json');
+  await assert.rejects(resolvePromptMessage(createPromptContext([{ ...small, inlineText: Promise.reject(new Error('save failed')) }])), /save failed/);
 });

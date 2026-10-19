@@ -27,7 +27,7 @@ function liveRuntime(modelKey: string) {
   const canvas = document.createElement('canvas');
   return { THREE, camera, orthographicCamera: camera, controls: { target: new THREE.Vector3(), update() {} },
     renderer: { domElement: canvas }, hasVisibleModel: true, activeModelKey: modelKey,
-    // What the viewport's own effects (preview's orbit) touch on any runtime.
+    // What the viewport's own effects (Preview's orbit) touch on any runtime.
     interactionState: { restoreTimerId: 0 }, keyboardOrbitState: null, requestRender() {}, scheduleIdleQuality() {} };
 }
 
@@ -52,15 +52,15 @@ it('a viewport resize is a settle every time, even when the stored perspective i
   expect(onPerspectiveChange).toHaveBeenCalledTimes(1);
 });
 
-it('a preview camera that moves is a settle, and records no perspective', () => {
+it("the camera of a viewport that keeps none (Preview's) moving is a settle; the editor's records it instead", () => {
   const { all, rerender, runtime, onCameraSettled, onPerspectiveChange } = mount();
-  rerender(<ShellViewport {...(all as any)} previewMode />);
+  rerender(<ShellViewport {...(all as any)} preview onPerspectiveChange={null} />);
   runtime.camera.position.set(0, -200, 50);
   act(() => { runtimeHook.options.emitPerspectiveChange(runtime); });
   expect(onCameraSettled).toHaveBeenCalledTimes(1);
   expect(onPerspectiveChange).not.toHaveBeenCalled();
-  // Out of preview, the same move is recorded instead (and the shell turns that into the settle).
-  rerender(<ShellViewport {...(all as any)} previewMode={false} />);
+  // A viewport that keeps its camera records the same move (and the shell turns that into the settle).
+  rerender(<ShellViewport {...(all as any)} />);
   runtime.camera.position.set(10, -200, 50);
   act(() => { runtimeHook.options.emitPerspectiveChange(runtime); });
   expect(onPerspectiveChange).toHaveBeenCalledTimes(1);
@@ -78,4 +78,28 @@ it('a camera handed to the viewport, or a zoom to a selection, is the user\'s ca
   runtime.userMovedCamera = false;
   act(() => { expect(viewport.current.zoomToBounds({ min: [0, 0, 0], max: [4, 2, 1] }, { animate: false })).toBe(true); });
   expect(runtime.userMovedCamera).toBe(true);
+});
+
+
+it('prompt capture preserves the actual projection, lens and zoom for snapshot replay', () => {
+  const viewport = React.createRef<any>();
+  const { runtime } = mount({ ref: viewport });
+  Object.defineProperties(runtime.renderer.domElement, { clientWidth: { value: 800 }, clientHeight: { value: 600 } });
+  runtime.camera.zoom = 2;
+  const ortho = viewport.current.promptCamera();
+  expect(ortho.display.camera).toEqual({ projection: 'orthographic' });
+  expect(ortho.camera.orthographicHalfHeight).toBe(20);
+  expect(ortho.camera.zoom).toBeUndefined(); // Already folded into the half-height.
+  const perspective = new THREE.PerspectiveCamera(50, 800 / 600);
+  perspective.setFocalLength(85);
+  perspective.position.copy(runtime.camera.position);
+  perspective.up.copy(runtime.camera.up);
+  perspective.zoom = 1.5;
+  (runtime as any).camera = perspective;
+  const captured = viewport.current.promptCamera();
+  expect(captured.display.camera.projection).toBe('perspective');
+  expect(captured.display.camera.focalLength).toBeCloseTo(85);
+  expect(captured.camera.zoom).toBe(1.5);
+  expect(captured.camera.position).toEqual(perspective.position.toArray());
+  expect(captured.camera.orthographicHalfHeight).toBeCloseTo(perspective.position.length() * Math.tan(THREE.MathUtils.degToRad(perspective.getEffectiveFOV()) / 2));
 });

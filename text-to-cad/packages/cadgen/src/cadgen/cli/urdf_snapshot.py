@@ -10,8 +10,9 @@ is declared once, beside the verb, in
 The verb is the ROBOT shape: the mesh surface plus ``--joint-values``, which is
 how a description gets posed. STEP-only flags (selection, kinematics, section
 mode) are not in this signature at all, and ``--display`` takes ``solid`` or
-``render``: the settings that describe a CAD model (edges, clip, exploded, the
-edge-made modes, hidden/off surfaces) are refused by name.
+``parts`` (``--grid`` and ``--preview`` beside it); ``display.clip`` cuts the robot
+(``at`` in metres), and what describes a CAD model or moves parts apart (the
+edge-made modes, Shaded, exploded) is refused by name.
 """
 
 from __future__ import annotations

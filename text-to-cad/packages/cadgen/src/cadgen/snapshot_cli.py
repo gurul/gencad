@@ -29,6 +29,7 @@ leaves no file at all.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import functools
 import json
@@ -70,9 +71,11 @@ from cadgen.occurrence_groups import (
 from cadgen.cli_progress import cli_progress_line
 from cadgen.results import SnapshotResult
 from cadgen.snapshot_core import (
+    BatchSnapshotRenderer,
     SELECTION_KEYS,
     SUPPORTED_JOB_KEYS,
     SnapshotError,
+    ValidatedDisplay,
     asset_url_for_path,
     check_mesh_render_job,
     clear_render_output_targets,
@@ -85,7 +88,6 @@ from cadgen.snapshot_core import (
     normalize_render_mode,
     normalize_snapshot_job_packet,
     parse_camera_option,
-    parse_section_option,
     path_is_inside_or_equal,
     refuse_cad_model_requests,
     render_snapshot,
@@ -128,6 +130,8 @@ class SnapshotOptions:
     mode_specified: bool = False
     display: object = ""
     display_specified: bool = False
+    grid: bool = False
+    preview: bool = False
     camera: object = None
     camera_specified: bool = False
     width: int | None = None
@@ -140,10 +144,12 @@ class SnapshotOptions:
     animation_specified: bool = False
     video: object = None
     video_specified: bool = False
-    section: object = None
-    section_specified: bool = False
     joint_values: object = None
     joint_values_specified: bool = False
+    annotation: object = None
+    annotation_specified: bool = False
+    measurements: object = None
+    measurements_specified: bool = False
     focus: list[str] | None = None
     focus_specified: bool = False
     hide: list[str] | None = None
@@ -281,11 +287,110 @@ def option_display_modes(options: SnapshotOptions) -> frozenset[str] | None:
     return display_modes_for_kind(input_kind(Path(options.input))) if options.input else None
 
 
+# A measurement's closed vocabulary, and how many a job draws at most (the viewer's own bound).
+MEASUREMENT_KEYS = frozenset({"start", "end", "label", "color"})
+MAX_MEASUREMENTS = 64
+
+
+def normalize_measurements(value: object) -> list[dict[str, object]]:
+    """A job's ``measurements``: a list of ``{start, end, label, color}``, checked.
+
+    Each is a dimension between two world points (``start``, ``end``: three finite numbers),
+    its words (``label``) and its colour (``#rrggbb``), as the viewer's Measure drew it; the
+    page draws them over the picture with the same code.
+    """
+    if not isinstance(value, list):
+        raise SnapshotError("measurements is a list of {start, end, label, color}")
+    if len(value) > MAX_MEASUREMENTS:
+        raise SnapshotError(f"measurements: at most {MAX_MEASUREMENTS}")
+    marks: list[dict[str, object]] = []
+    for index, mark in enumerate(value):
+        at = f"measurements[{index}]"
+        if not is_plain_object(mark):
+            raise SnapshotError(f"{at} is {{start, end, label, color}}")
+        unknown = sorted(set(mark) - MEASUREMENT_KEYS)
+        if unknown:
+            raise SnapshotError(f"{at} has unknown field(s): {', '.join(unknown)}")
+        for key in ("start", "end"):
+            point = mark.get(key)
+            if not (isinstance(point, list) and len(point) == 3 and all(
+                    isinstance(axis, (int, float)) and not isinstance(axis, bool) and math.isfinite(axis) for axis in point)):
+                raise SnapshotError(f"{at}.{key} is [x, y, z]")
+        if not isinstance(mark.get("label"), str):
+            raise SnapshotError(f"{at}.label is its words")
+        color = mark.get("color")
+        if not (isinstance(color, str) and len(color) == 7 and color.startswith("#")
+                and all(digit in "0123456789abcdefABCDEF" for digit in color[1:])):
+            raise SnapshotError(f"{at}.color is #rrggbb")
+        marks.append({"start": list(mark["start"]), "end": list(mark["end"]), "label": mark["label"], "color": color})
+    return marks
+
+
+def load_measurements_option(value: object, *, cwd: Path) -> object:
+    """``measurements`` in job form: the list itself.
+
+    A job's ``measurements`` and the ``--measurements`` flag are the same value: the
+    list, one measurement object alone (what a Quick Edit chip copies), that JSON as
+    text, or the path of a file holding it (resolved against the working folder).
+    Its fields are checked by ``normalize_measurements``.
+    """
+    if is_plain_object(value):
+        return [value]
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if text.startswith(("[", "{")):
+        parsed = load_json_text(text, "measurements")
+    else:
+        path = (cwd / Path(text).expanduser()).resolve()
+        if not path.is_file():
+            raise _missing(f"measurements file does not exist: {text}")
+        try:
+            parsed = load_json_text(path.read_text(encoding="utf-8"), str(path))
+        except (OSError, UnicodeDecodeError) as exc:
+            raise SnapshotError(f"Cannot read measurements file {text}: {exc}") from exc
+    return [parsed] if is_plain_object(parsed) else parsed
+
+
+def load_annotation_option(value: object, *, cwd: Path) -> tuple[dict[str, object], str]:
+    """``annotation`` in job form: the annotation object, and the file it was read from ("" inline).
+
+    A job's ``annotation`` and the ``--annotation`` flag are the same value: an annotation
+    JSON file's path (resolved against the working folder, as a job's input is),
+    the annotation JSON as text, or -- from a library call or a job -- the object.
+    Only its outer shape is checked here; every field is checked by the page
+    that draws it (``normalizeAnnotation``), whose refusal names the file.
+    """
+    if is_plain_object(value):
+        return dict(value), ""
+    text = value.strip() if isinstance(value, str) else ""
+    if not text:
+        raise SnapshotError("annotation is the path of an annotation JSON file, or the annotation object itself")
+    source = ""
+    if text.startswith("{"):
+        parsed = load_json_text(text, "annotation")
+    else:
+        path = (cwd / Path(text).expanduser()).resolve()
+        if not path.is_file():
+            raise _missing(f"annotation file does not exist: {text}")
+        try:
+            parsed = load_json_text(path.read_text(encoding="utf-8"), str(path))
+        except (OSError, UnicodeDecodeError) as exc:
+            raise SnapshotError(f"Cannot read annotation file {text}: {exc}") from exc
+        source = str(path)
+    if not is_plain_object(parsed):
+        raise SnapshotError(f"{source or 'annotation'}: an annotation is a JSON object with units, parts and marks")
+    return parsed, source
+
+
 def apply_option_overrides_to_job(job: object, options: SnapshotOptions, *, cwd: Path) -> object:
     if not is_plain_object(job):
         return job
     if not any(
         [
+            bool(options.input),
+            options.annotation_specified,
+            options.measurements_specified,
             options.mode_specified,
             options.view_labels,
             options.debug,
@@ -295,15 +400,22 @@ def apply_option_overrides_to_job(job: object, options: SnapshotOptions, *, cwd:
             options.kinematics_specified,
             options.animation_specified,
             options.video_specified,
-            options.section_specified,
             options.joint_values_specified,
             options.display_specified,
+            options.grid,
+            options.preview,
             options.camera_specified,
             option_focus_hide_specified(options),
         ]
     ):
         return job
     next_job = copy.deepcopy(job)
+    if options.input:
+        next_job["input"] = options.input
+    if options.annotation_specified:
+        next_job["annotation"] = options.annotation
+    if options.measurements_specified:
+        next_job["measurements"] = options.measurements
     if options.mode_specified:
         next_job["mode"] = normalize_render_mode(options.mode)
     if options.debug:
@@ -315,14 +427,18 @@ def apply_option_overrides_to_job(job: object, options: SnapshotOptions, *, cwd:
         next_job["jointValues"] = parse_joint_values_option(options.joint_values)
     if options.display_specified:
         next_job["display"] = load_display_option(options.display, cwd=cwd)
+    if options.grid:
+        # The grid joins whatever display the job asks for.
+        shown = load_display_option(next_job["display"] if next_job.get("display") is not None else {}, cwd=cwd)
+        next_job["display"] = ValidatedDisplay({**shown, "grid": True})
+    if options.preview:
+        next_job["preview"] = True
     if options.camera_specified:
         next_job["camera"] = parse_camera_option(options.camera)
     if options.animation_specified:
         next_job["animation"] = parse_animation_option(options.animation, options.animation_time)
     if options.video_specified:
         next_job["video"] = parse_video_option(options.video, cwd=cwd)
-    if options.section_specified:
-        next_job["section"] = parse_section_option(options.section)
     if options.width is not None or options.height is not None:
         # Size lives on each output, so the override lands on every one of them —
         # the same "every job in the packet" reach the other overrides have.
@@ -414,16 +530,22 @@ def load_job_from_options(options: SnapshotOptions, *, cwd: Path | None = None) 
         job["display"] = load_display_option(
             options.display, cwd=resolved_cwd, modes=option_display_modes(options)
         )
+    if options.grid:
+        job["display"] = ValidatedDisplay({**job.get("display", {}), "grid": True})
+    if options.preview:
+        job["preview"] = True
     if options.kinematics_specified:
         job["kinematics"] = parse_kinematics_option(options.kinematics)
     if options.animation_specified:
         job["animation"] = parse_animation_option(options.animation, options.animation_time)
     if options.video_specified:
         job["video"] = parse_video_option(options.video, cwd=resolved_cwd)
-    if options.section_specified:
-        job["section"] = parse_section_option(options.section)
     if options.joint_values_specified:
         job["jointValues"] = parse_joint_values_option(options.joint_values)
+    if options.annotation_specified:
+        job["annotation"] = options.annotation
+    if options.measurements_specified:
+        job["measurements"] = options.measurements
     if options.debug:
         job["debug"] = True
     merge_focus_hide_options(job, options)
@@ -835,7 +957,6 @@ def check_robot_render_job(
     label = kind.upper()
     refuse_cad_model_requests(
         job,
-        mode=mode,
         subject=f"{label} robots",
         pose_hint=f"pose a {label} robot with jointValues",
         tessellation_hint="a robot's link meshes are existing meshes",
@@ -931,6 +1052,7 @@ class PreparedRenderJob:
     resolved_cwd: Path
     #: What the kind's check learned that its resolver needs (an SRDF's paired URDF).
     context: dict[str, object]
+    annotation_source: str = ""
 
 
 def prepare_render_job(
@@ -1008,12 +1130,10 @@ def prepare_render_job(
     validate_display_for_kind(display, kind=kind, input_label=input_path.name)
     job["display"] = display
     mode = normalize_render_mode(job.get("mode"))
-    lighting = display.get("lighting")
-    lighting_enabled = (
-        lighting.get("enabled", True) if is_plain_object(lighting) else display.get("mode") == "render"
-    )
-    if lighting_enabled and mode != "view":
-        raise SnapshotError("Render display supports only view mode")
+    if "preview" in job and not isinstance(job["preview"], bool):
+        raise SnapshotError("preview must be a boolean")
+    if job.get("preview") is True and mode != "view":
+        raise SnapshotError("preview draws one view: it supports only view mode")
 
     validate_selection_keys(job)
     selection = job.get("selection") if is_plain_object(job.get("selection")) else {}
@@ -1021,6 +1141,15 @@ def prepare_render_job(
         raise SnapshotError("selection.focus and selection.hide cannot be used in the same snapshot job")
 
     context = KIND_CHECKS[kind](job, kind=kind, input_path=input_path, mode=mode) or {}
+    annotation_source = ""
+    if job.get("annotation") is not None:
+        if mode != "view":
+            raise SnapshotError("an annotation is ink drawn over a view; only view mode draws it")
+        job["annotation"], annotation_source = load_annotation_option(job["annotation"], cwd=resolved_cwd)
+    if job.get("measurements") is not None:
+        if mode != "view":
+            raise SnapshotError("measurements are drawn over a view; only view mode draws them")
+        job["measurements"] = normalize_measurements(load_measurements_option(job["measurements"], cwd=resolved_cwd))
     normalized = normalize_common_job(
         job,
         mode=mode,
@@ -1037,12 +1166,13 @@ def prepare_render_job(
         reference_root=reference_root_for_input(input_path, resolved_cwd),
         resolved_cwd=resolved_cwd,
         context=dict(context),
+        annotation_source=annotation_source,
     )
 
 
 def resolve_prepared_render_job(prepared: PreparedRenderJob) -> dict[str, object]:
     """Build what an accepted job's render needs and attach it as ``resolved``."""
-    return KIND_RESOLVERS[prepared.kind](
+    resolved_job = KIND_RESOLVERS[prepared.kind](
         prepared.job,
         kind=prepared.kind,
         input_path=prepared.input_path,
@@ -1051,6 +1181,9 @@ def resolve_prepared_render_job(prepared: PreparedRenderJob) -> dict[str, object
         resolved_cwd=prepared.resolved_cwd,
         **prepared.context,
     )
+    if prepared.annotation_source:
+        resolved_job["resolved"] = {**resolved_job["resolved"], "annotationSource": prepared.annotation_source}
+    return resolved_job
 
 
 def resolve_render_job(
@@ -1341,6 +1474,42 @@ def _drawing_output_labels(job: Mapping[str, object]) -> list[str]:
     })
 
 
+def _plan_vector(value: object) -> list[float] | None:
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        return None
+    if any(isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(float(item)) for item in value):
+        return None
+    return [float(item) for item in value]
+
+
+# How far off straight down (or off +Y up) a plan view may be: rounding, never a tilt.
+_PLAN_TOLERANCE = 1e-6
+
+
+def drawing_plan_view(camera: object, label: str) -> dict[str, object]:
+    """A drawing's camera, checked: its plan view (``DRAWING_PLAN_VIEW``), or the refusal.
+
+    The window the Viewer's DXF pane shows, in the camera shape every job speaks: what a
+    Quick Edit's views carry, so ``cadgen snapshot --job`` frames each picture as the person
+    framed it. Anything else -- a preset, a tilt, a perspective -- describes a model in space.
+    """
+    if not is_plain_object(camera) or not set(camera) <= {"position", "target", "up", "orthographicHalfHeight"}:
+        raise SnapshotError(drawing_camera_refusal(label))
+    position, target = _plan_vector(camera.get("position")), _plan_vector(camera.get("target"))
+    up = _plan_vector(camera.get("up", [0, 1, 0]))
+    half = camera.get("orthographicHalfHeight")
+    if position is None or target is None or up is None or isinstance(half, bool) \
+            or not isinstance(half, (int, float)) or not math.isfinite(float(half)) or half <= 0:
+        raise SnapshotError(drawing_camera_refusal(label))
+    look = [position[axis] - target[axis] for axis in range(3)]
+    length = math.sqrt(sum(value * value for value in look))
+    up_length = math.sqrt(sum(value * value for value in up))
+    if length <= 0 or up_length <= 0 or abs(look[0]) > _PLAN_TOLERANCE * length or abs(look[1]) > _PLAN_TOLERANCE * length \
+            or look[2] <= 0 or abs(up[0]) > _PLAN_TOLERANCE * up_length or abs(up[2]) > _PLAN_TOLERANCE * up_length or up[1] <= 0:
+        raise SnapshotError(drawing_camera_refusal(label))
+    return {"position": position, "target": target, "up": [0.0, 1.0, 0.0], "orthographicHalfHeight": float(half)}
+
+
 def check_drawing_render_job(
     job: Mapping[str, object], *, input_path: Path, mode: str, **_context: object
 ) -> None:
@@ -1353,6 +1522,11 @@ def check_drawing_render_job(
     and quietly ignored. This is also the path `cadgen snapshot` routes a `.dxf`
     through, so the two cannot disagree.
 
+    What a drawing DOES take beyond its appearance is what the Viewer's DXF pane
+    can show and a Quick Edit's views carry: a plan view to frame
+    (``drawing_plan_view``), the annotation drawn over it (its marks on the sheet,
+    in drawing coordinates) and Measure's results.
+
     The flag half of the same cutover (`cadgen dxf snapshot --camera`) is
     refused while parsing, from the same sentences
     (`cadgen._internal.snapshot_door.DRAWING_RETIRED_OPTIONS`): one request, one
@@ -1361,13 +1535,17 @@ def check_drawing_render_job(
     label = input_path.name
     display = job.get("display") if is_plain_object(job.get("display")) else {}
     scene = sorted(f"display.{key}" for key in set(display) - DRAWING_DISPLAY_KEYS)
+    if job.get("preview") is not None:
+        scene.insert(0, "preview")
     if scene:
         raise SnapshotError(
             drawing_scene_refusal(", ".join(scene), label, plural=len(scene) != 1)
         )
-    if job.get("camera") is not None or _drawing_output_cameras(job):
+    if _drawing_output_cameras(job):
         raise SnapshotError(drawing_camera_refusal(label))
-    if mode != "view" or job.get("section") is not None:
+    if job.get("camera") is not None:
+        job["camera"] = drawing_plan_view(job["camera"], label)
+    if mode != "view":
         raise SnapshotError(drawing_mode_refusal(label))
     if job.get("scale") is not None:
         raise SnapshotError(
@@ -1395,11 +1573,10 @@ def check_drawing_render_job(
             f"{', '.join(sorted(DRAWING_OUTPUT_SETTINGS_KEYS))}."
         )
     # The refusals every non-STEP input shares (selection, poses, clips, videos,
-    # tessellation). Mode and section are already decided above, with a sentence
+    # tessellation). Mode is already decided above, with a sentence
     # about drawings rather than about mesh inputs.
     refuse_cad_model_requests(
         job,
-        mode=mode,
         subject="DXF drawings",
         pose_hint="a DXF drawing has no kinematics",
         tessellation_hint="a DXF drawing is line work, not a tessellated surface",
@@ -1643,12 +1820,18 @@ async def run_snapshot_async(
     kinds: Sequence[str],
     runtime_dir: Path | None = None,
     cwd: Path | None = None,
+    renderer: BatchSnapshotRenderer | None = None,
+    report: bool = True,
 ) -> SnapshotResult:
     """Render whatever ``options`` describes and report what was written.
 
     THE snapshot implementation: the CLI parses argv into ``options`` and prints
     what comes back, and the public ``<format>.snapshot()`` verbs build the same
     options object. Nothing here prints, so the two cannot report differently.
+
+    ``renderer`` is an optional browser session the caller keeps open across runs:
+    this run uses it and leaves it open. ``report=False`` paints no progress and narrates nothing, for
+    a caller that is not a terminal command.
     """
     enabled = enabled_kinds(kinds)
     with _failing_as("bad_request"):
@@ -1672,9 +1855,12 @@ async def run_snapshot_async(
     with _failing_as("input_error"):
         packet = resolve_prepared_job_packet(single, prepared)
     logger = CliLogger("snapshot", verbose=False)
-    with _failing_as("render_error"), cli_progress_line(
-        snapshot_progress_label(packet), logger=logger, fallback="Rendering..."
-    ) as sink:
+    painter = (
+        cli_progress_line(snapshot_progress_label(packet), logger=logger, fallback="Rendering...")
+        if report
+        else contextlib.nullcontext(None)
+    )
+    with _failing_as("render_error"), painter as sink:
         progress = ProgressReporter(
             sinks=[sink] if sink is not None else (),
             phases=SNAPSHOT.phases,
@@ -1684,8 +1870,9 @@ async def run_snapshot_async(
         result = await render_snapshot(
             packet,
             runtime_dir=browser_runtime_dir(runtime_dir),
+            renderer=renderer,
             progress=progress,
-            narrate=snapshot_narrator(logger),
+            narrate=snapshot_narrator(logger) if report else None,
         )
         progress.finish()
     return result

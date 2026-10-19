@@ -24,6 +24,10 @@ const EDGE_HOVER_MAX_SCREEN_DISTANCE_PX = 6;
 const EDGE_HOVER_MAX_SCREEN_DISTANCE_WITH_FACE_PX = EDGE_HOVER_MAX_SCREEN_DISTANCE_PX;
 const EDGE_PICK_PRIORITY_WITH_FACE_PX = EDGE_PICK_MAX_SCREEN_DISTANCE_WITH_FACE_PX;
 const EDGE_HOVER_PRIORITY_WITH_FACE_PX = EDGE_HOVER_MAX_SCREEN_DISTANCE_WITH_FACE_PX;
+// A finger covers far more than a cursor's point: a touch takes an edge from 20px off, and over a
+// face an edge within 16px wins.
+const EDGE_TOUCH_PICK_MAX_SCREEN_DISTANCE_PX = 20;
+const EDGE_TOUCH_PICK_PRIORITY_WITH_FACE_PX = 16;
 const HOVER_PICK_MIN_MOVE_PX = 2;
 const FINE_POINTER_TAP_SLOP_PX = 4;
 const COARSE_POINTER_TAP_SLOP_PX = 12;
@@ -219,7 +223,7 @@ export function useStepPicking({
   runtimeRef,
   mountRef,
   sceneMountRef = null,
-  previewMode,
+  preview,
   pickMode,
   selectorRuntime,
   pickableFaces,
@@ -283,18 +287,18 @@ export function useStepPicking({
   // hover tick means the select pointer lingers until the mouse happens to move.
   useEffect(() => {
     const container = mountRef.current;
-    if (!container || previewMode || pickMode !== VIEWER_PICK_MODE.MEASURE) {
+    if (!container || preview || pickMode !== VIEWER_PICK_MODE.MEASURE) {
       return undefined;
     }
     container.style.cursor = "crosshair";
     return () => {
       container.style.cursor = "";
     };
-  }, [mountRef, pickMode, previewMode, viewerReadyTick]);
+  }, [mountRef, pickMode, preview, viewerReadyTick]);
 
   useEffect(() => {
     const runtime = runtimeRef.current;
-    if (!runtime || !mountRef.current || previewMode) {
+    if (!runtime || !mountRef.current || preview) {
       onHoverReferenceChangeRef.current?.("");
       return;
     }
@@ -610,14 +614,14 @@ export function useStepPicking({
       return adjacentSelectors.includes(edgeDisplaySelector) || adjacentSelectors.includes(edgeNormalizedSelector);
     }
 
-    function pickTopologyReference(modelIntersections, clientX, clientY, { hover = false } = {}) {
+    function pickTopologyReference(modelIntersections, clientX, clientY, { hover = false, touch = false } = {}) {
       const pickableFaces = Array.isArray(pickableFacesRef.current) ? pickableFacesRef.current : [];
       const pickableEdges = Array.isArray(pickableEdgesRef.current) ? pickableEdgesRef.current : [];
       if (!pickableFaces.length && !pickableEdges.length) {
         return null;
       }
       const faceReference = pickFaceReference(modelIntersections);
-      const maxScreenDistancePx = hover
+      const maxScreenDistancePx = touch ? EDGE_TOUCH_PICK_MAX_SCREEN_DISTANCE_PX : hover
         ? (
           faceReference
             ? EDGE_HOVER_MAX_SCREEN_DISTANCE_WITH_FACE_PX
@@ -638,7 +642,7 @@ export function useStepPicking({
         }
       );
       if (faceReference && edgeCandidate) {
-        const priorityDistancePx = hover ? EDGE_HOVER_PRIORITY_WITH_FACE_PX : EDGE_PICK_PRIORITY_WITH_FACE_PX;
+        const priorityDistancePx = touch ? EDGE_TOUCH_PICK_PRIORITY_WITH_FACE_PX : hover ? EDGE_HOVER_PRIORITY_WITH_FACE_PX : EDGE_PICK_PRIORITY_WITH_FACE_PX;
         if (areFaceAndEdgeAdjacent(faceReference, edgeCandidate.reference)) {
           if (Number(edgeCandidate.screenDistance) <= priorityDistancePx) {
             return edgeCandidate.reference.id;
@@ -706,7 +710,7 @@ export function useStepPicking({
       };
     }
 
-    function pickReferenceAtPosition(clientX, clientY, { hover = false } = {}) {
+    function pickReferenceAtPosition(clientX, clientY, { hover = false, touch = false } = {}) {
       return resolveViewerReferencePick({
         pickMode: pickModeRef.current,
         suppressTopologyPicking,
@@ -714,7 +718,7 @@ export function useStepPicking({
           setPointerFromPosition(clientX, clientY);
           return intersectVisibleModelMeshes();
         },
-        pickTopology: (intersections) => pickTopologyReference(intersections, clientX, clientY, { hover }),
+        pickTopology: (intersections) => pickTopologyReference(intersections, clientX, clientY, { hover, touch }),
         pickPart: pickPartReferenceFromIntersections
       });
     }
@@ -725,7 +729,8 @@ export function useStepPicking({
       // selector runtime retired by a live scene replacement when pointer-down
       // arrives before the next hover frame.
       return String(pickReferenceAtPosition(clientX, clientY, {
-        hover: canHoverWithPointer(pointerType)
+        hover: canHoverWithPointer(pointerType),
+        touch: pointerType === "touch"
       }) || "").trim();
     }
 
@@ -1156,7 +1161,7 @@ export function useStepPicking({
     };
   }, [
     mountRef,
-    previewMode,
+    preview,
     runtimeRef,
     sceneMountRef,
     suppressTopologyPicking,

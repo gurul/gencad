@@ -28,7 +28,7 @@ each of those families with the scene builder its renderer uses
 
 The DXF slice does not even have a scene: it is a canvas painted from
 `GET /__cad/drawing`, so none of the viewport capabilities below describes it — and its
-row says so, with `assetKind: drawing` and no tools. `cadgen dxf snapshot` paints the same
+row says so, with `assetKind: drawing` and no viewport tools (its own are its renderer's). `cadgen dxf snapshot` paints the same
 payload with the same code (`@text-to-cad/core/lib/drawing2d`), so the CLI cannot produce a
 picture the pane could not.
 
@@ -41,13 +41,17 @@ format. Pure data: no behaviour, no imports beyond the format enum.
 |---|---|
 | `assetKind` | Which asset a format LOADS: `mesh`, `drawing`, `robot`. |
 | `iconKind` | The file-list glyph. |
-| `tools` | `select`, `pan`, `draw`, `orbit`, `screenshot`. Orbit and screenshot are true for every format WITH a viewport — they act on the viewport, not the geometry. `dxf` claims none of them: its pane is a canvas with no toolbar over it. |
+| `tools` | `select`, `pan`, `draw`, `orbit`, `screenshot`. Orbit and screenshot are true for every format WITH a viewport — they act on the viewport, not the geometry. `dxf` claims none of them: it has no viewport, and its tools (Select, Annotate, Measure) are its renderer's own, over a 2D canvas. |
 | `parts` | Per-part selection, hiding, isolate, assembly tree. |
 | `topology` | Face/edge/vertex references. Implies `parts`. |
-| `exploded`, `displayModes`, `clip` | STEP-tier display transforms. |
 | `params` | `sidecar` (the model's `@step(pose=...)` block), or `null`. |
 | `animations` | Has animation clips, so transport controls apply. |
 | `artifactManaged` | Builds a package before it can render. A format listed here that the backend cannot produce a package for blocks forever, so a format the viewer renders from its own file belongs out. |
+
+What a 3D file's tools and view offer — Measure, Clip, Explode, the display modes — is not
+in this table: each renderer offers its own tools ([CAD renderer](cad-renderer.md#tools-on-a-scene-of-triangles)),
+and `viewFeaturesForKind` (`@text-to-cad/core/common/viewSettings.js`) is the one rule of
+what a file's view offers, for the viewer and a snapshot alike.
 
 ### Rules
 

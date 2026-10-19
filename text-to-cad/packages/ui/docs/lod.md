@@ -42,8 +42,9 @@ Coarse geometry is a temporary preview: visible components automatically reach
 at least the standard level, preserving its angular smoothness even when
 projected chord error alone would permit a coarser mesh. Close inspection can
 request finer detail, and so does preview, which the STEP renderer draws one
-scene-quality tier up (`kit/viewport/renderProfile.js`) without changing the Display
-setting. The chrome does not report detail levels: the STEP renderer
+scene-quality tier up (`kit/viewport/previewViewScene.js`) without changing the Display
+setting: while Preview is open the loader samples Preview's camera and asks at its
+tier, both scenes reconcile the same published mesh, and only the editor's adopts it. The chrome does not report detail levels: the STEP renderer
 records first geometry and standard detail for benchmark harnesses only
 (`window.__cadViewerQuality`, `useViewportQualityStatus`), and background file
 writing stays quiet. That record lives in the STEP surface, so it takes a scheduler

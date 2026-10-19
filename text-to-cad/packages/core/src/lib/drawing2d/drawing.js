@@ -28,20 +28,27 @@
  *   screen width, as AutoCAD draws with LWDISPLAY off. Model-space widths would
  *   make a zoomed-out drawing a solid block of ink.
  *
- * Batching is per colour for strokes and per colour, per primitive for fills.
- * Strokes of one colour can share a single `Path2D` because stroking is
- * order-independent and overlap is harmless. Fills cannot: `filled-paths` is
- * filled EVEN-ODD so its inner rings punch holes, and merging two overlapping
- * regions into one path would turn their overlap into a hole as well. So the
- * fills of one colour are grouped to share a `fillStyle`, and each is still
- * filled on its own.
+ * Batching is per layer and colour for strokes, and per layer and colour, per
+ * primitive for fills. Strokes of one colour on one layer can share a single
+ * `Path2D` because stroking is order-independent and overlap is harmless; the
+ * layer is in the key so a layer hidden in the viewer is skipped whole
+ * (`hiddenLayers`). Fills cannot share a path: `filled-paths` is filled EVEN-ODD
+ * so its inner rings punch holes, and merging two overlapping regions into one
+ * path would turn their overlap into a hole as well. So the fills of one colour
+ * are grouped to share a `fillStyle`, and each is still filled on its own.
+ *
+ * Every primitive names the modelspace entity it came from (`entity`, a
+ * handle: an INSERT's for everything its block draws), and the payload lists
+ * those entities (`entities`). Besides the batches, a prepared drawing keeps an
+ * index of them (`entities`, by handle, each with the primitives it drew), which
+ * is what picks, snaps and highlights read (`entities.js`).
  */
 
 /**
  * The payload shape this module understands. Must match
  * `cadgen.drawing_payload.DRAWING_PAYLOAD_SCHEMA_VERSION`.
  */
-export const DRAWING_SCHEMA_VERSION = 2;
+export const DRAWING_SCHEMA_VERSION = 3;
 
 /** Stroke width in CSS pixels, at every zoom. */
 export const DRAWING_HAIRLINE_CSS_PX = 1.25;
@@ -71,16 +78,28 @@ const GENERIC_FAMILIES = new Set(["serif", "sans-serif", "monospace", "cursive",
  * @property {readonly number[]} transform `[a, b, c, d, e, f]`: the string's space to the drawing's.
  * @property {DrawingBounds} box A drawing-space box around the string, for skipping it off screen.
  *
+ * @typedef {object} DrawingEntity
+ * @property {string} handle  The DXF handle: the entity's id in its file.
+ * @property {string} type  Its DXF type (`LINE`, `CIRCLE`, `INSERT`…).
+ * @property {string} layer  Its own layer.
+ * @property {string} [block]  The block an INSERT places.
+ * @property {readonly number[]} [center]  A CIRCLE's or ARC's centre, `[x, y]`.
+ * @property {number} [radius]
+ * @property {object[]} primitives  What it drew: `{ type, layer, geometry }`, a text's `{ type, layer, item }`.
+ * @property {DrawingBounds|null} box
+ *
  * @typedef {object} PreparedDrawing
  * @property {number} schemaVersion
  * @property {object} units
  * @property {DrawingBounds|null} bounds
- * @property {readonly object[]} layers
- * @property {readonly { color: string|null, paths: readonly any[] }[]} fills
- * @property {readonly { color: string|null, items: readonly PreparedText[] }[]} texts
- * @property {readonly { color: string|null, path: any }[]} strokes
- * @property {readonly { color: string|null, coordinates: readonly number[] }[]} points
+ * @property {readonly { name: string, color: string|null, entities: number }[]} layers
+ * @property {ReadonlyMap<string, DrawingEntity>} entities  By handle, in the payload's order.
+ * @property {readonly { layer: string, color: string|null, paths: readonly any[] }[]} fills
+ * @property {readonly { layer: string, color: string|null, items: readonly PreparedText[] }[]} texts
+ * @property {readonly { layer: string, color: string|null, path: any }[]} strokes
+ * @property {readonly { layer: string, color: string|null, coordinates: readonly number[] }[]} points
  * @property {number} primitiveCount
+ * @property {any} Path2D  The constructor it was prepared with, for paths made later (a highlight).
  */
 
 function isArray(value) {
@@ -197,20 +216,80 @@ function prepareText(primitive, fonts, where) {
 }
 
 /**
- * Colour-keyed grouping. `null` — the default pen — is a KEY of its own, kept
- * distinct from every hex string: it is resolved at draw time and must not be
- * folded into whatever the theme's foreground happens to be right now. A Map
- * takes `null` as a key directly, so there is no sentinel string that a real
- * colour could ever collide with.
+ * Layer- and colour-keyed grouping. `null` — the default pen — is a colour of
+ * its own, kept distinct from every hex string: it is resolved at draw time and
+ * must not be folded into whatever the theme's foreground happens to be right
+ * now. Layers key a Map each, and a Map takes `null` as a key directly, so there
+ * is no sentinel string that a real colour could ever collide with.
  */
-function group(map, color) {
+function group(map, layer, color) {
+  const name = String(layer ?? "");
   const key = color === null || color === undefined ? null : String(color);
-  let entry = map.get(key);
+  let colors = map.get(name);
+  if (!colors) {
+    colors = new Map();
+    map.set(name, colors);
+  }
+  let entry = colors.get(key);
   if (!entry) {
-    entry = { color: key, items: [] };
-    map.set(key, entry);
+    entry = { layer: name, color: key, items: [] };
+    colors.set(key, entry);
   }
   return entry;
+}
+const groups = map => [...map.values()].flatMap(colors => [...colors.values()]);
+
+/** Grow `box` (`[minX, minY, maxX, maxY]`, or null) by a flat run of x, y pairs. */
+function grow(box, xs, ys) {
+  for (let index = 0; index < xs.length; index += 1) {
+    const x = xs[index], y = ys[index];
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    if (!box) box = [x, y, x, y];
+    else {
+      if (x < box[0]) box[0] = x;
+      if (y < box[1]) box[1] = y;
+      if (x > box[2]) box[2] = x;
+      if (y > box[3]) box[3] = y;
+    }
+  }
+  return box;
+}
+
+/** A primitive's coordinates as two lists, for its entity's box. */
+function primitiveCoordinates(type, geometry) {
+  const xs = [], ys = [];
+  const pairs = numbers => { for (let index = 0; index + 1 < numbers.length; index += 2) { xs.push(numbers[index]); ys.push(numbers[index + 1]); } };
+  if (type === "lines") for (const line of geometry) pairs(line);
+  else if (type === "point") pairs(geometry);
+  else if (type === "path") for (const command of geometry) pairs(command.slice(1));
+  else if (type === "filled-paths") for (const commands of geometry) for (const command of commands) pairs(command.slice(1));
+  else if (type === "filled-polygon") for (const vertex of geometry) pairs(vertex);
+  return [xs, ys];
+}
+
+/** The payload's `entities`, checked, as records keyed by handle. */
+function entityIndex(rows) {
+  if (!isArray(rows)) {
+    throw new Error(`A drawing payload's \`entities\` must be an array; received ${describe(rows)}.`);
+  }
+  const index = new Map();
+  rows.forEach((row, position) => {
+    const handle = typeof row?.handle === "string" ? row.handle : "";
+    if (!handle || index.has(handle)) {
+      throw new Error(`entities[${position}]: an entity is { handle, type, layer } with a unique handle; received ${describe(row)}.`);
+    }
+    index.set(handle, {
+      handle,
+      type: String(row.type || ""),
+      layer: String(row.layer ?? ""),
+      ...(row.block ? { block: String(row.block) } : {}),
+      ...(isArray(row.center) && row.center.length === 2 && row.center.every(Number.isFinite) ? { center: [row.center[0], row.center[1]] } : {}),
+      ...(Number.isFinite(row.radius) ? { radius: row.radius } : {}),
+      primitives: [],
+      box: null
+    });
+  });
+  return index;
 }
 
 /**
@@ -253,6 +332,7 @@ export function prepareDrawing(payload, { Path2D: injectedPath2D } = {}) {
   const fonts = payload.fonts.map((row, index) => cssFont(row, `fonts[${index}]`));
 
   const PathCtor = resolvePath2D(injectedPath2D);
+  const entities = entityIndex(payload.entities);
   const strokeGroups = new Map();
   const fillGroups = new Map();
   const textGroups = new Map();
@@ -262,8 +342,13 @@ export function prepareDrawing(payload, { Path2D: injectedPath2D } = {}) {
     const where = `primitives[${index}]`;
     const type = primitive?.type;
     const geometry = primitive?.geometry;
+    const layer = String(primitive?.layer ?? "");
+    const entity = typeof primitive?.entity === "string" && primitive.entity ? entities.get(primitive.entity) : null;
+    if (primitive?.entity && !entity) {
+      throw new Error(`${where}: drawn by entity ${describe(primitive.entity)}, which the payload's \`entities\` does not list.`);
+    }
     if (type === "lines") {
-      const entry = group(strokeGroups, primitive.color);
+      const entry = group(strokeGroups, layer, primitive.color);
       if (!entry.path) {
         entry.path = new PathCtor();
       }
@@ -272,7 +357,7 @@ export function prepareDrawing(payload, { Path2D: injectedPath2D } = {}) {
         entry.path.lineTo(line[2], line[3]);
       }
     } else if (type === "path") {
-      const entry = group(strokeGroups, primitive.color);
+      const entry = group(strokeGroups, layer, primitive.color);
       if (!entry.path) {
         entry.path = new PathCtor();
       }
@@ -282,22 +367,32 @@ export function prepareDrawing(payload, { Path2D: injectedPath2D } = {}) {
       for (const commands of geometry) {
         appendPath(path, commands, where);
       }
-      group(fillGroups, primitive.color).items.push(path);
+      group(fillGroups, layer, primitive.color).items.push(path);
     } else if (type === "filled-polygon") {
       const path = new PathCtor();
       appendPolygon(path, geometry);
-      group(fillGroups, primitive.color).items.push(path);
+      group(fillGroups, layer, primitive.color).items.push(path);
     } else if (type === "point") {
-      const entry = group(pointGroups, primitive.color);
+      const entry = group(pointGroups, layer, primitive.color);
       entry.items.push(geometry[0], geometry[1]);
     } else if (type === "text") {
-      group(textGroups, primitive.color).items.push(prepareText(primitive, fonts, where));
+      const item = prepareText(primitive, fonts, where);
+      group(textGroups, layer, primitive.color).items.push(item);
+      if (entity) {
+        entity.primitives.push({ type, layer, item });
+        entity.box = grow(entity.box, [item.box[0], item.box[2]], [item.box[1], item.box[3]]);
+      }
+      return;
     } else {
       throw new Error(
         `${where}: unknown drawing primitive type ${describe(type)}. A cadgen drawing payload at `
         + `schemaVersion ${DRAWING_SCHEMA_VERSION} carries only "point", "lines", "path", `
         + '"filled-paths", "filled-polygon" and "text".'
       );
+    }
+    if (entity) {
+      entity.primitives.push({ type, layer, geometry });
+      entity.box = grow(entity.box, ...primitiveCoordinates(type, geometry));
     }
   });
 
@@ -306,11 +401,13 @@ export function prepareDrawing(payload, { Path2D: injectedPath2D } = {}) {
     units: payload.units || null,
     bounds,
     layers: isArray(payload.layers) ? payload.layers : [],
-    fills: [...fillGroups.values()].map((entry) => ({ color: entry.color, paths: entry.items })),
-    texts: [...textGroups.values()].map((entry) => ({ color: entry.color, items: entry.items })),
-    strokes: [...strokeGroups.values()].map((entry) => ({ color: entry.color, path: entry.path })),
-    points: [...pointGroups.values()].map((entry) => ({ color: entry.color, coordinates: entry.items })),
-    primitiveCount: primitives.length
+    entities,
+    fills: groups(fillGroups).map((entry) => ({ layer: entry.layer, color: entry.color, paths: entry.items })),
+    texts: groups(textGroups).map((entry) => ({ layer: entry.layer, color: entry.color, items: entry.items })),
+    strokes: groups(strokeGroups).map((entry) => ({ layer: entry.layer, color: entry.color, path: entry.path })),
+    points: groups(pointGroups).map((entry) => ({ layer: entry.layer, color: entry.color, coordinates: entry.items })),
+    primitiveCount: primitives.length,
+    Path2D: PathCtor
   };
 }
 
@@ -422,11 +519,15 @@ function drawTexts(ctx, groups, { device, foreground, visible }) {
  * exactly anyway; fills first is the one ordering that never hides an edge or
  * a word, and text before strokes keeps the order text had as filled glyphs.
  *
+ * A layer named in `hiddenLayers` is not drawn: the viewer's Layers section turns
+ * one off as a CAD program does, whatever entity drew on it.
+ *
  * @param {CanvasRenderingContext2D} ctx
  * @param {PreparedDrawing} drawable
- * @param {{ transform: DrawingTransform, foreground: string, pixelRatio?: number }} options
+ * @param {{ transform: DrawingTransform, foreground: string, pixelRatio?: number,
+ *   hiddenLayers?: ReadonlySet<string> | null }} options
  */
-export function drawDrawing(ctx, drawable, { transform, foreground, pixelRatio = 1 }) {
+export function drawDrawing(ctx, drawable, { transform, foreground, pixelRatio = 1, hiddenLayers = null }) {
   if (!transform || !(transform.scale > 0)) {
     throw new Error(`drawDrawing needs a transform with a positive scale; received ${describe(transform)}.`);
   }
@@ -444,27 +545,32 @@ export function drawDrawing(ctx, drawable, { transform, foreground, pixelRatio =
   ctx.setTransform(...device);
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
+  const shown = hiddenLayers?.size ? entry => !hiddenLayers.has(entry.layer) : null;
+  const fills = shown ? drawable.fills.filter(shown) : drawable.fills;
+  const texts = shown ? drawable.texts.filter(shown) : drawable.texts;
+  const strokes = shown ? drawable.strokes.filter(shown) : drawable.strokes;
+  const points = shown ? drawable.points.filter(shown) : drawable.points;
 
-  for (const { color, paths } of drawable.fills) {
+  for (const { color, paths } of fills) {
     ctx.fillStyle = color || foreground;
     for (const path of paths) {
       ctx.fill(path, "evenodd");
     }
   }
 
-  if (drawable.texts.length) {
-    drawTexts(ctx, drawable.texts, { device, foreground, visible: visibleBox(ctx, transform, pixelRatio) });
+  if (texts.length) {
+    drawTexts(ctx, texts, { device, foreground, visible: visibleBox(ctx, transform, pixelRatio) });
     ctx.setTransform(...device);
   }
 
   ctx.lineWidth = DRAWING_HAIRLINE_CSS_PX / scale;
-  for (const { color, path } of drawable.strokes) {
+  for (const { color, path } of strokes) {
     ctx.strokeStyle = color || foreground;
     ctx.stroke(path);
   }
 
   const radius = DRAWING_POINT_RADIUS_CSS_PX / scale;
-  for (const { color, coordinates } of drawable.points) {
+  for (const { color, coordinates } of points) {
     ctx.fillStyle = color || foreground;
     for (let index = 0; index < coordinates.length; index += 2) {
       ctx.beginPath();

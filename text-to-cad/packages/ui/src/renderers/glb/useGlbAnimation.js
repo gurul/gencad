@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import {
   advanceAnimationElapsed, animationNowMs, clampAnimationElapsed, clampAnimationSpeed
@@ -19,16 +19,16 @@ function clipRows(document) {
 const REST = Object.freeze({ activeClipId: "", enabled: false, playing: false, elapsedSec: 0, speed: 1, loopEnabled: true });
 
 /**
- * The file's glTF clips as the kit playbar's runtime, driven by this renderer's
+ * The file's glTF clips as the kit's routine runtime, driven by this renderer's
  * own clock: ONE `AnimationMixer` on the native scene, alive only while a routine
- * owns the pose. The file opens at rest with no mixer at all, so the playbar
- * appearing under the model changes nothing on screen; the mixer is built by the
+ * owns the pose. The file opens at rest with no mixer at all, so preview's Animation
+ * row appearing changes nothing on screen; the mixer is built by the
  * first play, scrub or clip choice, and disposing it restores every animated
  * property to the value it had at rest.
  *
  * @param {object | null} document  The native GLB document on screen.
  * @param {() => void} requestRender  Asks the viewport for a frame.
- * @returns the playbar runtime, or null for a file without playable clips.
+ * @returns the routine runtime, or null for a file without playable clips.
  */
 export function useGlbAnimation(document, requestRender) {
   const clock = useMemo(() => createAnimationClock(), []);
@@ -45,7 +45,8 @@ export function useGlbAnimation(document, requestRender) {
     stateRef.current = next;
     setState(next);
   }, []);
-  useEffect(() => {
+  // At rest for every document, before anything (an Autoplay) plays it.
+  useLayoutEffect(() => {
     clock.resetAnimationClock();
     update({ ...REST, activeClipId: clips[0]?.id || "" });
   }, [document, clips, clock, update]);
@@ -69,7 +70,7 @@ export function useGlbAnimation(document, requestRender) {
     clock.resetAnimationClock();
     update({ enabled: true, playing: false, elapsedSec: 0 });
   }, [clock, update]);
-  // Leaving preview: stopped, rewound and at rest, the mixer gone; the routine, speed and loop stay.
+  // Putting the routine down: stopped, rewound and at rest, the mixer gone; the routine, speed and loop stay.
   const onRelease = useCallback(() => {
     if (!stateRef.current.enabled && !stateRef.current.playing) return;
     clock.resetAnimationClock();

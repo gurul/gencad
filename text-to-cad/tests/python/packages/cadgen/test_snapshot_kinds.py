@@ -231,14 +231,15 @@ class GeneratedHelpTests(unittest.TestCase):
 
     def test_step_only_options_appear_for_the_step_door(self):
         step_help = door_help("step")
-        for present in ("--kinematics", "--animation", "--time", "--focus", "section", "--view-labels"):
+        for present in ("--kinematics", "--animation", "--time", "--focus", "--view-labels"):
             self.assertIn(present, step_help)
 
-    def test_display_is_the_one_view_option_on_every_door_that_has_a_scene(self):
+    def test_display_grid_and_preview_are_the_view_options_on_every_door_that_has_a_scene(self):
         for door in SCENE_DOORS:
             with self.subTest(door=door):
                 text = door_help(door)
-                self.assertIn("--display", text)
+                for present in ("--display", "--grid", "--preview"):
+                    self.assertIn(present, text)
                 self.assertNotIn("--render", text)
                 self.assertNotIn("--theme", text)
                 self.assertNotIn("--appearance", text)
@@ -249,7 +250,7 @@ class GeneratedHelpTests(unittest.TestCase):
         # is left when everything else has no meaning.
         text = door_help("dxf")
         self.assertIn("--appearance", text)
-        for absent in ("--display", "--camera", "--mode", "--view-labels", "--render", "--theme"):
+        for absent in ("--display", "--grid", "--preview", "--camera", "--mode", "--view-labels", "--render", "--theme"):
             self.assertNotIn(absent, text, f"{absent} describes a scene a drawing does not have")
 
     def test_every_door_takes_its_target_and_output_positionally(self):

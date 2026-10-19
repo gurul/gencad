@@ -173,12 +173,11 @@ selection, panel and tool behavior is shared. Public declarations, styles and wo
 package. See `docs/shell.md` for the host boundary and `docs/storage.md` for
 browser persistence. CAD control guidance lives with the UI package.
 
-`vite.config.mjs` adds the shared `@text-to-cad/ui/drawing-assets` plugin so the
-Excalidraw editor in `@text-to-cad/ui/drawing` never fetches a font from a CDN:
-`drawing-assets.js` and `excalidraw/` are served in dev and emitted into
-`dist/`. The 12 MB Xiaolai CJK family is excluded from this build to keep the
-wheel small; CJK text falls back to a system font. See
-[drawing](../../packages/ui/docs/drawing.md#offline-assets-and-upgrades).
+`vite.config.mjs` names the build, for the version the app menu shows (`__TEXT_TO_CAD_BUILD__`,
+from `@text-to-cad/ui/build-id`): none for the release's own build, whose
+environment names its version in `TEXT_TO_CAD_RELEASE` (the release workflow's bundle
+step), so it shows `v0.7.15`; for any other build, `vite dev` included, the commit of
+this checkout, with `-dirty` when it had uncommitted changes: `v0.7.15-dev.b80844940`.
 
 ## Testing
 
@@ -214,30 +213,33 @@ the UI package's asset documentation for asset provenance and regeneration.
 
 The shared [viewer design system](../../packages/ui/docs/settings-ui.md) is the
 authoritative contract for the [toolbar](../../packages/ui/docs/settings-ui.md#tools-and-lifecycle),
-[tool stack and mobile layout](../../packages/ui/docs/settings-ui.md#the-tool-stack),
+[file sidebar and mobile layout](../../packages/ui/docs/settings-ui.md#the-file-sidebar-and-the-tool-stack),
 settings controls, selection and
-[preview](../../packages/ui/docs/settings-ui.md#camera-animation-and-preview).
+[Preview](../../packages/ui/docs/settings-ui.md#camera-animation-and-preview).
 Keep those rules there rather than maintaining a separate web layout
 specification.
 
 The web host owns URL/history, the tab's persistence, appearance, version links
 and native service adapters. Shared renderers own all model interaction. STEP and
-robots open in Select, whose Features (Links for a robot) panel hangs under the
-toolbar with the rest of the tool stack; Position's panel replaces it while Position
-is the tool. The file's name in the navbar opens the explorer.
-STEP and robot files have a top-left toolbar; GLB, STL and 3MF have none. Every 3D
-file has Display (its settings, a dropdown that opens down) and Preview at the navbar's
-right end, the view cube at the bottom-left, and Quick Edit at the top-right. DXF is a 2D canvas with
-pan, zoom, snapshot and Quick Edit, without a 3D toolbar or tool stack.
+robots open in Select, its selection filter the chevron after its button; the tool in hand's
+controls are one row under the strip. An assembly's Features (Links for a robot), Position
+and an SDF's metadata are the file sidebar's, a tile each at the top-left, whatever the tool. The
+file's name in the navbar opens the explorer.
+STEP and robot files have tools on a strip at the top centre; GLB, STL and 3MF have none,
+a GLB's clips or not.
+Every 3D file's strip ends in Display (its settings, a popover that opens down) and
+Preview, with the view cube at the bottom-right and Quick Edit at the top-right. DXF is a
+2D canvas with pan, zoom, snapshot and Quick Edit, without a 3D toolbar or file sidebar.
 
 The explorer is a popover under the file's name: the file's folder, one folder at a
-time, with "Filter files..." to find a file anywhere under it. Below 720px of
-FileViewer width the tree panel of the tool stack starts closed (Select, pressed,
-opens it). Preview is the shared shell's button beside Display: it takes the whole page,
-hiding the navbar, toolbar, tool stack and
-Quick Edit, orbits by default, plays routines (on entry only with Autoplay on)
-and keeps its own controls where the navbar's sat — Orbit, Display, Exit preview — with
-the routines and their Playback settings on the playbar; the host passes no preview props.
+time, with "Filter files..." to find a file anywhere under it. Below 600px of
+FileViewer width (a phone) the chrome is touch-sized and the file sidebar's tiles lead the tool strip. Preview is the shared shell's button after Display on the strip: it takes the whole page,
+hiding the navbar, the tool strip and Quick Edit, opens still (Orbit, in its settings, is
+off at every entry), draws the model in Render — the one place it is drawn — and keeps its
+own controls in the view's top-right corner: Preview settings (Orbit, then Render's settings)
+and Exit preview, with the file sidebar's Position and Animation at its top-left. Routines play
+from the sidebar's Animation section, in either view (in Preview, on entry only with
+Autoplay on); the host passes no Preview props.
 The file on screen keeps its view in the tab — its camera, Display settings
 (explode and clip included) and pose — so a refresh restores it; leaving the file for
 another or for the home drops it, and opening it again frames it anew (see
@@ -277,17 +279,23 @@ exposes no general write operations.
 The prompt destination is the clipboard, so Quick Edit offers Copy Prompt alone. Its
 text goes through the clipboard port's `writeText`, which takes pending text: a
 `ClipboardItem` holding the promise, so the write starts inside the gesture, or the
-text itself once it arrives where the browser takes no pending item. A sketch is
-saved through the host's `attachments` (`createHttpAttachmentStore`, over
-`POST /__cad/sketches`) and named in the text by its absolute path.
+text itself once it arrives where the browser takes no pending item. At the press,
+the server prepares a packet through the host's `promptFiles` (`createHttpPromptFiles`,
+over `/__cad/prompt-files`), with shared annotation and measurements, the current
+view and distinct drawn views. Up to 1024 bytes of compact UTF-8 JSON goes directly
+into the prompt; larger packets are written as `.snapshot.json` and named by absolute path.
+No snapshot is written while drawing or typing, and no image is rendered.
 
 ### The home
 
 The bare URL is the home: the library of models every CAD view shares
 (`@text-to-cad/ui/library`), and Open, the desktop's file chooser (`POST /__cad/pick`),
 where the server's computer has one (`serverInfo.pick`). From a file, Back to files in
-the menu the navbar's C logo opens leads back to it. Under the home's wordmark are GitHub,
-Discord and X. A `?file=` that names nothing there shows "File does not exist",
+the menu the navbar's C logo opens leads back to it. The home has the same navbar, its C
+menu (without Back to files) at the left and the update button at the right while a newer
+text-to-cad is out; under its wordmark are GitHub, Discord and X. The home is a step of
+the browser's history, as a file is: the browser's Back and Forward walk between them (the
+navbar draws no arrows of its own here). A `?file=` that names nothing there shows "File does not exist",
 with Go home.
 
 The home reads the library over `GET /__cad/recents`, pins, unpins and removes over
@@ -314,12 +322,6 @@ builds wrote (`@text-to-cad/core/source-maps`). The wheel
 leaves the maps out and a release uploads them to PostHog, and the page
 carries each chunk's id by file name (`__cadChunkIds`), and a frame names its chunk by it. The server holds all of it as counts in memory
 -- a file once a day, by its format, never its name -- and sends them every few minutes.
-
-The app menu's **Quick edit** (on until the person turns it off) is read and changed
-the same way: the client's `features`, through `/__cad/features` (`cadgen/features.py`).
-The server keeps the choice in the person's settings, beside the analytics answer, so it is
-one choice with the CAD app's and holds whatever port this Viewer is served on, which the
-page's own storage would not.
 
 ### File storage and host actions
 
@@ -351,12 +353,12 @@ The Viewer has the one navbar every app shares (see
 [the host contract](../../packages/ui/docs/viewer-host.md#host-chrome-slots)): at the
 left the C logo, which opens the app menu, then the open file's name, which opens the
 explorer, with its ⋯; at the right only the blue update button, while a newer text-to-cad
-is out. The app menu holds Back to files (the home), the person's settings (Share
-usage stats, Quick edit), Send feedback (a new issue titled "Feedback: "),
+is out. The app menu holds Back to files (the home), the person's settings (Share anonymous usage data), Send feedback (a new issue titled "Feedback: "),
 GitHub, Discord and, in gray, the version (a link to its release notes) and "Made by @…"
-(X), as in the CAD app; the home shows GitHub, Discord and X under its wordmark instead.
-Display and Preview are the view's, last at the navbar's right. This host
-supplies the links (`src/host/viewerLinks.js`): its version, the GitHub (where new
+(X), as in the CAD app, over a file and on the home alike.
+Display and Preview are the view's, at the navbar's right end. This host
+supplies the links (`src/host/viewerLinks.js`): its version (with its build's id,
+`v0.7.15-dev.b80844940`, for any build but the release's own), the GitHub (where new
 issues open) and Discord its build names (`VIEWER_GITHUB_URL`, `VIEWER_DISCORD_URL`);
 links open in a new tab. A newer text-to-cad is the blue update button's, at the navbar's right as in the CAD app: cadgen's
 daily version check, read from `/__cad/version` with the server's description as the page
@@ -364,9 +366,8 @@ starts (`main.tsx`) and again whenever the person comes back to it, and its prom
 the person to paste into their agent's chat; its full install instructions open in a new tab.
 A Viewer the CAD server opens says what the server's channel allows (a store's copy hears nothing);
 one a skill opens names no channel, a skills-only install, which is told. Browser titles use "CAD | <filename>", or "CAD" when no file is selected.
-Appearance is injected as an icon-bearing dropdown beside Projection in Display's
-Display section, below the full-width Mode selector (`ViewerAppearance`,
-through `displayActions`). The original animated mark remains the shared LoadingIcon
+Appearance (System, Light, Dark) is the app menu's Theme row, the tab's choice (`colorScheme`,
+over a file and on the home); the page has no light/dark button of its own. The original animated mark remains the shared LoadingIcon
 for loading states. The C and CAD marks are the UI package's; the favicons are this
 app's, exported alongside the docs brand assets. See
 [the brand recipe](../../scripts/brand/README.md).

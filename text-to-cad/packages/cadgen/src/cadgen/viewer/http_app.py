@@ -264,12 +264,14 @@ class CadApp:
         from cadgen._internal.picker import available
 
         from .drawings import DrawingRenders
+        from .prompt_files import PromptFiles
         from .surfaces import SurfaceSubscribers
         from .warm import CatalogWarmer
 
         self.surface_subscribers = SurfaceSubscribers()
         # The drawing route's renders, off the request and one per drawing (``drawings.py``).
         self.drawings = DrawingRenders(on_crash=lambda error: self._crashed(error, bugs_only=True))
+        self.prompt_files = PromptFiles()
         # What a watched build saves, its catalog row computed before a read asks (``warm.py``).
         self.catalog_warm = CatalogWarmer()
         self.start = to_posix_path(os.path.abspath(start if start is not None else _working_folder()))
@@ -314,7 +316,8 @@ class CadApp:
         """``SourceReloader``'s idle gate: nothing this restart would destroy -- no request
         in flight, no compile the build route started and left running, and no drawing it is
         rendering."""
-        return self.busy_requests() == 0 and not self.ops.client.any_in_flight() and not self.drawings.any_in_flight()
+        return (self.busy_requests() == 0 and not self.ops.client.any_in_flight()
+                and not self.drawings.any_in_flight())
 
     # --- server info ------------------------------------------------------
 
@@ -409,9 +412,7 @@ class CadApp:
         an ordinary static server: serve the file if the bundle has it,
         otherwise fall back to index.html — EXCEPT under ``/assets/``, where a
         miss must be a 404 rather than HTML, or a stale hashed bundle reference
-        turns into an ES-module parse error instead of a readable status. The
-        drawing editor's fonts under ``/excalidraw/`` are the same: a family the
-        bundle leaves out must read as missing, not as an HTML "font".
+        turns into an ES-module parse error instead of a readable status.
         """
         if not self.dist_dir:
             # No built client. Answering here rather than joining against an
@@ -433,7 +434,7 @@ class CadApp:
             return
         if self._serve_file(response, file_path, content_type_for_static_asset(file_path)):
             return
-        if request_path.startswith(("/assets/", "/excalidraw/")):
+        if request_path.startswith("/assets/"):
             response.send_plain(404, "Not found")
             return
         index_html = os.path.join(self.dist_dir, "index.html")
@@ -511,6 +512,8 @@ class CadApp:
                     response.send_json(200, self.build_status(query.get("file") or "", after=query.get("after")))
                 elif pathname == "/__cad/drawing":
                     self._handle_drawing(request, response, query)
+                elif pathname == "/__cad/prompt-files" or pathname.startswith("/__cad/prompt-files/"):
+                    self._handle_prompt_files_get(request, response, pathname, query)
                 elif pathname == "/__cad/store":
                     self._handle_store_asset(request, response, query)
                 elif pathname == "/__cad/asset":
@@ -521,6 +524,10 @@ class CadApp:
                     from cadgen import features
 
                     response.send_json(200, features.read())
+                elif pathname == "/__cad/language":
+                    from cadgen import language
+
+                    response.send_json(200, language.read())
                 elif pathname == "/__cad/version":
                     response.send_json(200, self._version())
                 else:
@@ -565,6 +572,14 @@ class CadApp:
                         response.send_empty(413, [("connection", "close")])
                         return
                     response.send_json(200, features.change(json.loads(request.body() or b"{}")))
+                elif pathname == "/__cad/language":
+                    # The app menu's Language: the person's choice, one for every CAD view (``cadgen/language.py``).
+                    from cadgen import language
+
+                    if int(request.headers.get("content-length") or 0) > 4096:
+                        response.send_empty(413, [("connection", "close")])
+                        return
+                    response.send_json(200, language.change(json.loads(request.body() or b"{}")))
                 elif pathname == "/__cad/recents":
                     if int(request.headers.get("content-length") or 0) > _LIBRARY_BODY_LIMIT:
                         response.send_empty(413, [("connection", "close")])
@@ -598,13 +613,23 @@ class CadApp:
                         return
                     copy_png(request.body())
                     response.send_empty(204)
-                elif pathname == "/__cad/sketches":
-                    # A Quick Edit's sketch, saved for a copied prompt to name (`sketches.py`).
-                    from .sketches import MAX_PNG_BYTES as MAX_SKETCH_BYTES, save_sketch
-                    if int(request.headers.get("content-length") or 0) > MAX_SKETCH_BYTES:
+                elif pathname == "/__cad/prompt-files":
+                    from .prompt_files import MAX_BODY_BYTES
+                    if int(request.headers.get("content-length") or 0) > MAX_BODY_BYTES:
                         response.send_empty(413, [("connection", "close")])
                         return
-                    response.send_json(200, {"ok": True, "path": save_sketch(request.body(), str(query.get("name") or ""))})
+                    status, body = self.prompt_files.create(request.body())
+                    response.send_json(status, body)
+                elif pathname == "/__cad/prompt-files/save":
+                    from .prompt_files import MAX_BODY_BYTES
+                    if int(request.headers.get("content-length") or 0) > MAX_BODY_BYTES:
+                        response.send_empty(413, [("connection", "close")])
+                        return
+                    try:
+                        status, body = self.prompt_files.save(request.body())
+                    except ValueError as error:
+                        status, body = 400, {"ok": False, "error": str(error)}
+                    response.send_json(status, body)
                 elif pathname == "/__cad/surfaces":
                     if int(request.headers.get("content-length") or 0) > 128 * 1024:
                         response.send_empty(413, [("connection", "close")])
@@ -839,16 +864,37 @@ class CadApp:
             return
         response.send_json(status, body)
 
+    def _handle_prompt_files_get(self, request, response, pathname, query):
+        """Read a prompt JSON file; every request carries the viewer guard."""
+        if not request.header(POST_GUARD_HEADER):
+            response.send_json(403, {"ok": False, "error": f"missing {POST_GUARD_HEADER} header; send '{POST_GUARD_HEADER}: 1'"})
+            return
+        if pathname == "/__cad/prompt-files":
+            response.send_json(404, {"ok": False, "error": "Not found"})
+            return
+        found = self.prompt_files.file(pathname[len("/__cad/prompt-files/"):])
+        if found is None:
+            response.send_json(404, {"ok": False, "error": "Not found"})
+            return
+        data, content_type = found
+        response.send_bytes(200, data, content_type, RAW_FILE_HEADERS)
+
     def _handle_asset(self, request, response, query):
-        candidate = asset_path(query.get("file") or "")
-        stat_result = None
-        if candidate:
-            try:
-                stat_result = os.stat(candidate)
-            except (OSError, ValueError):
-                stat_result = None
-        if not candidate or stat_result is None or not stat.S_ISREG(stat_result.st_mode):
-            response.send_json(404, {"error": "Not found"})
+        """A CAD file's bytes, by absolute path. A 404 names the path and why: the page shows the
+        sentence as the reason a model did not load (a robot's missing link mesh among them), and a
+        bare "Not found" left nothing to fix."""
+        ref = query.get("file") or ""
+        candidate = asset_path(ref)
+        if not candidate:
+            response.send_json(404, {"error": f"{ref} is not a file the viewer sends: it sends CAD files "
+                                              f"({_CAD_EXTENSIONS}) whose names are not hidden"})
+            return
+        try:
+            stat_result = os.stat(candidate)
+        except (OSError, ValueError):
+            stat_result = None
+        if stat_result is None or not stat.S_ISREG(stat_result.st_mode):
+            response.send_json(404, {"error": f"No file at {candidate}"})
             return
         content_type = content_type_for_path(candidate)
         response.stream_file(candidate, stat_result, content_type, RAW_FILE_HEADERS)

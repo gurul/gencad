@@ -270,3 +270,28 @@ test("buildMeshDataFromThreeMfGroup keeps authored colors when mixed with genera
   assert.equal(meshData.parts[0].color, "");
   assert.equal(meshData.parts[1].color, "#ff0000");
 });
+
+test("a 3MF's objects are known by their place in its build, and its unit is the one its model declares", async () => {
+  const THREE = await import("three");
+  const { zipSync, strToU8 } = await import("three/examples/jsm/libs/fflate.module.js");
+  const { declared3MfUnit } = await import("./threeMfMeshData.js");
+  const { buildMeshScene } = await import("./meshScene.js");
+  // As three's loader builds it: one child per build item; a component object one child per
+  // component; an object's meshes under the object's own group.
+  const object = (name) => { const group = new THREE.Group(); group.name = name; group.add(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial())); return group; };
+  const root = new THREE.Group();
+  const composite = new THREE.Group();
+  composite.add(object("wheel"), object("wheel"));
+  root.add(object("frame"), composite);
+  const meshData = { ...buildMeshDataFromThreeMfGroup(THREE, root), unit: "inch" };
+  // A box is six material groups: six ranges of one object, one place.
+  assert.deepEqual([...new Set(meshData.parts.map(part => part.path.join(".")))], ["1", "2.1", "2.2"]);
+  const scene = buildMeshScene(THREE, meshData);
+  assert.deepEqual(scene.units, { unit: "in", perWorld: 1 });
+  assert.deepEqual(["o1", "o2.1", "o2.2"].map(path => scene.describePart(path).name), ["frame", "wheel (o2.1)", "wheel (o2.2)"]);
+  assert.deepEqual(scene.describePart("o2.2").facts.map(fact => fact.value), ["2, component 2", "12"]);
+  scene.dispose();
+
+  const model = unit => zipSync({ "3D/3dmodel.model": strToU8(`<?xml version="1.0"?>\n<model ${unit} xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources/></model>`) });
+  assert.deepEqual(await Promise.all([model('unit="inch"'), model("")].map(declared3MfUnit)), ["inch", "millimeter"]);
+});

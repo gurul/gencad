@@ -228,6 +228,23 @@ export function screenDimensionLayout(segments, camera, rect) {
   };
 }
 
+const segmentDistance = (point, start, end) => {
+  const dx = end.x - start.x, dy = end.y - start.y;
+  const t = Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / ((dx * dx + dy * dy) || 1)));
+  return Math.hypot(point.x - (start.x + dx * t), point.y - (start.y + dy * t));
+};
+
+/**
+ * Whether a point (the layout's pixels) is on a drawn dimension: within `tolerance` of its
+ * dimension line or a witness line, or over its label.
+ */
+export function dimensionLayoutHit(layout, point, tolerance = 6) {
+  if (!layout || !point) return false;
+  const lines = [layout.dimensionLine, ...layout.witnesses];
+  if (lines.some(([start, end]) => segmentDistance(point, start, end) <= tolerance)) return true;
+  return Math.abs(point.x - layout.label.x) <= 36 && Math.abs(point.y - layout.label.y) <= 12;
+}
+
 function strokeSegment(context, start, end) {
   context.beginPath();
   context.moveTo(start.x, start.y);
@@ -387,7 +404,7 @@ export function drawMeasureSnapMarker(context, point, { snapKind = "free", now =
   if (!context || !point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
     return;
   }
-  const snapped = snapKind === "vertex" || snapKind === "edge" || snapKind === "face";
+  const snapped = snapKind === "vertex" || snapKind === "edge" || snapKind === "face" || snapKind === "center";
   const color = snapped ? MEASURE_SNAP_COLOR : MEASURE_SNAP_FREE_COLOR;
   const { x, y } = point;
 
@@ -428,6 +445,11 @@ export function drawMeasureSnapMarker(context, point, { snapKind = "free", now =
     context.lineTo(x, y + 4.2);
     context.lineTo(x - 4.2, y);
     context.closePath();
+    context.stroke();
+  } else if (snapKind === "center") {
+    // A circle's or arc's centre: a ring round the crosshair's point.
+    context.beginPath();
+    context.arc(x, y, 4, 0, Math.PI * 2);
     context.stroke();
   }
   context.restore();
@@ -472,4 +494,69 @@ export function drawMeasureSnapChip(context, point, text, {
   context.textAlign = "left";
   context.fillText(text, x + 7, y + (height / 2));
   context.restore();
+}
+
+
+// ---- a measurement as a prompt and a snapshot carry it ----------------------------------------
+
+/**
+ * A measurement as Quick Edit hands it on and a snapshot job draws it (`measurements`): the two
+ * ends its dimension is drawn between (a face-to-face reading's along the faces' normal), its words
+ * as the viewer labels it, and its colour. World coordinates, the model's own units.
+ * @typedef {{ start: [number, number, number], end: [number, number, number], label: string, color: string }} MeasurementMark
+ */
+const MARK_KEYS = new Set(["start", "end", "label", "color"]);
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+export const MAX_MEASUREMENT_MARKS = 64;
+
+/** A taken measurement (`{ pickA, pickB, measurement, colorIndex }`) as a mark; null when it has no ends. */
+export function measurementMark(item) {
+  const ends = dimensionEndpoints(item?.pickA, item?.pickB, item?.measurement);
+  if (!ends) return null;
+  return { start: ends.start.map(Number), end: ends.end.map(Number), label: measureLabelText(item.measurement),
+    color: measureSeriesColor(item?.colorIndex) };
+}
+
+const finiteTriple = value => Array.isArray(value) && value.length === 3 && value.every(Number.isFinite);
+
+/**
+ * A job's `measurements`, checked: a list of marks, each `{start, end, label, color}`, at most
+ * `MAX_MEASUREMENT_MARKS`. Throws `measurements: [i].start …`, by what is wrong.
+ * @returns {MeasurementMark[]}
+ */
+export function normalizeMeasurementMarks(value) {
+  if (!Array.isArray(value)) throw new Error("measurements: a list of {start, end, label, color}");
+  if (value.length > MAX_MEASUREMENT_MARKS) throw new Error(`measurements: at most ${MAX_MEASUREMENT_MARKS}`);
+  return value.map((mark, index) => {
+    const at = `measurements: [${index}]`;
+    if (!mark || typeof mark !== "object" || Array.isArray(mark)) throw new Error(`${at} is {start, end, label, color}`);
+    const unknown = Object.keys(mark).filter(key => !MARK_KEYS.has(key));
+    if (unknown.length) throw new Error(`${at} has unknown field(s): ${unknown.join(", ")}`);
+    for (const key of ["start", "end"]) if (!finiteTriple(mark[key])) throw new Error(`${at}.${key} is [x, y, z]`);
+    if (typeof mark.label !== "string") throw new Error(`${at}.label is its words`);
+    if (typeof mark.color !== "string" || !HEX_COLOR.test(mark.color)) throw new Error(`${at}.color is #rrggbb`);
+    return { start: [...mark.start], end: [...mark.end], label: mark.label, color: mark.color };
+  });
+}
+
+/** Where a mark's dimension falls on a screen `rect` seen by `camera` (`screenSpaceDimensionLayout`); null off it. */
+export function measurementMarkLayout(mark, camera, rect) {
+  return mark ? screenSpaceDimensionLayout({ point: mark.start }, { point: mark.end }, null, camera, rect) : null;
+}
+
+/**
+ * A mark's dimension drawn as the viewer draws a taken measurement: in its colour, the one in hand
+ * (`active`) full and labelled, the others fainter and lighter. The viewer's overlay and a
+ * snapshot's picture draw with this one function.
+ */
+export function drawMeasurementMark(context, layout, mark, { active = true, bounds = null } = {}) {
+  drawMeasureDimension(context, layout, {
+    color: mark.color,
+    alpha: active ? 1 : MEASURE_DIMENSION_FADED_ALPHA,
+    lineWidth: active ? 2.6 : 1.4,
+    witnessWidth: active ? 1.6 : 1,
+    ringRadius: active ? 4 : 3,
+    label: active ? mark.label : "",
+    bounds
+  });
 }

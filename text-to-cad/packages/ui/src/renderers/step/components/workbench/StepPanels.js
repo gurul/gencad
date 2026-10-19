@@ -1,10 +1,8 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import { buildPositionSection } from './MotionControlsSection.js';
-import { STEP_MODEL_ROOT_ID } from '@text-to-cad/core/lib/step/stepTree.js';
-import { useStepReference } from './StepReferenceSection.js';
+import { useStepReferenceChips } from './StepReferenceSection.js';
 import ModelingTree from './ModelingTree.jsx';
 import ToolPanel from '../../../kit/tools/ToolPanel.jsx';
-import { useStepModeling } from '../../workbench/useStepModeling.js';
 import { stepGeometryMeasurements } from '../../workbench/stepGeometryMeasurements.js';
 const EMPTY = [];
 
@@ -30,58 +28,15 @@ function useLatestActions(actions) {
 }
 
 /**
- * A STEP's panels in the tool stack, top to bottom: while Select is the tool, **Features** (the
- * filter and the model tree) and the **Reference** for what is selected; while Position is the
- * tool, **Position**. Each stays mounted while its tool is not
- * up, so the tree keeps its expansion, filter and scroll. The kept effects' panels follow them
- * (`ModelTools.jsx`); the stack itself is the shell's (`kit/shell/RendererShell.jsx`).
- *
- * `selectActive`: Features is on screen, which is when recognition is worth running and a pick
- * is scrolled to. `selectMode` is the Select tool's mode, which the tree's disclosure follows.
+ * What is selected, as Quick Edit's chips (`useStepReferenceChips`): each face, edge or run of them
+ * named after its part as the tree names that part, with its key measurements for its card — a
+ * part's or subassembly's size from the boxes of the parts it is made of. `onRemove(ids)` and
+ * `onHover(target)` are the host's: what a chip's X drops and what resting on it lights.
  */
-export function useStepPanels({
-  client, selectActive, positionActive, selectedEntry, viewerLoading,
-  geometryInspection = null, stepTreeRoot, isAssemblyView = false,
-  selectedMeshData = null,
-  selectedPartIds = EMPTY, selectedReferenceIds = EMPTY, selectedReferences = EMPTY,
-  hiddenPartIds = EMPTY, focusedNodeIds = EMPTY, selectableNodeIds = null,
-  expandedTreeNodeIds = EMPTY, onToggleTreeNode,
-  activeTreeNodeScrollKey = '', onSelectTreeNode, onSelectReferenceGroup, onClearSelection,
-  onFocusTreeNode, onUnfocusTreeNode, onExitAllIsolate, onTogglePartVisibility,
-  onCopySelection, onHoverTreeNode, showAllHiddenParts,
-  // The Reference panel's Copy (Copy All): `{ label, shortcut, onCopy }`, or null with nothing to copy.
-  selectionCopy = null,
-  // The menus a tree row carries: a part's descriptor per node, a feature's per set of faces
-  // and edges (the viewport's menu over that topology), and the one set of actions behind both.
-  menuForNode = null, menuForReferences = null, partMenuActions = null,
-  treeSelectionDisabled = false, selectMode = 'all', loadingGeometry = false,
-  positionRuntime = null, selectModeMenu = null, onClosePosition = null,
-  // The viewport's hover (`workbench/hoverStore.js`): a large tree under Faces or Edges asks for the
-  // topology of the part the pointer rests on.
-  hoverStore = null,
-}) {
-  const recognitionKey = `${selectedEntry?.file}:${geometryInspection?.revision}`;
-  const [recognitionRequest, setRecognitionRequest] = useState({ key: recognitionKey, ids: EMPTY });
-  const requestedOccurrenceIds = recognitionRequest.key === recognitionKey ? recognitionRequest.ids : EMPTY;
-  const onRequestRecognition = useCallback((ids) => setRecognitionRequest(current => (
-    current.key === recognitionKey && current.ids.length === ids.length && current.ids.every((id, index) => id === ids[index])
-      ? current : { key: recognitionKey, ids }
-  )), [recognitionKey]);
-  const modeling = useStepModeling(selectedEntry, selectActive && !treeSelectionDisabled && !viewerLoading, { client, requestedOccurrenceIds });
-  const modelReferences = geometryInspection?.references || EMPTY;
+export function useStepSelectionChips({ stepTreeRoot, selectedMeshData = null, geometryInspection = null, references = EMPTY,
+  onRemove = null, onHover = null, copyText = null }) {
   const modelParts = geometryInspection?.parts || EMPTY;
-  const measuredSelection = useMemo(() => ({
-    faceIds: selectedReferences.filter(ref => ref.selectorType === 'face').map(ref => ref.id),
-    partIds: [...new Set([
-      ...(selectedPartIds || []).flatMap(id => id === STEP_MODEL_ROOT_ID ? modelParts.map(part => part.id) : modelParts.some(part => part.id === id) ? [id] : []),
-      ...selectedReferences.filter(ref => ref.selectorType === 'occurrence' && modelParts.some(part => part.id === ref.id)).map(ref => ref.id),
-    ])],
-  }), [selectedReferences, selectedPartIds, modelParts]);
-  const measurements = useMemo(() => stepGeometryMeasurements(measuredSelection, modelReferences, modelParts), [measuredSelection, modelReferences, modelParts]);
-  // A part's or a subassembly's own size, from the boxes of the parts it is made of: the browsed
-  // one's in a multi-selection, where the selection's size is all of them together.
   const partsSize = useCallback(ids => stepGeometryMeasurements({ partIds: ids }, EMPTY, modelParts).size, [modelParts]);
-  // A face or edge is named after its part as the tree names that part.
   const partNames = useMemo(() => {
     const names = new Map();
     const visit = node => { if (!node) return; if (node.id) names.set(String(node.id), String(node.displayName || node.name || '').trim()); (node.children || EMPTY).forEach(visit); };
@@ -89,44 +44,73 @@ export function useStepPanels({
     return names;
   }, [stepTreeRoot]);
   const partName = useCallback(id => partNames.get(String(id || '')) || '', [partNames]);
-  const reference = useStepReference({ references: selectedReferences, meshData: selectedMeshData, measurements, partsSize, partName });
+  const remove = useLatestCallback(onRemove), hover = useLatestCallback(onHover);
+  return useStepReferenceChips({ references, meshData: selectedMeshData, partsSize, partName, onRemove: remove, onHover: hover, copyText });
+}
+
+/**
+ * A STEP's sections in the file sidebar, top to bottom, whatever the tool: an assembly's
+ * **Features** (the filter and the model tree; a part file, whose tree would be its one row, has
+ * none, and Select's filter is the chevron after its button on the strip), then **Position**, its
+ * joints, where it has any. What is picked is Quick Edit's to show, as chips
+ * (`useStepSelectionChips`). Null where there is neither: no sidebar. The kept effects' panels are
+ * the tool stack's (`kit/tools/model-effects/ModelTools.jsx`); the sidebar itself is the shell's
+ * (`kit/shell/RendererShell.jsx`).
+ *
+ * `selectActive`: Features is on screen, which is when a pick is scrolled to. `selectMode` is the
+ * Select tool's geometry, which the tree's disclosure follows. Setting a Position control puts any
+ * other motion at rest (the motion hook's `claimPosition`); pressing one sets nothing.
+ */
+export function useStepPanels({
+  selectActive, selectedEntry, viewerLoading,
+  geometryInspection = null, stepTreeRoot, isAssemblyView = false,
+  selectedPartIds = EMPTY, selectedReferences = EMPTY,
+  hiddenPartIds = EMPTY, focusedNodeIds = EMPTY, selectableNodeIds = null,
+  expandedTreeNodeIds = EMPTY, onToggleTreeNode,
+  activeTreeNodeScrollKey = '', onSelectTreeNode, onClearSelection,
+  onFocusTreeNode, onUnfocusTreeNode, onExitAllIsolate, onTogglePartVisibility,
+  onHoverTreeNode, showAllHiddenParts,
+  // The menu a tree row carries: a node's part menu descriptor, and the actions behind it.
+  menuForNode = null, partMenuActions = null,
+  treeSelectionDisabled = false, selectMode = 'all', loadingGeometry = false,
+  positionRuntime = null, positionChanged = false,
+  // The viewport's hover (`workbench/hoverStore.js`): a large tree under Faces or Edges asks for the
+  // topology of the part the pointer rests on.
+  hoverStore = null,
+}) {
   // What every tree row is handed, the same object until something in it changes: the host's
   // actions behind stable identities, its menus and state as they are.
   const toggleTreeNode = useLatestCallback(onToggleTreeNode), selectTreeNode = useLatestCallback(onSelectTreeNode);
   const focusTreeNode = useLatestCallback(onFocusTreeNode), unfocusTreeNode = useLatestCallback(onUnfocusTreeNode);
   const exitAllIsolate = useLatestCallback(onExitAllIsolate), togglePartVisibility = useLatestCallback(onTogglePartVisibility);
-  const showAll = useLatestCallback(showAllHiddenParts), copySelection = useLatestCallback(onCopySelection);
+  const showAll = useLatestCallback(showAllHiddenParts);
   const hoverTreeNode = useLatestCallback(onHoverTreeNode);
-  // A row's menu is built when it opens, from the host's descriptors as they are then.
-  const nodeMenu = useLatestCallback(menuForNode), referencesMenu = useLatestCallback(menuForReferences);
+  // A row's menu is built when it opens, from the host's descriptor as it is then.
+  const nodeMenu = useLatestCallback(menuForNode);
   const menuActions = useLatestActions(partMenuActions);
   const partControls = useMemo(() => ({ isAssemblyView, hiddenPartIds, focusedNodeIds, selectableNodeIds, expandedTreeNodeIds,
     onToggleTreeNode: toggleTreeNode, onSelectTreeNode: selectTreeNode, onFocusTreeNode: focusTreeNode, onUnfocusTreeNode: unfocusTreeNode,
-    onExitAllIsolate: exitAllIsolate, onTogglePartVisibility: togglePartVisibility, showAllHiddenParts: showAll, onCopySelection: copySelection,
-    onHoverTreeNode: hoverTreeNode, menuForNode: nodeMenu, menuForReferences: referencesMenu, partMenuActions: menuActions }), [isAssemblyView,
+    onExitAllIsolate: exitAllIsolate, onTogglePartVisibility: togglePartVisibility, showAllHiddenParts: showAll,
+    onHoverTreeNode: hoverTreeNode, menuForNode: nodeMenu, partMenuActions: menuActions }), [isAssemblyView,
     hiddenPartIds, focusedNodeIds, selectableNodeIds, expandedTreeNodeIds, toggleTreeNode, selectTreeNode, focusTreeNode, unfocusTreeNode,
-    exitAllIsolate, togglePartVisibility, showAll, copySelection, hoverTreeNode, nodeMenu, referencesMenu, menuActions]);
+    exitAllIsolate, togglePartVisibility, showAll, hoverTreeNode, nodeMenu, menuActions]);
   const loadTopology = useLatestCallback(geometryInspection?.onLoadTopology);
-  const selectReferenceGroup = useLatestCallback(onSelectReferenceGroup), clearSelection = useLatestCallback(onClearSelection);
-  const closePosition = useLatestCallback(onClosePosition);
+  const clearSelection = useLatestCallback(onClearSelection);
   if (!selectedEntry) return null;
-  const selectionDetails = selectedReferences.length || measuredSelection.partIds.length ? reference : null;
   const position = buildPositionSection({ poseRuntime: positionRuntime });
+  if (!isAssemblyView && !position) return null;
+  const disabled = treeSelectionDisabled || viewerLoading;
   return <>
-    {/* Features, then the Reference for a selection: both the tree's, which knows what is picked in it. */}
-    <ModelingTree key={`${selectedEntry.file}:${geometryInspection?.revision}`}
-      modeling={modeling} stepRoot={stepTreeRoot} active={selectActive} mode={selectMode} modeMenu={selectModeMenu} loading={loadingGeometry}
-      onRequestRecognition={onRequestRecognition}
-      disabled={treeSelectionDisabled || viewerLoading}
-      references={modelReferences} selectedReferences={selectedReferences}
-      selectedReferenceIds={selectedReferenceIds} selectedPartIds={selectedPartIds}
-      selectionDetails={selectionDetails} selectionCopy={selectionCopy} activeTreeNodeScrollKey={activeTreeNodeScrollKey}
-      onLoadTopology={loadTopology} onSelect={selectReferenceGroup} onClearSelection={clearSelection}
+    {isAssemblyView ? <ModelingTree key={`${selectedEntry.file}:${geometryInspection?.revision}`}
+      stepRoot={stepTreeRoot} active={selectActive} mode={selectMode} loading={loadingGeometry} disabled={disabled}
+      selectedReferences={selectedReferences} selectedPartIds={selectedPartIds} activeTreeNodeScrollKey={activeTreeNodeScrollKey}
+      onLoadTopology={loadTopology} onClearSelection={clearSelection}
       partControls={partControls} hoverStore={hoverStore}
-    />
-    {/* Headed "Position" with its Reset; sized like the tree: its content's height, up to half the stack. */}
-    {/* Its X puts Position down, back to Select; the values stay. */}
-    {position ? <ToolPanel id="position" title={position.title} actions={position.actions} label="Position controls" fit="details" resizable
-      collapsible={false} onClose={closePosition} closeLabel="Close position" hidden={!positionActive}>{position.content}</ToolPanel> : null}
+    /> : null}
+    {/* Headed "Position"; its Pose row's Default puts the joints back. Another tool puts Position
+        down, and the values stay. */}
+    {position ? <ToolPanel id="position" title={position.title} label="Position controls" fit="details" changed={positionChanged}>
+      {position.content}
+    </ToolPanel> : null}
   </>;
 }

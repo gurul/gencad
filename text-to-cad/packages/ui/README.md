@@ -10,7 +10,7 @@ FileViewer over a CAD client, with the five CAD renderers, the home (the model
 library) and the standard loading and missing-file pages. `apps/web` and `apps/mcp` consume both through the package's compiled
 exports; a host's own project, session and window layout remains application code.
 
-The viewer's tools, tool stack, settings, tooltips and keyboard follow one
+The viewer's tools, file sidebar, settings, tooltips and keyboard follow one
 binding [design system](docs/settings-ui.md), the same in both apps. A change to
 that chrome changes the design system first. Desktop's surrounding app controls
 remain local where their appearance differs.
@@ -56,18 +56,18 @@ File-tab chrome uses normal-weight type. The navbar's file name, the explorer's 
 the model tree's rows, and filter matches use muted/primary text color for emphasis,
 never bold weight. The explorer's rows are compact 24px lines in 12px text, the size of
 the section titles and the filter above them, a folder opening inline under itself; the
-tool stack's trees (Features, Links) are 24px lines in the panels' smaller 11px text
-([the tool stack](docs/settings-ui.md#the-tool-stack)). Both inset
+file sidebar's trees (Model tree, Links) are 24px lines in its smaller 11px text
+([the file sidebar](docs/settings-ui.md#the-file-sidebar-and-the-tool-stack)). Both inset
 row backgrounds 4px from their horizontal edges, including selected, hovered and
 filtered rows; nesting adds indentation inside that gutter.
 The file explorer is a popover under the navbar's file name (`FolderExplorer.jsx`):
 18rem wide, no taller than 28rem or the room below it, with no resize handle. It
 floats over the view and never resizes it or moves its tools. A file's controls are
-panels of the viewer's own tool stack under the toolbar, one width for every panel
-until a person sizes one, bounded by the viewer's height. FileViewer is mobile below
-720px of its own width; progress indicators use this same breakpoint. Panels never
-scroll sideways: a Position panel's labels truncate to preserve its sliders and
-inputs.
+the viewer's own: the tool strip at the view's top centre, the tool in hand's sub-toolbar
+under it, and the file sidebar's tiles at its top-left, a section's panel under them bounded by the viewer's height.
+FileViewer is mobile below 600px of its own width; progress indicators use this same
+breakpoint. The sidebar never scrolls sideways: Position's labels truncate to preserve its
+sliders and inputs.
 
 React, ReactDOM, Three.js and Lucide are host-supplied peers. React 18 and 19
 are supported: web and desktop use React 19.3.0. Each
@@ -78,14 +78,14 @@ these peers are not bundled into UI.
 ```text
 src/
   host/              explicit host ports, prompt actions and React binding
-  drawing/           reusable Excalidraw editor; desktop scratch drawing host
+  annotation/        Annotate's session, toolbar and ink geometry (its 3D ink is renderers/kit/tools/annotate)
   cad-viewer/        CadViewer (FileViewer + the five CAD renderers + the home), and a CAD client as a FileSource
   file-viewer/       FileViewer, typed source/renderer contracts, the document lifecycle hook
     navigation/     the navbar, the app menu and its links, the folder explorer, the file menu
   library/           a host's home: the models opened before, to open again, and their pictures
   renderers/
     kit/            the frame every viewer file shares: viewport, tools, panels, Display settings, status
-    step/           STEP: Features tree, Position, routines, feature recognition
+    step/           STEP: model tree, Position, routines
     robot/          URDF, SRDF and SDF: Position and Links
     glb/, mesh/     GLB, and STL/3MF triangle meshes
     dxf/            2D drawings
@@ -134,7 +134,7 @@ const renderers = [createStepRenderer({ client, preferences }), createDxfRendere
 
 Public entry points include `/host`, `/file-viewer`, `/tab-store`, `/navigation`, `/renderers/step`,
 `/renderers/dxf`, `/renderers/glb`, `/renderers/mesh`, `/renderers/robot`, `/renderers/workspace`, `/file-viewer/presentation`, `/file-viewer/empty`,
-`/cad-viewer`, `/catalog`, `/links`, `/library`, `/consent` (the app menu's Share usage stats row and its state), `/features` (the app menu's feature rows: `useFeatures`), `/drawing`, `/loading-icon`, `/utils`, `/primitives/*`,
+`/cad-viewer`, `/catalog`, `/links`, `/library`, `/consent` (the app menu's Share anonymous usage data row and its state), `/loading-icon`, `/utils`, `/primitives/*`,
 `/tokens.css`, and `/styles.css`. `/catalog` (a CAD client as a `FileSource`, the file menu's
 Copy path and Reveal, and the one spelling of an absolute path: `normalizePath`, `baseName`,
 `joinPath`) and `/links` (the navbar's link defaults) are pure modules, with no React, for a
@@ -155,12 +155,8 @@ const host = { files: createCadFileSource(client), clipboard, promptContext, env
 Declarations are owned here; apps need no ambient shims or aliases into this
 source tree.
 
-`/drawing` is a separate lazy entry point for the Excalidraw editor, for temporary
-sketches, with no platform discovery or persistent storage. Desktop owns its temporary Drawing tabs,
-in-memory scene retention and prompt delivery; the viewer's Draw tool mounts the
-same editor as an overlay in both apps.
-Read [drawing](docs/drawing.md) before extending this editor or reusing it for
-viewer annotations.
+The viewer's Annotate tool is native ink projected into the model, with no drawing
+SDK and no persistent storage. Read [annotation](docs/annotation.md) before extending it.
 
 The required host contract, typed prompt bundles, delivery receipts and host
 chrome slots are documented in [viewer host](docs/viewer-host.md). Clipboard
@@ -193,9 +189,6 @@ bounded cache. They retain exact decoded component buffers and copy structural
 metadata for each mount; scene objects, controls and pending work are not cached.
 Reuse is scoped to workspace, resource-provider generation and file revision. See
 [CAD resource lifetime](docs/cad-renderer.md) for cache bounds and invalidation.
-The Features tree can reuse those accepted component identities for completed
-recognition metadata after the runtime descriptor also matches, avoiding surface
-requests on a warm reopen without retaining another copy of the geometry.
 
 The host owns where state lives; the package owns what it is. Everything the
 viewer keeps is one tab record (`@text-to-cad/ui/tab-store`: the tab's settings and
@@ -240,42 +233,46 @@ may rely on.
 ## CAD document updates
 
 The STEP renderer consumes the artifact, its schema-9 `.step.json`
-sidecar and immutable store views. Embedded animation, authored appearance and
-kinematics travel in the sidecar; an adjacent `.step.js` is a retired input.
+sidecar and immutable store views. Embedded JavaScript animation, authored appearance and
+kinematics travel in the sidecar, the one file read beside the document.
 The scene uses progressive component loading and demand-driven exact surfaces.
-The Model tree shares the explorer's row and filter primitives. Its visible expansion
-controls viewport selection, exact topology and optional feature recognition;
-collapsed parts do not trigger whole-assembly analysis, and neither does its
-filter, which searches names without expanding anything. Contextual measurements
-remain available in Render too. See [model tree and recognition](docs/cad-renderer.md#step-panels)
-for selection, isolation, demand and cache ownership.
+The Model tree shares the explorer's row and filter primitives. Its rows are the
+STEP's assemblies and parts, a part a leaf whose faces and edges the viewport picks;
+its expansion controls viewport selection and exact topology, and its filter searches
+names without expanding anything. See [the model tree](docs/cad-renderer.md#step-panels) for selection, isolation
+and demand.
 
-Feature detection stays client-side in this renderer, separate from cadgen
-compilation, Python inspection and reference syntax. Both apps reuse its worker
-and versioned, bounded memory cache; it adds no persistent store. Read
-[feature detection](docs/feature-detection.md) before changing inference rules,
-cache identity, cancellation or recognition limits.
-
-A CAD file's controls are `ToolPanel`s in the tool stack, shown by the tool they
-belong to. Select shows Features (a robot's Links) and, with a selection, the Reference; Position shows Position; Display and Draw show
-their own panels; kept effects (Explode, Clip, Measure's results) follow. A panel
-whose tool is not up stays mounted, hidden, so a tree keeps its scroll and expansion;
-only what is on screen does background work. The tree's X closes it alone (Select stays
-the tool, marked) until a press on Select brings it back; it starts closed for a single
-part and on a phone, open for an assembly, until a person chooses.
-The tree, the Reference and Position are each sized by their own bottom-right grip, Quick
-Edit's. SDF metadata is a Select panel
-too. Links is the description's link tree, with the Model tree's rows, filter
-and Reference panel; see [robot links](docs/cad-renderer.md#robot-links).
+A CAD file's controls are the shell's chrome over the viewport. The tool strip at the top
+centre holds the file's tools — a STEP's Select (its selection filter the chevron after it),
+Annotate, Measure, Explode and Clip; a robot's Select, Annotate, Measure and Clip; a GLB's
+Select (its nodes), Annotate, Measure, Explode (several parts) and Clip; a 3MF's Select (its
+objects), Annotate, Measure and Clip; an STL's Annotate and Clip — then, after a thin rule, a
+3D view's Display (its settings, a popover that opens down) and Preview. The tool in hand's
+controls are one row under the strip, its sub-toolbar (`kit/tools/SubToolbar.jsx`):
+Annotate's tools, style and history; Explode's and Clip's slider rows.
+What there is to read of the file is the file sidebar at the top-left, whatever the tool
+(`kit/tools/FileSidebar.jsx`): an assembly's Model tree, a robot's Links, Position, an SDF's
+metadata, and Animation for a file with routines, a tile each at the top-left, a tile opening its
+section in a panel under them, one at a time; each section's panel is sized from its
+bottom-right grip, Quick Edit's, and keeps its own size. On a phone it is one tile, opening one panel with the sections as tabs. Sidebar sections stay mounted, so a tree keeps its scroll and expansion;
+only what is on screen does background work. What is picked is Quick Edit's chips. Links is
+the description's link tree, with the Model tree's rows and search box; see
+[robot links](docs/cad-renderer.md#robot-links).
 The binding [viewer design system](docs/settings-ui.md) defines tool lifecycle,
-the tool stack, mobile layout, section density, keyboard scope, tooltips
-and preview. RendererShell owns the top-left toolbar, Quick Edit at the top-right, the
-bottom-left cube, and a 3D view's controls, which it draws at the navbar's right end:
-Display (its settings, a dropdown that opens down), then Preview. Preview is the shell's own
-mode, where routines play and the model orbits, and takes the whole page, the navbar with
-it; its own controls sit at the view's top-right, on the navbar's geometry — Orbit, then
-Display where it sat in the navbar, then Exit preview where Preview sat — and its playbar
-holds the routines at its left end and their settings at its right. Keep app-specific
+the file sidebar, mobile layout, section density, keyboard scope, tooltips
+and Preview. RendererShell owns the strip and its sub-toolbar at the top centre, the file
+sidebar, Quick Edit at the top-right and the cube at the bottom-right. Preview (preview
+mode) is the shell's own, the one place Render is drawn — whatever the file's display mode,
+which has no Render — and takes the whole page, the navbar and the strip with it; its own
+controls stand in the view's top-right corner — Preview settings (Orbit, off at every entry,
+and its speed, then Render's settings) and Exit preview — and the file sidebar offers its
+Position and Animation alone at the top-left; nothing sits under the model. Routines play from
+the sidebar's Animation section, in either view. Preview and the tools view are two views,
+each with its own viewport, scene, camera, pose and routine over the page's one GPU device:
+Preview starts from the model as authored and leaves the tools view's state untouched, and
+leaving it throws Preview's away and gives the tools view back exactly as it was
+([Preview](docs/settings-ui.md#camera-animation-and-preview); its mechanism,
+[Preview and the camera](docs/cad-renderer.md#preview-and-the-camera)). Keep app-specific
 effects in the [host contract](docs/viewer-host.md), not in renderer components.
 
 One per-file settings store serves controls, live commands and persistence.
@@ -290,17 +287,19 @@ is no Materials editor or persisted material override. See [View styles](docs/re
 [progressive detail](docs/lod.md).
 
 The navbar leads with the C logo, which opens the app's menu: Back to files where the host
-has a home, the person's settings (Share usage stats, Quick edit), Send feedback
+has a home, the person's settings (Share anonymous usage data), Send feedback
 (a new issue titled "Feedback: " where the host has a tracker), GitHub, Discord and, in
 gray, the version and who made it. Where the host keeps the view's own history (the CAD
 app's views), Back and Forward follow, disabled where they have nowhere to go. It names the
 file — the name opens the explorer — and offers its ⋯ menu (Copy path, Reveal). They share one look: transparent until the
 pointer is on them or their menu is open, with no tooltip. At the right is only what a host
 or a file adds: the host's update button, a dismissed alert's icon, the host's Full size
-and, last, a 3D view's Display and Preview.
-With no file a view shows the host's home, the model library: the models opened before,
-pinned first, with their pictures, and Open where the host has a file chooser, under its
-wordmark and GitHub, Discord and X. A file that
+and, last, the view's own controls (a 3D view's Display and Preview). With no file a view
+shows the host's home, the model library, under the same navbar (its logo and menu, without
+Back to files, Back and Forward where the host keeps the view's history, and the host's
+update and Full size): its wordmark, byline and GitHub,
+Discord and X, then the models opened before, pinned first, with their pictures, and Open
+where the host has a file chooser. A file that
 does not exist shows "File does not exist" and its path, and any other failure to open
 "Could not open that file" and why, each with Go home where the host has a home. A
 renderer's loading and update status is its own, in its viewport. An error appears as a
@@ -310,4 +309,5 @@ icon, the first of the navbar's right-hand controls after the update button whil
 away, brings it back.
 Retry reloads only the selected renderer; Report Issue, where the host has a tracker, opens a
 new issue titled "Issue: ", labelled `bug`, filled in from the card, with the file's name and
-no path of the machine.
+no path of the machine. The card's Details have a copy icon at their top-right corner, which
+copies all of them through the host's clipboard.

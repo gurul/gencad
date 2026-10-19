@@ -287,8 +287,13 @@ def parse_selector(
     )
 
 
-def normalize_selector_list(raw_selector_list: str) -> list[str]:
-    normalized: list[str] = []
+def parse_selector_list(raw_selector_list: str) -> list[ParsedSelector | None]:
+    """Each comma-separated selector, parsed in order; None where one is empty.
+
+    A bare entity inherits the occurrence or label named before it, so ``o1.2,f3`` is
+    ``o1.2`` and ``o1.2.f3``.
+    """
+    parsed_list: list[ParsedSelector | None] = []
     inherited_occurrence_id = ""
     inherited_label = ""
     for raw_selector in str(raw_selector_list or "").split(","):
@@ -297,9 +302,9 @@ def normalize_selector_list(raw_selector_list: str) -> list[str]:
             inherited_occurrence_id=inherited_occurrence_id,
             inherited_label=inherited_label,
         )
+        parsed_list.append(parsed)
         if parsed is None:
             continue
-        normalized.append(parsed.canonical)
         # Whichever naming scheme the selector used becomes the context for the bare entity
         # selectors that follow it, and clears the other one.
         if parsed.occurrence_id:
@@ -308,7 +313,11 @@ def normalize_selector_list(raw_selector_list: str) -> list[str]:
         elif parsed.label:
             inherited_label = parsed.label
             inherited_occurrence_id = ""
-    return normalized
+    return parsed_list
+
+
+def normalize_selector_list(raw_selector_list: str) -> list[str]:
+    return [parsed.canonical for parsed in parse_selector_list(raw_selector_list) if parsed is not None]
 
 
 def build_cad_token(cad_path: str, selector: str = "") -> str:

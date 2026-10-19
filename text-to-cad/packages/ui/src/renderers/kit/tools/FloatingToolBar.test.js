@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import FloatingToolBar from './FloatingToolBar.js';
+import FloatingToolBar, { touchStripFit } from './FloatingToolBar.js';
 import { render, elements } from '../../../../scripts/reactHarness.mjs';
 
 const tool = (id, extra = {}) => ({ id, label: id.toUpperCase(), icon: null, onSelect() {}, ...extra });
 const buttons = tree => elements(tree).filter(node => typeof node.props.label === 'string');
-const marks = tree => elements(tree).filter(node => node.props['data-tool-panel-closed'] !== undefined);
 
 test('the strip draws the tools it is handed, in order, and knows none by name', () => {
   const view = render(FloatingToolBar, { tools: [tool('b', { active: true }), tool('a', { disabled: true })] });
@@ -27,23 +26,17 @@ test('every press reaches onSelect, and a press is all a tool is: no tool opens 
   active.props.onClick();
   assert.deepEqual(pressed, ['plain', 'active', 'active'], 'a press on an active tool is the tool\'s too');
   assert.equal(active.props['aria-description'], 'described');
-  assert.deepEqual(marks(view.tree), [], 'no corner mark: no tool has a closed panel');
   assert.equal([plain, active].some(node => node.props.onPointerDown || node.props.onKeyDown), false);
   view.unmount();
 });
 
-test('a tool whose panel is closed carries the corner mark at its bottom-right, out of the accessibility tree; a press is still only its own', () => {
-  const pressed = [];
-  const view = render(FloatingToolBar, { tools: [tool('select', { active: true, panelClosed: true, description: 'Tree closed', onSelect: () => pressed.push('select') }), tool('draw')] });
-  const [select, draw] = buttons(view.tree);
-  const [mark] = marks(view.tree);
-  assert.ok(mark, 'the closed panel\'s tool is marked');
-  assert.equal(mark.props['aria-hidden'], 'true');
-  assert.match(mark.props.className, /\babsolute bottom-0 right-0\b/);
-  assert.equal(marks(view.tree).length, 1, 'and only that tool');
-  assert.equal(select.props['aria-description'], 'Tree closed');
-  assert.equal(draw.props['aria-description'], undefined);
-  select.props.onClick();
-  assert.deepEqual(pressed, ['select']);
-  view.unmount();
+test('a phone\'s strip keeps its 36px tiles in one row and hands what does not fit, from its end, to More', () => {
+  // A STEP's strip: Select with its filter's chevron, five more tools, then Display and Preview (a host with no navbar).
+  const entries = [{ width: 56, view: false }, ...Array(5).fill({ width: 36, view: false }), { width: 36, view: true }, { width: 36, view: true }];
+  // A 375px phone (the column 359px): everything fits, no More.
+  assert.equal(touchStripFit(entries, 359), 8);
+  // A 320px phone (304px): Select and the next three tools, then More (the last tool, Display, Preview).
+  assert.equal(touchStripFit(entries, 304), 5);
+  // Narrower still: fewer tools before More.
+  assert.equal(touchStripFit(entries, 200), 3);
 });
