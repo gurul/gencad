@@ -1,5 +1,0 @@
-name = "PcbProofs"
-defaultTargets = ["PcbProofs"]
-
-[[lean_lib]]
-name = "PcbProofs"
