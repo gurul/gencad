@@ -26,6 +26,11 @@ class PrVersionGuardTests(unittest.TestCase):
         self.git("config", "user.name", "Version guard test")
         self.git("config", "user.email", "version-guard@example.invalid")
         self.git("config", "core.hooksPath", str(self.root / "no-hooks"))
+        # No git process outlives a command here: a detached auto-gc or auto-maintenance (git 2.55,
+        # on CI) still writing into .git when the directory is removed fails the cleanup.
+        self.git("config", "gc.auto", "0")
+        self.git("config", "gc.autoDetach", "false")
+        self.git("config", "maintenance.auto", "false")
         self.write_version("0.5.0")
         self.commit("Initial release")
         self.git("tag", "v0.5.0")

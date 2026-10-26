@@ -21,7 +21,7 @@ function library(models: LibraryModel[], extra: Partial<ModelLibrarySource> = {}
   };
 }
 
-it('heads the home with the TEXTTOCAD wordmark over GitHub, Discord and X, the host\'s update button first when there is one; no tagline', async () => {
+it('heads the home with the TEXTTOCAD wordmark over GitHub, Discord and X and nothing else (the update, Full size and theme are the navbar\'s); no tagline', async () => {
   const links = { version: '0.7.4', release: 'r', x: 'https://x.com/earthtojake', github: 'https://github.com/earthtojake/text-to-cad', discord: 'https://discord.gg/x',
     issues: 'https://github.com/earthtojake/text-to-cad/issues/new' };
   render(<ModelLibrary library={library([])} links={links} />);
@@ -31,16 +31,8 @@ it('heads the home with the TEXTTOCAD wordmark over GitHub, Discord and X, the h
   expect([...nav.querySelectorAll('a, button')].map(node => [node.getAttribute('aria-label'), node.getAttribute('href')]))
     .toEqual([['GitHub', links.github], ['Discord', links.discord], ['X', links.x]]);
   expect(screen.queryByText('Build things')).toBeNull();
-  cleanup();
-  // The host's update button, while its install is behind: a row of its own above the links, labeled
-  // Update, its card centred; its Full size, last in the links, where it shows the view small.
-  const Update = ({ labeled = false, align = 'end' }: { labeled?: boolean; align?: string }) =>
-    <button type="button" aria-label="Update to 0.7.5" data-align={align}>{labeled ? 'Update' : null}</button>;
-  render(<ModelLibrary library={library([])} links={links} update={<Update />} fullSize={<button type="button" aria-label="Full size" />} />);
-  const row = await screen.findByRole('navigation', { name: 'CAD links' });
-  expect([...row.querySelectorAll('a, button')].map(node => node.getAttribute('aria-label'))).toEqual(['GitHub', 'Discord', 'X', 'Full size']);
-  const update = document.querySelector('[data-library-update] button')!;
-  expect([update.textContent, update.getAttribute('data-align'), update.closest('[data-library-update]')!.nextElementSibling]).toEqual(['Update', 'center', row]);
+  // The links row is followed straight by Recent Files: no update row.
+  expect(nav.nextElementSibling?.querySelector('h1')?.textContent).toBe('Recent Files');
 });
 
 it('offers Open only where the host has a chooser, and opens and pins through the host', async () => {

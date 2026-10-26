@@ -65,8 +65,8 @@ def validate(
         return failed(target, "file not found")
     try:
         xml_text = target.read_text(encoding="utf-8")
-    except OSError as exc:
-        return failed(target, str(exc))
+    except (OSError, UnicodeDecodeError) as exc:
+        return failed(target, str(exc), code="unreadable_file")
 
     from cadgen.sdf_external import run_gz_sdf_check
     from cadgen.sdf_source import SdfSourceError, parse_sdf_xml

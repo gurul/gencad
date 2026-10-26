@@ -5,15 +5,19 @@ import * as THREE from "three";
 
 import {
   applyPhotographicStudio,
-  disposePhotographicStudio
+  disposePhotographicStudio,
+  sampleKey,
+  softboxPoint
 } from "./photographicStudio.js";
 import {
+  PHOTOGRAPHIC_STUDIO_BACKDROP,
+  PHOTOGRAPHIC_STUDIO_FLOOR_FADE,
   PHOTOGRAPHIC_STUDIO_FLOOR_FINISHES,
+  PHOTOGRAPHIC_STUDIO_FRAME,
   PHOTOGRAPHIC_STUDIO_GROUND_DIFFUSE_WEIGHT,
   PHOTOGRAPHIC_STUDIO_GROUND_EMISSIVE_INTENSITY,
   PHOTOGRAPHIC_STUDIO_GROUND_EMISSIVE_NEUTRAL_MIX,
-  PHOTOGRAPHIC_STUDIO_KEY_DIRECTION,
-  PHOTOGRAPHIC_STUDIO_STAGE_RADIUS_MULTIPLIER
+  PHOTOGRAPHIC_STUDIO_KEY_DIRECTION
 } from "./photographicStudioRig.js";
 
 function rendererStub() {
@@ -64,10 +68,16 @@ function configuration(overrides = {}) {
   };
 }
 
+test("only a near-black floor takes the neutral lift: a dark studio's floor keeps its own tone", () => {
+  const emissive = groundColor => applyPhotographicStudio(THREE, runtime(), configuration({ groundColor })).ground.material.emissive.toArray();
+  assert.deepEqual(emissive("#202226"), new THREE.Color("#202226").toArray(), "no grey haze over a dark backdrop");
+  assert.deepEqual(emissive("#000000"), new THREE.Color("#000000").lerp(new THREE.Color(0xffffff), PHOTOGRAPHIC_STUDIO_GROUND_EMISSIVE_NEUTRAL_MIX).toArray(),
+    "black takes the whole lift, so its shadow still shows");
+});
+
 test("photographic studio applies one scale-stable key, Neutral exposure, and origin-aligned backdrop", () => {
   const value = runtime();
   const state = applyPhotographicStudio(THREE, value, configuration({ exposure: 2 }), {
-    sceneScale: "cad",
     shadowMapSize: 4096
   });
 
@@ -88,11 +98,8 @@ test("photographic studio applies one scale-stable key, Neutral exposure, and or
   ) < 1e-12);
   assert.equal(state.keyLight.shadow.radius, 1.1);
   assert.equal(state.ground.material.isMeshStandardMaterial, true);
-  const expectedGroundEmissive = new THREE.Color("#e7e7e5").lerp(
-    new THREE.Color(0xffffff),
-    PHOTOGRAPHIC_STUDIO_GROUND_EMISSIVE_NEUTRAL_MIX
-  );
-  assert.deepEqual(state.ground.material.emissive.toArray(), expectedGroundEmissive.toArray());
+  // A floor lighter than near-black keeps its own tone: no neutral lift.
+  assert.deepEqual(state.ground.material.emissive.toArray(), new THREE.Color("#e7e7e5").toArray());
   assert.equal(
     state.ground.material.emissiveIntensity,
     PHOTOGRAPHIC_STUDIO_GROUND_EMISSIVE_INTENSITY
@@ -102,17 +109,17 @@ test("photographic studio applies one scale-stable key, Neutral exposure, and or
   assert.equal(state.ground.position.x, 10);
   assert.equal(state.ground.position.y, 10);
   assert.equal(state.ground.position.z, 0);
+  // The plane ends where its fade does: `outer` times the model's reach (here its radius,
+  // which is larger than its footprint's half-diagonal), fading from `inner` of it.
   const boundsRadius = Math.hypot(20, 30, 10);
-  assert.equal(
-    state.ground.scale.x,
-    boundsRadius * PHOTOGRAPHIC_STUDIO_STAGE_RADIUS_MULTIPLIER
-  );
+  assert.equal(state.ground.scale.x, 2 * boundsRadius * PHOTOGRAPHIC_STUDIO_FLOOR_FADE.outer);
   assert.equal(state.ground.scale.y, state.ground.scale.x);
+  assert.equal(state.floorFade.value, PHOTOGRAPHIC_STUDIO_FLOOR_FADE.inner / PHOTOGRAPHIC_STUDIO_FLOOR_FADE.outer);
   assert.equal(value.scene.environmentIntensity, 1);
   assert.equal(value.requestCount, 1);
 });
 
-test("floor defaults to the lowest point and can stand at the model origin", () => {
+test("floor defaults to the model origin (Z=0) and can stand at the lowest point", () => {
   const value = runtime();
   for (const minZ of [-40, 0, 40]) {
     value.modelBounds = { min: [-10, -10, minZ], max: [10, 10, minZ + 20] };
@@ -121,7 +128,7 @@ test("floor defaults to the lowest point and can stand at the model origin", () 
     const state = applyPhotographicStudio(THREE, value, {});
     const keyPosition = state.keyLight.position.clone();
     const keyIntensity = state.keyLight.intensity;
-    assert.equal(state.ground.position.z, minZ);
+    assert.equal(state.ground.position.z, 0);
     assert.equal(state.ground.material.transparent, true);
     assert.equal(state.ground.material.opacity, 0.6);
     assert.equal(state.ground.material.side, THREE.DoubleSide);
@@ -144,7 +151,7 @@ test("floor defaults to the lowest point and can stand at the model origin", () 
     assert.equal(state.ground.material.depthWrite, false);
     assert.equal(state.ground.material.polygonOffset, true);
     applyPhotographicStudio(THREE, value, {});
-    assert.equal(state.ground.position.z, minZ);
+    assert.equal(state.ground.position.z, 0);
   }
   disposePhotographicStudio(value);
 });
@@ -170,7 +177,7 @@ test("a floor sized from the rest placement neither grows nor slides when the mo
 test("valid metre-scale bounds do not inherit CAD's one-unit minimum radius", () => {
   const value = runtime();
   value.modelBounds = { min: [-0.01, -0.01, 0], max: [0.01, 0.01, 0.01] };
-  const state = applyPhotographicStudio(THREE, value, configuration(), { sceneScale: "urdf" });
+  const state = applyPhotographicStudio(THREE, value, configuration());
   assert.ok(state.keyLight.position.distanceTo(state.target.position) < 0.1);
   assert.ok(state.keyLight.shadow.normalBias < 0.00005);
 });
@@ -259,8 +266,8 @@ test("ground fill follows backdrop color without changing studio illumination", 
   const customColorHsl = customColor.getHSL({});
   const customEmissiveHsl = state.ground.material.emissive.getHSL({});
   assert.ok(Math.abs(customEmissiveHsl.h - customColorHsl.h) < 1e-12);
-  assert.ok(customEmissiveHsl.l > customColorHsl.l);
-  assert.ok(customEmissiveHsl.l - customColorHsl.l < 0.02);
+  // A colour lighter than near-black is its own emissive: no neutral lift.
+  assert.ok(Math.abs(customEmissiveHsl.l - customColorHsl.l) < 1e-12);
   assert.equal(state.keyLight.intensity, keyIntensity);
   assert.equal(value.scene.environmentIntensity, 1);
 });
@@ -389,13 +396,15 @@ test("the physical floor carries a soft contact shadow fitted to the rest placem
 
 test("the floor and its shadow are dithered: a dark floor's shallow gradients round to grain, not bands", () => {
   const value = runtime();
-  const state = applyPhotographicStudio(THREE, value, configuration({ color: "#121315" }));
+  const state = applyPhotographicStudio(THREE, value, configuration({ color: "#202226" }));
   const shader = {
     uniforms: {},
     vertexShader: "#include <common>\nvoid main() {\n#include <fog_vertex>\n}",
     fragmentShader: "#include <common>\nvoid main() {\n#include <dithering_fragment>\n}"
   };
   state.ground.material.onBeforeCompile(shader);
+  // The floor fades out before it is dithered, so its rim never shows (the fade's own test says how).
+  assert.match(shader.fragmentShader, /gl_FragColor\.a \*= studioFloorFade\(\);/);
   // Up to a level either way, scaled through the floor's blend so it survives at full size.
   assert.match(shader.fragmentShader, /rand\(gl_FragCoord\.xy\)/);
   assert.match(shader.fragmentShader, /255\.0 \* max\(gl_FragColor\.a/);
@@ -409,7 +418,7 @@ test("a snapshot's render scale spreads the floor's dither, and a viewer's floor
   // A snapshot at render scale 2 averages four drawn pixels into each pixel it keeps, which
   // quiets one level of noise to half of one and lets the kept pixels band again.
   const snapshot = runtime();
-  const state = applyPhotographicStudio(THREE, snapshot, configuration({ color: "#121315" }), { ditherScale: 2 });
+  const state = applyPhotographicStudio(THREE, snapshot, configuration({ color: "#202226" }), { ditherScale: 2 });
   assert.equal(state.ground.material.defines?.STUDIO_DITHER_SCALE, "2.0000", "the floor's noise is drawn twice as wide");
   assert.equal(state.contactShadow.layer.material.defines?.STUDIO_DITHER_SCALE, "2.0000", "and its shadow's");
   const shader = {
@@ -420,13 +429,14 @@ test("a snapshot's render scale spreads the floor's dither, and a viewer's floor
   state.ground.material.onBeforeCompile(shader);
   assert.match(shader.fragmentShader, /\* STUDIO_DITHER_SCALE/);
   assert.match(state.contactShadow.layer.material.fragmentShader, /\* STUDIO_DITHER_SCALE/);
+  assert.equal(state.backdrop.object.material.defines?.STUDIO_DITHER_SCALE, "2.0000", "and the backdrop's");
   // A viewer shows its pixels as drawn and passes no scale: nothing is defined, so its
   // programs, and its pixels, are the ones they always were; a scale back at 1 is that again.
   const viewer = runtime();
-  const viewerState = applyPhotographicStudio(THREE, viewer, configuration({ color: "#121315" }));
+  const viewerState = applyPhotographicStudio(THREE, viewer, configuration({ color: "#202226" }));
   assert.equal(viewerState.ground.material.defines?.STUDIO_DITHER_SCALE, undefined);
   assert.equal(viewerState.contactShadow.layer.material.defines?.STUDIO_DITHER_SCALE, undefined);
-  applyPhotographicStudio(THREE, snapshot, configuration({ color: "#121315" }), { ditherScale: 1 });
+  applyPhotographicStudio(THREE, snapshot, configuration({ color: "#202226" }), { ditherScale: 1 });
   assert.equal(state.ground.material.defines?.STUDIO_DITHER_SCALE, undefined);
   assert.equal(state.contactShadow.layer.material.defines?.STUDIO_DITHER_SCALE, undefined);
   disposePhotographicStudio(snapshot);
@@ -456,6 +466,10 @@ test("a matte floor allocates nothing of a glossy one's reflection, which goes a
   assert.equal(Object.hasOwn(value.scene, "onBeforeRender"), true, "drawn before each frame of the scene");
   assert.equal(glossy.ground.material.roughness, PHOTOGRAPHIC_STUDIO_FLOOR_FINISHES.glossy.roughness);
   assert.match(floorShader(glossy.ground.material), /uReflection/);
+  // Its mirrored draw shows the model alone: not the floor, its shadow, nor the backdrop.
+  for (const hidden of [glossy.ground, glossy.contactShadow.layer, glossy.backdrop.object]) {
+    assert.ok(glossy.reflectionHidden().includes(hidden), hidden.name);
+  }
   let released = 0;
   const dispose = reflection.dispose;
   reflection.dispose = () => { released += 1; dispose(); };
@@ -513,6 +527,104 @@ test("a software-rendered viewer gets no floor shadow, and a viewer's bake sched
   disposePhotographicStudio(value);
 });
 
+test("the floor has no edge: it fades out from the model to its rim, with its reflection, whatever the camera sees", () => {
+  const value = runtime();
+  const state = applyPhotographicStudio(THREE, value, configuration({ groundFinish: "glossy" }));
+  const shader = {
+    uniforms: {},
+    vertexShader: "#include <common>\nvoid main() {\n#include <begin_vertex>\n#include <fog_vertex>\n}",
+    fragmentShader: "#include <common>\nvoid main() {\n#include <dithering_fragment>\n}"
+  };
+  state.ground.material.onBeforeCompile(shader);
+  // One uniform, the fade's start as a share of the plane's half-width, shared by every program.
+  assert.equal(shader.uniforms.uStudioFloorFade, state.floorFade);
+  assert.match(shader.vertexShader, /vStudioFloorPlane = position\.xy;/);
+  // Out to its inscribed circle: no corner ever shows, and the square's corners are drawn clear.
+  assert.match(shader.fragmentShader, /smoothstep\(uStudioFloorFade, 1\.0, length\(vStudioFloorPlane\) \* 2\.0\)/);
+  // After the reflection is laid over it, so the reflection fades with the floor.
+  assert.ok(shader.fragmentShader.indexOf("uReflectionReady > 0.5") < shader.fragmentShader.indexOf("studioFloorFade();"));
+  // A flat, wide model reaches past its radius: its footprint sets the reach.
+  const wide = { min: [-100, -5, 0], max: [100, 5, 2] };
+  applyPhotographicStudio(THREE, value, configuration(), { bounds: wide, groundBounds: wide });
+  assert.ok(state.ground.scale.x >= 2 * Math.hypot(200, 10) / 2 * PHOTOGRAPHIC_STUDIO_FLOOR_FADE.outer - 1e-9);
+  disposePhotographicStudio(value);
+});
+
+test("the backdrop is a studio sweep in the background colour, never a flat fill, and is drawn behind everything", () => {
+  const value = runtime();
+  const state = applyPhotographicStudio(THREE, value, configuration({ color: "#202226" }));
+  const backdrop = state.backdrop.object;
+  assert.equal(backdrop.parent, state.group);
+  assert.equal(value.scene.background.getHexString(), "202226", "the clear under it is the colour, as before");
+  const material = backdrop.material;
+  assert.equal(material.depthWrite, false, "it writes no depth: the frame's occlusion never darkens it");
+  assert.equal(material.depthTest, false);
+  assert.equal(material.toneMapped, false);
+  assert.equal(backdrop.castShadow, false);
+  assert.equal(backdrop.frustumCulled, false);
+  assert.ok(backdrop.renderOrder < state.ground.renderOrder, "first of everything");
+  assert.equal(new THREE.Raycaster(new THREE.Vector3(0, 0, 5), new THREE.Vector3(0, 0, -1)).intersectObject(backdrop).length, 0, "never picked");
+  // The colour in display values, as a clear writes it; a dark one shaded more than a light one.
+  const [r, g, b] = material.uniforms.uColor.value.toArray();
+  assert.deepEqual([r, g, b].map((channel) => Math.round(channel * 255)), [0x20, 0x22, 0x26]);
+  const darkShade = material.uniforms.uShape.value.y;
+  assert.equal(material.uniforms.uShape.value.x, PHOTOGRAPHIC_STUDIO_BACKDROP.lift);
+  applyPhotographicStudio(THREE, value, configuration({ color: "#ffffff" }));
+  assert.ok(Math.abs(material.uniforms.uShape.value.y - PHOTOGRAPHIC_STUDIO_BACKDROP.shade.light) < 1e-9);
+  assert.ok(darkShade > material.uniforms.uShape.value.y);
+  assert.equal(state.backdrop.object, backdrop, "updated in place");
+  disposePhotographicStudio(value);
+  assert.equal(backdrop.parent, null);
+});
+
+test("the backdrop carries the background's alpha, and draws nothing where the background is taken away", () => {
+  const value = runtime();
+  const recipe = configuration();
+  recipe.backdrop.opacity = 0.35;
+  const state = applyPhotographicStudio(THREE, value, recipe);
+  const backdrop = state.backdrop.object;
+  const uniforms = backdrop.material.uniforms;
+  const camera = new THREE.PerspectiveCamera(40, 1.5, 1, 1000);
+  camera.position.set(0, -100, 0);
+  camera.up.set(0, 0, 1);
+  camera.lookAt(0, 0, 0);
+  camera.updateMatrixWorld();
+  let clearAlpha = 0.35;
+  let target = null;
+  const renderer = {
+    getClearAlpha: () => clearAlpha,
+    getRenderTarget: () => target,
+    getContextAttributes: () => ({ premultipliedAlpha: true })
+  };
+  const draw = () => backdrop.onBeforeRender(renderer, value.scene, camera);
+  assert.equal(backdrop.visible, true);
+  draw();
+  assert.equal(uniforms.uAlpha.value, 0.35, "half-transparent, it keeps its gradient");
+  assert.equal(uniforms.uPremultiply.value, 1, "premultiplied, as three clears a premultiplied canvas");
+  assert.equal(uniforms.uLinear.value, 0, "the canvas takes display colour");
+  assert.ok(Math.abs(uniforms.uAspect.value - 1.5) < 1e-9);
+  assert.deepEqual(uniforms.uCameraWorld.value.toArray(), camera.matrixWorld.toArray());
+  // A thumbnail takes the background away and clears to nothing: so does the backdrop.
+  clearAlpha = 0;
+  draw();
+  assert.equal(uniforms.uAlpha.value, 0);
+  // Opaque, it is the background whatever the clear's alpha.
+  applyPhotographicStudio(THREE, value, configuration());
+  draw();
+  assert.equal(uniforms.uAlpha.value, 1);
+  // Into a target three does not draw as the canvas, in linear light.
+  target = { isXRRenderTarget: false };
+  draw();
+  assert.equal(uniforms.uLinear.value, 1);
+  target = { isXRRenderTarget: true };
+  draw();
+  assert.equal(uniforms.uLinear.value, 0);
+  // Transparent, it would draw exactly the clear: it is not drawn at all, and alpha stays clean.
+  applyPhotographicStudio(THREE, value, configuration({ transparent: true }));
+  assert.equal(backdrop.visible, false);
+  disposePhotographicStudio(value);
+});
+
 test("background and floor updates retain the neutral owner's current reflection intensity", () => {
   const value = runtime();
   value.scene.environmentIntensity = 0;
@@ -529,4 +641,52 @@ test("background and floor updates retain the neutral owner's current reflection
     applyPhotographicStudio(THREE, value, recipe);
     assert.equal(value.scene.environmentIntensity, 0.5);
   } finally { disposePhotographicStudio(value); }
+});
+
+test("the studio's lighting is drawn through its frame, more samples at Final, none in software or without the lighting", () => {
+  const value = runtime();
+  const state = applyPhotographicStudio(THREE, value, configuration());
+  assert.ok(state.frame, "a frame while the studio lights the model");
+  assert.equal(state.frame.samples, PHOTOGRAPHIC_STUDIO_FRAME.samples.preview);
+  applyPhotographicStudio(THREE, value, { ...configuration(), quality: "final" });
+  assert.equal(state.frame.samples, PHOTOGRAPHIC_STUDIO_FRAME.samples.final);
+  const frame = state.frame;
+  applyPhotographicStudio(THREE, value, { ...configuration(), lighting: { ...configuration().lighting, enabled: false } });
+  assert.equal(state.frame, null, "an unlit studio is one draw");
+  assert.throws(() => frame.render(value.renderer, value.scene, new THREE.PerspectiveCamera()), /disposed/);
+  applyPhotographicStudio(THREE, value, configuration(), { frame: false });
+  assert.equal(state.frame, null, "a caller may draw it as one draw");
+
+  const software = { ...runtime(), softwareRendering: true };
+  assert.equal(applyPhotographicStudio(THREE, software, configuration()).frame, null);
+
+  const disposed = runtime();
+  const owned = applyPhotographicStudio(THREE, disposed, configuration()).frame;
+  disposePhotographicStudio(disposed);
+  assert.throws(() => owned.render(disposed.renderer, disposed.scene, new THREE.PerspectiveCamera()), /disposed/);
+});
+
+test("a still frame's samples move the key across its softbox, square to it and as wide as Size makes it, and back to rest", () => {
+  const value = runtime();
+  const state = applyPhotographicStudio(THREE, value, configuration());
+  const rest = state.keyLight.position.clone();
+  const direction = rest.clone().sub(state.target.position).normalize();
+  assert.equal(sampleKey(state, 0), false, "the first sample is the key at rest");
+  const offsets = [];
+  for (let index = 1; index <= 16; index += 1) {
+    assert.equal(sampleKey(state, index), true);
+    const offset = state.keyLight.position.clone().sub(rest);
+    assert.ok(Math.abs(offset.dot(direction)) < 1e-6 * rest.length(), "across the softbox's face");
+    offsets.push(offset.length());
+  }
+  assert.equal(sampleKey(state, 16), false, "the same sample moves nothing");
+  assert.equal(sampleKey(state, 0), true);
+  assert.ok(state.keyLight.position.equals(rest));
+  for (const point of [1, 2, 3, 40].map(softboxPoint)) for (const value of point) assert.ok(value >= -1 && value <= 1);
+
+  // A larger softbox spreads the samples, so its shadows are softer.
+  applyPhotographicStudio(THREE, value, configuration({ size: 2 }));
+  const wider = state.keyLight.position.clone();
+  sampleKey(state, 5);
+  assert.ok(Math.abs(state.keyLight.position.distanceTo(wider) - 2 * offsets[4]) < 1e-6 * wider.length());
 });

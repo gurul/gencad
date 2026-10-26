@@ -190,9 +190,8 @@ class SnapshotFile:
     """One file a snapshot run wrote: a still, or a video of an animation clip."""
 
     path: Path
-    #: The encoding the render produced: ``png``, ``mp4``, ``gif``, or whatever
-    #: suffix a text output carried. It follows the RENDER, not the request — an
-    #: SVG served under a ``.png`` name still reports ``svg``.
+    #: The encoding the render produced: ``png``, ``mp4`` or ``gif``.
+    #: It follows the rendered MIME type, falling back to the output suffix.
     kind: str
     #: What this output framed: the camera preset, ``azimuth:elevation`` pair, or
     #: view label the output declared. Empty when the job named none.

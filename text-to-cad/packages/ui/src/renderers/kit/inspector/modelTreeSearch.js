@@ -31,13 +31,12 @@ const panelScroller = element => element?.closest('[data-tool-panel-body]') ?? e
 const segment = label => String(label || '').replaceAll('/', '∕');
 const NO_ALIASES = Object.freeze([]);
 
-/** Flatten the presented tree once per tree; curves are never rows. */
+/** Flatten the presented tree once per tree. */
 export function buildModelTreeSearchIndex(tree) {
   /** @type {ModelTreeSearchEntry[]} */
   const entries = [];
   const visit = (nodes, parent, prefix) => {
     for (const node of nodes || []) {
-      if (node.kind === 'curve') continue;
       const label = String(node.label || '');
       const at = entries.push({
         node, parent, label, prefix,
@@ -122,7 +121,7 @@ const NO_MATCHES = Object.freeze({ matches: Object.freeze([]), total: 0 });
  * A tree's filter box, as one hook for every file tree that has one: the query, the ranked
  * hits over `roots` (indexed only while there is a query, and searched at deferred
  * priority), the keyboard cursor over them, and the scroll position the tree had when the
- * search began, put back when it ends.
+ * search began, put back when it ends. Escape clears the query.
  *
  * The tree renders the hits into `listRef`'s element; each hit row carries
  * `data-search-row={node.id}`, and Enter presses that row's `button[aria-pressed]`.

@@ -1,19 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ROW_NAME_UNDER_ACTIONS, TREE_INDENT_PX, TreeRowSurface, TreeRowChevron, TreeRowGuides, TreeRowLabel } from "@text-to-cad/ui/primitives/tree-row";
+import { Anchor, Box } from "lucide-react";
+import { ROW_NAME_UNDER_ACTIONS, TREE_GLYPH_STROKE, TREE_INDENT_PX, TREE_ROW_DENSE_ICON_CLASS, TreeRowSurface, TreeRowChevron, TreeRowGuides, TreeRowLabel } from "@text-to-cad/ui/primitives/tree-row";
 import { TreeFilterHighlight, TreeFilterInput } from "@text-to-cad/ui/primitives/tree-filter";
 import { cn } from "@text-to-cad/ui/utils";
-import ToolPanel, { ToolPanelClose } from "../kit/tools/ToolPanel.jsx";
-import RobotComponentDetails, { RobotLinkDetails, RobotLinksSummary } from "./LinkDetails.jsx";
+import ToolPanel from "../kit/tools/ToolPanel.jsx";
 import RobotVisibilityButton, { ROBOT_ROW_ACTIONS_WIDTH } from "./RobotVisibilityButton.jsx";
 import { robotVisibilityState } from "./visibility.js";
 import { useTreeSearch } from "../kit/inspector/modelTreeSearch.js";
-import { buildRobotTree, robotComponentNodeId, robotLinkFacts, robotLinkNodeId, robotTreeAncestorIds } from "./robotTree.js";
+import { buildRobotTree, robotComponentNodeId, robotLinkNodeId, robotTreeAncestorIds } from "./robotTree.js";
+import { revealRow } from "../kit/inspector/VirtualRows.jsx";
 
-// The robot's kinematic tree, drawn with the Model tree's rows, filter and Reference
-// panel: links nest under their parent link through the joint between them (the row's
-// muted text), and its visuals (or the named objects inside their meshes) are its leaves. Two panels of
-// the tool stack, on screen while Select is the tool: **Links**, and the **Reference** for
-// what is selected.
+// The robot's kinematic tree, drawn with the Model tree's rows and filter: links nest under
+// their parent link through the joint between them (the row's muted text), and its visuals (or
+// the named objects inside their meshes) are its leaves. One panel of the tool stack, on screen
+// while Select is the tool: **Links**. What is selected is Quick Edit's, as chips whose cards say
+// what the description says of each (`robotReferences.jsx`).
 //
 // Expansion starts at the first real choice. The root opens, and so does a chain of
 // single links below it (`base_footprint` > `base_link`), because a tree that opens on
@@ -55,24 +56,35 @@ function rowHandlers(node, selection) {
 // visual's mesh) as a leaf whose place under the link already says what it is.
 //
 // `pinned` is the robot's one root: there is nothing to collapse it into, so it has no
-// chevron and takes no indent level — its children start at the tree's left edge, and
+// chevron (an anchor in its place) and takes no indent level — its children start at the tree's left edge, and
 // their chevron column is what sets them under it. It is still a row: the root is a
 // real link, selectable, and often the one with the base geometry and mass.
+// A mesh object's row carries the Model tree's part box, in the column a link's chevron takes; the
+// robot's one root (which has no chevron: it does not fold) an anchor there, the link the robot is
+// fixed by, so no row is left without a glyph in that column.
+const rootGlyph = <span className="grid h-6 w-4 shrink-0 place-items-center" aria-hidden="true"><Anchor className={TREE_ROW_DENSE_ICON_CLASS} strokeWidth={TREE_GLYPH_STROKE}/></span>;
+const objectGlyph = node => node.kind === "component"
+  ? <span className="grid h-6 w-4 shrink-0 place-items-center" aria-hidden="true"><Box className={TREE_ROW_DENSE_ICON_CLASS} strokeWidth={TREE_GLYPH_STROKE}/></span>
+  : null;
+
 function RobotRow({ node, depth = 0, pinned = false, highlighted, expanded, toggle, selection, rowRefs, hiddenIds, onVisibilityChange }) {
   const open = pinned || expanded.has(node.id), branch = node.children.length > 0;
   const { choose, enter, leave } = rowHandlers(node, selection);
   const visibility = robotVisibilityState(node.partIds, hiddenIds), actions = rowActions(visibility);
-  return <li className="min-w-0" ref={element => { if (element) rowRefs.current.set(node.id, element); else rowRefs.current.delete(node.id); }}>
-    <TreeRowSurface dense active={highlighted.has(node.id)} className="group/row gap-0 pr-0" style={{ paddingLeft: depth * TREE_INDENT_PX, ...actions.style }}
+  // The row itself is what a selection scrolls to, never its list item: a branch's item holds its
+  // whole subtree (the root's, the whole robot), which never fits the view and would be centred.
+  return <li className="min-w-0">
+    <TreeRowSurface ref={element => { if (element) rowRefs.current.set(node.id, element); else rowRefs.current.delete(node.id); }}
+      dense active={highlighted.has(node.id)} className="group/row gap-0 pr-0" style={{ paddingLeft: depth * TREE_INDENT_PX, ...actions.style }}
       onMouseEnter={enter} onMouseLeave={leave}>
       {/* Its owners' faint lines, each under its 16px disclosure column. */}
       <TreeRowGuides depth={depth} column={16}/>
-      {pinned ? null : branch ? <button type="button" aria-label={`${open ? "Collapse" : "Expand"} ${node.label}`} aria-expanded={open}
+      {pinned ? rootGlyph : branch ? <button type="button" aria-label={`${open ? "Collapse" : "Expand"} ${node.label}`} aria-expanded={open}
         className="grid h-6 w-4 shrink-0 place-items-center rounded focus-visible:ring-2 focus-visible:ring-ring"
-        onClick={() => toggle(node)}><TreeRowChevron expanded={open}/></button> : <span className="w-4 shrink-0"/>}
+        onClick={() => toggle(node)}><TreeRowChevron expanded={open}/></button> : objectGlyph(node) || <span className="w-4 shrink-0"/>}
       <button type="button" aria-label={`Select ${node.label}`} aria-pressed={highlighted.has(node.id)}
         onClick={choose} onFocus={enter} onBlur={leave}
-        className={cn("flex h-full min-w-0 flex-1 items-center gap-1.5 rounded pr-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", pinned && "pl-2", actions.name)}>
+        className={cn("flex h-full min-w-0 flex-1 items-center gap-1.5 rounded pr-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", actions.name)}>
         {/* Name first: in a narrow panel the joint takes the truncation, never the link. */}
         <TreeRowLabel className="max-w-full shrink-0">{node.label}</TreeRowLabel>
         {node.detail && <TreeRowLabel className="flex-1 text-micro text-muted-foreground">{node.detail}</TreeRowLabel>}
@@ -151,31 +163,15 @@ export default function LinksSection({ description = null, components = EMPTY, p
     if (missing.length) { setUserExpanded(new Set([...expanded, ...missing])); return; }
     if (searching) return;
     const row = rowRefs.current.get(selectedNodeIds.at(-1));
-    if (row) { row.scrollIntoView?.({ block: "nearest" }); reveal.current.complete = true; }
+    if (row) { revealRow(row); reveal.current.complete = true; }
   }, [active, revealKey, selectedNodeIds, tree, expanded, searching]);
 
-
-  // One link reads back what the description says of it; several are summarised, as several
-  // objects are.
-  const shownLinkNames = useMemo(() => selection.selectedLinkNames.filter(name => tree.nodesById.has(robotLinkNodeId(name))),
-    [selection.selectedLinkNames, tree]);
-  const linkFacts = useMemo(() => (shownLinkNames.length === 1
-    ? robotLinkFacts(description, shownLinkNames[0], { groupNamesByLink }) : null),
-  [shownLinkNames, description, groupNamesByLink]);
-  const selectedComponents = components.filter(component => selection.selectedComponentIds.includes(component.id));
-  // The heading names what is selected: one link or object by its name, several by what they are.
-  const referenceTitle = shownLinkNames.length === 1 ? shownLinkNames[0] : shownLinkNames.length ? "Links"
-    : selectedComponents.length === 1 ? selectedComponents[0].name : "Components";
-  const details = linkFacts ? <RobotLinkDetails facts={linkFacts} meshPath={meshPath} onOpenFile={onOpenFile} onSelectLink={selection.selectLink} hasLinkRow={name => tree.nodesById.has(robotLinkNodeId(name))}/>
-    : shownLinkNames.length ? <RobotLinksSummary linkNames={shownLinkNames}/>
-    : selection.selectedComponentIds.length ? <RobotComponentDetails components={components} selectedIds={selection.selectedComponentIds}/> : null;
   const clearSelection = () => selection.select("");
 
   return <>
-    {/* No heading: the filter is the panel's top row, and stays put while the tree scrolls under it. */}
-    {/* Its X closes it, and Select, pressed while it is the tool, opens it again; on a phone it starts closed. */}
-    <ToolPanel id="tree" label="Links" fit="tree" resizable closable collapsible={false} hidden={!active}
-      header={<TreeFilterInput dense label="Filter links" placeholder="Filter…" yieldWhileTyping value={query} onChange={changeQuery} onKeyDown={onSearchKeyDown} trailing={<ToolPanelClose/>}/>}>
+    {/* Headed by its filter, always there: Escape or its X clears it. */}
+    <ToolPanel id="tree" label="Links" fit="tree" resizable collapsible={false} hidden={!active}
+      header={<TreeFilterInput label="Filter links" placeholder="Filter…" value={query} onChange={changeQuery} onKeyDown={onSearchKeyDown} dense className="px-0 shadow-none"/>}>
       <div className="flex flex-col text-tiny" aria-label="Robot links">
         <div ref={listRef} className="px-1 py-1" aria-label="Robot tree area"
           onClick={event => { if (!event.target.closest("li,button,input")) clearSelection(); }}>
@@ -189,9 +185,5 @@ export default function LinksSection({ description = null, components = EMPTY, p
         </div>
       </div>
     </ToolPanel>
-    {/* Sized on its own, apart from the tree. */}
-    {details ? <ToolPanel id="reference" title={referenceTitle} label="Reference details" closeLabel="Clear selection" fit="details" resizable hidden={!active} onClose={clearSelection}>
-      <div className="px-2 pb-1.5">{details}</div>
-    </ToolPanel> : null}
   </>;
 }

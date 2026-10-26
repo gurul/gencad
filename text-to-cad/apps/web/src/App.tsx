@@ -4,15 +4,14 @@ import { createCadFileActions } from '@text-to-cad/ui/catalog';
 import type { ModelLibrarySource } from '@text-to-cad/ui/library';
 import { createLiveRegistry, type ViewerHost } from '@text-to-cad/ui/host';
 import type { TabStore, Appearance } from '@text-to-cad/ui/tab-store';
-import { cadApiUrl, createHttpAttachmentStore, type CadClient, type CadServerInfo } from '@text-to-cad/core/client';
+import { cadApiUrl, createHttpPromptFiles, type CadClient, type CadServerInfo } from '@text-to-cad/core/client';
 import { useViewerAutoReload } from './host/useViewerAutoReload.js';
 import { useAnalyticsConsent } from '@text-to-cad/ui/consent';
-import { useFeatures } from '@text-to-cad/ui/features';
+import { useLanguage } from '@text-to-cad/ui/i18n';
 import { UpdateButton, useUpdateNotice, type UpdateNotice } from '@text-to-cad/ui/update';
 import { browserClipboard, browserClipboardSupportsImages } from './host/clipboard';
 import { createWebPromptContext } from './host/promptContext';
 import { useViewerLinks } from './host/viewerLinks.js';
-import ViewerAppearance from './client/components/workbench/ViewerAppearance.jsx';
 import { readDefaultFileParam, readFileParam, resolveFileParam, writeFileParam } from './client/workbench/fileParam.js';
 import { applyColorSchemeToDocument, resolveColorSchemeMode } from './client/ui/colorScheme.js';
 
@@ -40,7 +39,7 @@ export function useTabAppearance(tabStore: TabStore): { preference: Appearance; 
  * home — the models opened before, and Open — where it names none. The browser's own history is
  * the way back: showing a file or the home is a new entry.
  */
-export default function App({ client, server, tabStore, notice = null }: { client: CadClient; server: CadServerInfo; tabStore: TabStore; notice?: UpdateNotice | null }) {
+export default function App({ client, server, tabStore, notice = null, language: chosenLanguage = null }: { client: CadClient; server: CadServerInfo; tabStore: TabStore; notice?: UpdateNotice | null; language?: string | null }) {
   useViewerAutoReload(server, { fetchServerInfo: () => client.serverInfo({ fresh: true }).then(info => ({ ok: true, identityToken: String(info.identityToken || '') }), () => ({ ok: false })) });
   const source = useMemo(() => createCadFileSource(client), [client]);
   const promptContext = useMemo(() => createWebPromptContext(browserClipboard, browserClipboardSupportsImages()), []);
@@ -48,8 +47,8 @@ export default function App({ client, server, tabStore, notice = null }: { clien
   // server runs on, labeled for its platform.
   const fileActions = useMemo(() => createCadFileActions({ platform: server.platform, clipboard: browserClipboard,
     reveal: path => client.reveal(path) }), [server.platform, client]);
-  // A copied Quick Edit's sketch, saved by the server beside it on this machine.
-  const attachments = useMemo(() => createHttpAttachmentStore({ origin: client.origin }), [client]);
+  // A copied Quick Edit's annotation, saved by the server beside it on this machine.
+  const promptFiles = useMemo(() => createHttpPromptFiles({ origin: client.origin }), [client]);
   // The view on screen, for the library's pictures of what was opened.
   const live = useMemo(() => createLiveRegistry(), []);
   const links = useViewerLinks();
@@ -89,15 +88,18 @@ export default function App({ client, server, tabStore, notice = null }: { clien
   }), [client, server.pick, show]);
   const appearance = useTabAppearance(tabStore);
   const changeColorScheme = useCallback((value: string) => tabStore.settings.update({ appearance: value as Appearance }), [tabStore]);
+  // The app menu's Theme row, over every file and on the home.
+  const colorScheme = useMemo(() => ({ preference: appearance.preference, onPreferenceChange: changeColorScheme }), [appearance.preference, changeColorScheme]);
   useEffect(() => { applyColorSchemeToDocument(appearance.colorScheme, document.documentElement); }, [appearance.colorScheme]);
+  // The person's language: inferred from the browser's languages until they choose one in the app menu,
+  // which their settings keep for every CAD view (`useLanguage`); read with the server's description
+  // (`main.tsx`), so the page's first paint is already in it.
+  const { locale, language } = useLanguage(client.language, { preferred: navigator.languages ?? [navigator.language], initial: chosenLanguage });
+  useEffect(() => { document.documentElement.lang = locale; }, [locale]);
   // The usage stats cadgen sends (its telemetry), the same as the CAD app's: nothing asks here (a
   // cadgen command says it once), and the app menu's switch changes it. The answer is the person's,
   // shared with the CAD app.
-  const { appSettings: analyticsSettings } = useAnalyticsConsent(client.consent);
-  // The app menu's features (Quick edit), on until the person turns one off: kept by this Viewer's
-  // server beside the analytics answer, one choice with the CAD app's, whatever port this is.
-  const { features, appSettings: featureSettings } = useFeatures(client.features);
-  const appSettings = useMemo(() => [...analyticsSettings ?? [], ...featureSettings ?? []], [analyticsSettings, featureSettings]);
+  const { appSettings } = useAnalyticsConsent(client.consent, locale);
   // A newer text-to-cad, as the CAD app says it (`cadgen/updates.py`): the blue update button, first
   // in the navbar and a row of its own on the home while this install is behind, from the notice read
   // with the server's description (`main.tsx`). A page in a browser cannot reach the agent's chat, so
@@ -117,15 +119,15 @@ export default function App({ client, server, tabStore, notice = null }: { clien
     return () => { window.removeEventListener('pointerdown', touched, true); window.removeEventListener('keydown', touched, true); };
   }, [client]);
   const host = useMemo<Omit<ViewerHost, 'navigation'>>(() => ({
-    files: source, fileActions, clipboard: browserClipboard, promptContext, attachments, links,
+    files: source, fileActions, clipboard: browserClipboard, promptContext, promptFiles, links,
     // A Quick Edit copied, counted by this Viewer's server for its telemetry, as a touch is.
     usage: { used: feature => { if (feature === 'quickEdit') client.reportActivity({ quickEdit: true }); } },
-    environment: { colorScheme: appearance.colorScheme, platform: keyboardPlatform() },
-  }), [client, source, fileActions, promptContext, attachments, links, appearance.colorScheme]);
+    environment: { colorScheme: appearance.colorScheme, locale, platform: keyboardPlatform() },
+  }), [client, source, fileActions, promptContext, promptFiles, links, appearance.colorScheme, locale]);
   return <div className="flex h-svh flex-col overflow-hidden"><div className="min-h-0 flex-1">
     <CadViewer client={client} host={host} tabStore={tabStore} live={live} file={file} onShow={show} onShown={shown}
-      library={library} onThumbnail={client.keepThumbnail} appSettings={appSettings} features={features}
+      library={library} onThumbnail={client.keepThumbnail} appSettings={appSettings}
       update={updateNotice ? <UpdateButton notice={updateNotice} copy={prompt => browserClipboard.writeText(prompt)} onLink={openTab} /> : null}
-      displayActions={<ViewerAppearance colorSchemePreference={appearance.preference} resolvedColorSchemeMode={appearance.colorScheme} onColorSchemePreferenceChange={changeColorScheme} />} />
+      colorScheme={colorScheme} language={language} />
   </div></div>;
 }

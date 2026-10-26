@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cadgen"
-version = "0.7.21"
+version = "0.7.26"
 description = "STEP-first CAD artifact generation runtime: build123d STEP/GLB/topology generation, validation, and inspection for CAD agent skills."
 readme = "README.md"
 license = "MIT"
@@ -67,7 +67,7 @@ dependencies = [
   # Playwright release fetches its own browser build, so a range would download a new
   # browser whenever it moved. The browser itself is fetched on the first snapshot
   # (snapshot_core.install_browser), not by the install.
-  "playwright==1.63.0",
+  "playwright==1.64.0",
   "shapely",
 ]
 
@@ -78,6 +78,14 @@ Issues = "https://github.com/earthtojake/text-to-cad/issues"
 
 [project.scripts]
 cadgen = "cadgen.cli:main"
+
+[tool.pyrefly]
+preset = "basic"
+project-includes = ["src"]
+search-path = ["src"]
+# A checkout under an ignored folder (a `.claude/worktrees/...` worktree) would
+# otherwise have src excluded by the ignore files above it and check nothing.
+use-ignore-files = false
 
 [tool.setuptools.packages.find]
 where = ["src"]

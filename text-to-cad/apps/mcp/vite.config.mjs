@@ -1,37 +1,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import remapping from '@jridgewell/remapping';
 import MagicString from 'magic-string';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { buildId } from '@text-to-cad/ui/build-id';
 import { stampDebugId } from '@text-to-cad/core/chunk-ids';
 import { packageSourceMaps } from '@text-to-cad/core/source-maps';
-import { drawingAssetFiles, localizeDrawingFontFallback } from '@text-to-cad/ui/drawing-assets';
 
 // An MCP App is one HTML resource with no asset directory behind it: the host renders it in a
 // sandboxed frame whose only other origins are data: and blob:. So everything the page needs --
-// scripts, styles, workers, fonts, images -- is inside index.html, and the build fails if
-// anything would be left outside it.
-
-// The drawing editor's fonts, as data URIs (the 12 MB Xiaolai CJK family stays out: a CJK
-// glyph is then a system font, never a request).
-const drawingFiles = drawingAssetFiles({ exclude: [/\/fonts\/Xiaolai\//] });
-function inlineDrawingFonts() {
-  const fonts = new Map(drawingFiles.filter(file => /\.(woff2|ttf)$/.test(file.fileName)).map(file => [
-    './' + file.fileName.replace(/^excalidraw\//, ''),
-    `data:font/${file.fileName.endsWith('.ttf') ? 'ttf' : 'woff2'};base64,${file.source.toString('base64')}`,
-  ]));
-  return {
-    name: 'cad-app-inline-drawing-fonts', enforce: 'pre',
-    transform(code, id) {
-      if (!id.includes('@excalidraw/excalidraw/dist/')) return;
-      const localized = localizeDrawingFontFallback(code);
-      if (localized === null) return;
-      return { code: localized.replace(/"(\.\/fonts\/[^"]+\.(?:woff2|ttf))"/g, (_, path) => JSON.stringify(fonts.get(path) || 'data:font/woff2;base64,')), map: null };
-    },
-  };
-}
+// scripts, styles, workers, images -- is inside index.html, and the build fails if anything
+// would be left outside it.
 
 // The shared packages start workers with `new Worker(new URL(file, import.meta.url))`. Here
 // that URL would point at the sandbox, so each one becomes Vite's inline (blob) worker. The
@@ -58,11 +40,11 @@ function inlineWorkers() {
 }
 
 // Fold the build into index.html. The scripts are split where the app imports lazily (each
-// renderer, the drawing editor, its diagram and maths libraries), and each chunk is a gzip'd
-// string the page inflates into a blob module only when something imports it: a view parses
-// what it shows, not the thirteen megabytes it might. A blob URL has no directory to resolve
-// "./chunk.js" against, so the build rewrites each chunk's static imports to a placeholder the
-// loader swaps for its dependency's blob URL, and each dynamic import to the loader itself;
+// renderer), and each chunk is a gzip'd string the page inflates into a blob module only when
+// something imports it: a view parses what it shows, not every renderer it might. A blob URL
+// has no directory to resolve "./chunk.js" against, so the build rewrites each chunk's static
+// imports to a placeholder the loader swaps for its dependency's blob URL, and each dynamic
+// import to the loader itself;
 // the rewrites must account for exactly the imports rolldown recorded, or the build fails.
 // Styles go inline, and workers another worker starts as blob URLs of their own. The base64
 // is decoded natively where the browser can (`Uint8Array.fromBase64`), else by a plain loop.
@@ -171,8 +153,7 @@ function inlineDocument() {
       for (const name of Object.keys(bundle)) if (name.endsWith('.js.map')) delete bundle[name];
       const external = Object.keys(bundle).filter(name => name !== 'index.html');
       if (external.length) throw new Error(`Everything the CAD app loads must be inside index.html: ${external.join(', ')}`);
-      const notices = drawingFiles.filter(file => file.fileName.includes('/licenses/')).map(file => `${file.fileName}\n${file.source}`).join('\n\n');
-      html.source = document + `\n<!-- Bundled font licenses\n${notices.replaceAll('-->', '-- >')}\n-->`;
+      html.source = document;
     } },
     // Each chunk as the page runs it, beside its map, for the release to upload: never inside the page.
     writeBundle(options) {
@@ -187,8 +168,14 @@ function inlineDocument() {
   };
 }
 
+// Which build this is, for the version the app menu shows (src/App.tsx): none for the release's
+// own, this checkout's commit for any other (@text-to-cad/ui/build-id).
+const appRoot = fileURLToPath(new URL('.', import.meta.url));
+const { version } = JSON.parse(fs.readFileSync(new URL('package.json', import.meta.url), 'utf8'));
+
 export default defineConfig({
-  plugins: [packageSourceMaps(['@text-to-cad/core', '@text-to-cad/ui']), inlineWorkers(), inlineDrawingFonts(), react(), inlineDocument()],
+  define: { __TEXT_TO_CAD_BUILD__: JSON.stringify(buildId({ version, cwd: appRoot })) },
+  plugins: [packageSourceMaps(['@text-to-cad/core', '@text-to-cad/ui']), inlineWorkers(), react(), inlineDocument()],
   resolve: { dedupe: ['react', 'react-dom', 'three', 'lucide-react'] },
   build: {
     assetsInlineLimit: Infinity, cssCodeSplit: false, modulePreload: false,

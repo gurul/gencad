@@ -15,7 +15,7 @@ import { buildMeshDataFromStlBuffer } from "../lib/render/stlMeshData.js";
 import { parseArmSrdf, parseArmUrdf, robotOf } from "../lib/urdf/__tests__/robotFixtures.js";
 import { robotOpeningPose } from "../lib/urdf/motion.js";
 import { solveUrdfLinkWorldTransforms } from "../lib/urdf/kinematics.js";
-import { headlessSceneDress, headlessSceneFamily, headlessSceneModel } from "./headlessScene.js";
+import { headlessSceneDress, headlessSceneFamily, headlessSceneModel, refuseUnexplodable } from "./headlessScene.js";
 import { captureModel, projectedVisibleGeometryFrame, renderJobContext } from "./renderMeshScene.js";
 import { resolveSceneSurfaceLook, resolveViewSceneSettings } from "./sceneSettings.js";
 import { EDGELESS_VIEW_FEATURES } from "./viewSettings.js";
@@ -47,14 +47,14 @@ function stlBytes() {
   }
   return buffer;
 }
-const settingsFor = (display, kind = "stl") => renderJobContext({ bounds: { min: [0, 0, 0], max: [1, 1, 1] } }, job(kind, { display })).sceneSettings;
+// What a job asks for: a display, and Preview's look (`preview`) or not. The scene has parts for Parts to colour.
+const settingsFor = (look, kind = "stl") => renderJobContext({ bounds: { min: [0, 0, 0], max: [1, 1, 1] }, partCount: 2 }, job(kind, look)).sceneSettings;
 const DISPLAYS = {
-  "solid light": { mode: "solid", appearance: "light" },
-  "solid dark": { mode: "solid", appearance: "dark" },
-  render: { mode: "render" },
-  "by part": { mode: "solid", surfaces: { colorMode: "by-part" } },
-  single: { mode: "render", surfaces: { colorMode: "single", color: "#ff8800" } },
-  "flat 50%": { mode: "solid", surfaces: { style: "flat", opacity: 0.5 } }
+  "solid light": { display: { mode: "solid", appearance: "light" } },
+  "solid dark": { display: { mode: "solid", appearance: "dark" } },
+  preview: { preview: true },
+  parts: { display: { mode: "parts" } },
+  "parts dark": { display: { mode: "parts", appearance: "dark" } }
 };
 function materialState(object3D) {
   const rows = [];
@@ -88,8 +88,8 @@ test("every file family the snapshot CLI draws reaches its viewer builder; a STE
 test("a family scene on the headless stage wears exactly the look the viewer's viewport puts on it", async () => {
   const meshData = await buildMeshDataFromStlBuffer(stlBytes());
   const family = headlessSceneFamily(job("stl"));
-  for (const [name, display] of Object.entries(DISPLAYS)) {
-    const sceneSettings = settingsFor(display);
+  for (const [name, look] of Object.entries(DISPLAYS)) {
+    const sceneSettings = settingsFor(look);
     const headless = headlessSceneModel(THREE, family.build(THREE, meshData, job("stl")), headlessSceneDress(sceneSettings));
     // The viewport's own dressing (ShellViewport): the look it resolves, then every mesh takes shadows or none.
     const viewer = family.build(THREE, meshData, job("stl"));
@@ -106,7 +106,7 @@ test("the look is really worn: Inspect's finish in Solid, a GLB's authored finis
   const solid = headlessSceneModel(THREE, headlessSceneFamily(job("glb")).build(THREE, await buildGlbDocumentFromBuffer(glbBytes())),
     headlessSceneDress(settingsFor(DISPLAYS["solid light"], "glb")));
   const render = headlessSceneModel(THREE, headlessSceneFamily(job("glb")).build(THREE, await buildGlbDocumentFromBuffer(glbBytes())),
-    headlessSceneDress(settingsFor(DISPLAYS.render, "glb")));
+    headlessSceneDress(settingsFor(DISPLAYS.preview, "glb")));
   const base = model => model.displayRecords.find(({ mesh }) => mesh.parent?.name === "base" || mesh.name === "base").mesh;
   const inspect = settingsFor(DISPLAYS["solid light"], "glb").theme.materials;
   assert.deepEqual([base(solid).material.roughness, base(solid).material.metalness], [inspect.roughness, inspect.metalness],
@@ -137,9 +137,9 @@ test("a robot opens on the headless stage where the viewer opens it, with the re
 test("a posed robot keeps its REST box for the ground while its live box follows the pose", () => {
   const family = headlessSceneFamily(job("urdf"));
   const robot = robotOf(parseArmUrdf());
-  const rest = headlessSceneModel(THREE, family.build(THREE, robot, job("urdf")), headlessSceneDress(settingsFor(DISPLAYS.render, "urdf")));
+  const rest = headlessSceneModel(THREE, family.build(THREE, robot, job("urdf")), headlessSceneDress(settingsFor(DISPLAYS.preview, "urdf")));
   const posed = headlessSceneModel(THREE, family.build(THREE, robot, job("urdf", { jointValues: { pitch: -90, lift: 0.5 } })),
-    headlessSceneDress(settingsFor(DISPLAYS.render, "urdf")));
+    headlessSceneDress(settingsFor(DISPLAYS.preview, "urdf")));
   assert.notDeepEqual(posed.bounds, rest.bounds, "the arm stands up");
   assert.deepEqual(posed.restBounds, rest.restBounds, "renderModel sizes the grid, stage and studio floor from this box");
   assert.deepEqual(posed.restBounds, posed.scene.restBounds);
@@ -220,28 +220,26 @@ test("the still's tight frame fits a skinned and morphed GLB where it is drawn; 
   model.dispose();
 });
 
-test("a family scene takes none of a CAD model's steps: no edges, explode or section, and --mode list lists what it drew", async () => {
+test("a family scene has no CAD edges, a one-part GLB no Explode, and --mode list lists what it drew", async () => {
   const context = renderJobContext({ bounds: { min: [0, 0, 0], max: [1, 1, 1] } }, job("glb", {
-    display: { mode: "solid", edges: { enabled: true }, exploded: { enabled: true, amount: 1 }, clip: { enabled: true } }
+    display: { mode: "solid", exploded: { enabled: true, amount: 1 }, clip: { enabled: true } }
   }));
   assert.deepEqual([context.stepDisplayEnabled, context.edgesVisible, context.topologyDisplayEdgesVisible,
-    context.displaySettings.exploded.enabled, context.displaySettings.clip.enabled], [false, false, false, false, false]);
-  assert.deepEqual(resolveViewSceneSettings({ display: { mode: "solid", edges: { enabled: true } }, features: EDGELESS_VIEW_FEATURES }).view.edges.enabled, false);
+    context.displaySettings.exploded.enabled, context.displaySettings.clip.enabled], [false, false, false, false, true]);
+  assert.deepEqual(resolveViewSceneSettings({ display: { mode: "solid" }, features: EDGELESS_VIEW_FEATURES }).view.edges.enabled, false);
 
   const model = headlessSceneModel(THREE, headlessSceneFamily(job("glb")).build(THREE, await buildGlbDocumentFromBuffer(glbBytes())),
     headlessSceneDress(context.sceneSettings));
   assert.equal(model.runtime, undefined, "no CAD runtime: captureModel skips the exploded view, topology edges and line widths");
   const listed = await captureModel({ model, context: { ...context, mode: "list" } }, { job: job("glb") });
   assert.deepEqual(listed.parts.map(({ ref, name, triangleCount, vertexCount }) => [ref, name, triangleCount, vertexCount]),
-    [["#o1.1", "base", 12, 24], ["#o1.2", "rider", 12, 24]]);
+    [["#n0", "base", 12, 24], ["#n1", "rider", 12, 24]], "a GLB's parts by the nodes a reference names (`model.glb#n0`)");
   assert.deepEqual(listed.parts[1].bounds, { min: [30, -10, 0], max: [40, 0, 10] }, "placed in CAD millimetres, as drawn");
-  await assert.rejects(() => captureModel({ model, context: { ...context, mode: "section" } }, { job: job("glb") }),
-    /section mode cuts a STEP model's solids/);
   model.dispose();
 
   const stl = headlessSceneModel(THREE, headlessSceneFamily(job("stl")).build(THREE, await buildMeshDataFromStlBuffer(stlBytes()), job("stl")),
     headlessSceneDress(context.sceneSettings));
-  assert.deepEqual(stl.listParts().map(({ id, name, triangleCount }) => [id, name, triangleCount]), [["", "", 24]]);
+  assert.deepEqual(stl.listParts().map(({ id, name, triangleCount }) => [id, name, triangleCount]), [["mesh:0", "", 24]], "an STL is one mesh, the part Annotate hangs its ink on");
   stl.dispose();
 
   // A robot lists down its tree, root first: a link, then the links it carries (as the file has them).
@@ -250,4 +248,19 @@ test("a family scene takes none of a CAD model's steps: no edges, explode or sec
   assert.deepEqual(robot.listParts().map(({ id }) => id),
     ["base:v1", "turret:v1", "arm:v1", "tool:v1", "finger_link:v1", "finger_mirror_link:v1", "wheel_link:v1"]);
   robot.dispose();
+});
+
+test("a family scene takes what a Quick Edit's view of it says: a robot's hidden parts, by their ids; a GLB of one node no Explode", async () => {
+  const hidden = job("urdf", { selection: { hide: ["arm:v1"] } });
+  const robot = headlessSceneFamily(hidden).build(THREE, robotOf(parseArmUrdf()), hidden);
+  assert.equal(robot.object3D.getObjectByName("arm:v1"), undefined, "the hidden visual is not drawn");
+  assert.ok(robot.object3D.getObjectByName("tool:v1"), "the rest are");
+  robot.dispose();
+  const unknown = job("urdf", { selection: { hide: ["no_such:v1"] } });
+  assert.throws(() => headlessSceneFamily(unknown).build(THREE, robotOf(parseArmUrdf()), unknown), /selection\.hide names no part of .*: no_such:v1\. Its parts: base:v1/);
+
+  const exploded = { display: { exploded: { enabled: true, amount: 0.5 } }, resolved: { inputPath: "/models/one.glb" } };
+  assert.throws(() => refuseUnexplodable({ explodeParts: 0 }, exploded), /one\.glb has fewer than two rigid nodes that draw, so there is nothing to explode/);
+  assert.doesNotThrow(() => refuseUnexplodable({ explodeParts: 2 }, exploded));
+  assert.doesNotThrow(() => refuseUnexplodable({ explodeParts: 0 }, { display: { exploded: { enabled: true, amount: 0 } } }), "Explode at nought asks for nothing");
 });

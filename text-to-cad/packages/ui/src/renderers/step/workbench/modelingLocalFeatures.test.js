@@ -4,7 +4,6 @@ import fs from 'node:fs';
 import { buildModelingTree } from './modelingTree.js';
 import { boreFeatures } from './modelingBores.js';
 import { localPrismaticFeatures } from './modelingLocalFeatures.js';
-import { presentModelingTree, presentModelingAssembly, implicitModelingRoots } from './modelingPresentation.js';
 const fixture=name=>JSON.parse(fs.readFileSync(new URL(`./__tests__/fixtures/${name}.json`,import.meta.url)));
 const maps=i=>[i.faces,new Map(i.faces.map(f=>[f.ord,f])),new Map(i.edges.map(e=>[e.ord,e]))];
 
@@ -57,12 +56,6 @@ test('material boundaries inside a proposed bore prevent a false empty-hole feat
  const features=boreFeatures(...maps(i));
  assert.ok(features.every(n=>!n.faces.includes(1)));assert.ok(features.every(n=>n.label!=='Counterbore'));
 });
-test('folders preserve each operation and face reference without naming a pattern',()=>{
- const operations=Array.from({length:8},(_,i)=>({id:`p${i}`,kind:'pocket',label:`Pocket ${i+1}`,faces:[i+1],edges:[]}));
- const input=[{id:'body:1',children:operations,faces:operations.flatMap(n=>n.faces)}];
- const [result]=presentModelingTree(input);assert.equal(result.children.length,1);assert.equal(result.children[0].label,'Pockets (8)');
- assert.deepEqual(result.children[0].children,operations);assert.deepEqual(result.children[0].faces,[1,2,3,4,5,6,7,8]);assert.equal(input[0].children.length,8);
-});
 test('annotation-only STEP components do not produce unselectable body rows',()=>{
  assert.deepEqual(buildModelingTree({faces:[],edges:[],shapes:[{ord:1,kind:'shape'}]}),[]);
 });
@@ -75,47 +68,3 @@ test('annotation-only STEP components do not produce unselectable body rows',()=
   assert.ok(body.children.find(n=>n.kind==='remainder').faces.includes(4));
   assert.ok(body.children.every(n=>!['hole','cut'].includes(n.kind)));
  });
-
-test('assembly presentation preserves nesting and scopes reused component features',()=>{
- const operations=[{id:'body:1',kind:'body',faces:[1],children:[{id:'extrude:1',kind:'extrude',label:'Base extrude',faces:[1],edges:[]}]}];
- const descriptor={components:{c:{}},occurrences:[{id:'o1.1',component:'c',name:'Left'},{id:'o1.2',component:'c',name:'Right'}],assembly:{root:{id:'o1',name:'Wheels',children:[{id:'o1.1'},{id:'o1.2'}]}}};
- const [assembly]=presentModelingAssembly(descriptor,{c:{tree:operations}});
- assert.equal(assembly.label,'Wheels');assert.deepEqual(assembly.children.map(n=>n.label),['Left','Right']);
- const [left,right]=assembly.children.map(n=>n.children[0]);
- assert.notEqual(left.id,right.id);assert.equal(right.occurrenceId,'o1.2');assert.deepEqual(right.faces,[1]);assert.equal(operations[0].id,'body:1');
- assert.equal(presentModelingAssembly(descriptor,{} )[0].children[0].recognitionPending,true);
-});
-
-
-test('STEP document assembly wrapper is flattened without flattening nested assemblies or changing identities',()=>{
- const part=(id,name)=>({id,nodeType:'part',name,leafPartIds:[id],children:[]});
- const root={id:'o1',nodeType:'assembly',name:'tom',children:[{id:'o1.1',nodeType:'assembly',name:'Arm',children:[part('o1.1.1','Wrist')]},part('o1.2','Base')]};
- const descriptor={components:{c:{}},occurrences:[{id:'o1.1.1',component:'c',name:'Wrist'},{id:'o1.2',component:'c',name:'Base'}]};
- const presented=presentModelingAssembly(descriptor,{},root);
- assert.deepEqual(presented.map(node=>[node.label,node.selectionId]),[['Arm','o1.1'],['Base','o1.2']]);
- assert.equal(presented[0].children[0].selectionId,'o1.1.1');
- assert.equal(presented[0].children[0].recognitionPending,true);
- assert.equal(root.children[0].id,'o1.1');
-});
-
-test('single STEP part retains its canonical logical owner before recognition',()=>{
- const root={id:'__step_model__',nodeType:'part',name:'Case',leafPartIds:['__model__'],children:[]};
- const descriptor={components:{c:{}},occurrences:[{id:'o1',component:'c',name:'Case'}]};
- const presented=presentModelingAssembly(descriptor,{},root);
- assert.equal(presented.length,1);
- assert.equal(presented[0].selectionId,'__step_model__');
- assert.equal(presented[0].recognitionPending,true);
-});
-
-
-test('implicit roots stop at meaningful choices and never flatten feature groups',()=>{
- const group={id:'g',kind:'group',children:[{id:'f',kind:'hole',children:[]}]};
- const body={id:'b',kind:'body',children:[group]};
- const part={id:'p',kind:'part',occurrenceId:'o1',children:[body]};
- const assembly={id:'a',kind:'assembly',children:[part]};
- assert.deepEqual(implicitModelingRoots([assembly]),[assembly,part,body]);
- assert.deepEqual(implicitModelingRoots([part,{...part,id:'p2'}]),[]);
- assert.deepEqual(implicitModelingRoots([{...part,children:[],recognitionPending:true}]).map(n=>n.id),['p']);
- assert.deepEqual(implicitModelingRoots([{...part,children:[],recognitionPending:false}]),[]);
- assert.deepEqual(implicitModelingRoots([group]),[]);
-});

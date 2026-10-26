@@ -48,6 +48,8 @@ export function viewerPickModeForRenderPane({
   measureMode = false
 } = {}) {
   if (!measureMode && selectionFilter === "parts") return VIEWER_PICK_MODE.PARTS;
+  // Select picking no geometry (its filter ticking none of Parts, Faces and Edges) picks nothing of the model.
+  if (!measureMode && selectionFilter === "none") return VIEWER_PICK_MODE.NONE;
   if (topologySelectionPending || topologySelectionUnavailable || topologySelectionDeferred) {
     return VIEWER_PICK_MODE.NONE;
   }
@@ -58,7 +60,7 @@ export function viewerPickModeForRenderPane({
   if (measureMode) {
     return VIEWER_PICK_MODE.MEASURE;
   }
-  if (["faces", "edges"].includes(selectionFilter)) return VIEWER_PICK_MODE.TOPOLOGY;
+  if (["faces", "edges", "topology"].includes(selectionFilter)) return VIEWER_PICK_MODE.TOPOLOGY;
   if (
     viewerMode === "assembly" &&
     !topologyPickingActive &&

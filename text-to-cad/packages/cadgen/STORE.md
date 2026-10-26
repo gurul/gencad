@@ -194,9 +194,16 @@ scheme), index payloads (their `schemaVersion`) — carries its own version and
 validates its own compatibility, so a fix in a producer retires that layer's
 entries alone and never moves a cid.
 
-- Bump `GEOMETRY_SCHEME` only when the same bytes must map to a different
-  tree: a codec or interpretation change. It re-keys every user's store, so
-  it is rare and deliberate, and the reason goes in the commit and here.
+- Bump `GEOMETRY_SCHEME` only when the same bytes must map to different
+  components: a codec or interpretation change of the geometry. It re-keys
+  every user's store, so it is rare and deliberate, and the reason goes in the
+  commit and here.
+- Bump `DOCUMENT_SCHEMA_VERSION` (`store/records.py`) when a document's same
+  bytes must read back as a different tree over the same components: the
+  names, hierarchy or placements the scene loader reads. Every document entry
+  misses once and the next read recompiles those bytes; components, surfaces
+  and meshes are reused by their own keys, and records stay valid (5: an XCAF
+  label entry, `=>[0:1:1:2]`, reads as no name).
 - Bump the derived artifact's own version for an extractor, mesher or surface
   fix. Never reach for geometry identity to invalidate a derived layer.
 - Wiping a store is an operator action (`cadgen store gc`, `store forget`),

@@ -7,7 +7,7 @@ import { renderMemoryAccounting } from "../render/renderMemoryAccounting.js";
 import { useStepPartVisualState, useStepLinework } from "./useStepDisplay.js";
 import { useStepExplode } from "./useStepExplode.js";
 import { useStepHighlights } from "./useStepHighlights.js";
-import { useStepMeasureOverlay } from "./useStepMeasureOverlay.js";
+import { useMeasureOverlay } from "../../kit/tools/measure/useMeasureOverlay.js";
 import { useStepPicking } from "./useStepPicking.js";
 import { useStepPose } from "./useStepPose.js";
 import { releaseStepRuntime, useStepSceneSync } from "./useStepSceneSync.js";
@@ -34,9 +34,14 @@ import ViewportError from "../../kit/status/ViewportError.jsx";
  * | exploded view | `useStepExplode.js` |
  * | pick proxies, B-rep linework, part highlight | `useStepDisplay.js` (`useStepLinework`) |
  * | reference highlight | `useStepHighlights.js` |
- * | measure rulers and the snap indicator | `useStepMeasureOverlay.js` |
+ * | measure rulers and the snap indicator | `kit/tools/measure/useMeasureOverlay.js` |
  * | pointer: hover, tap, double-click, measure picks | `useStepPicking.js` |
  * | Pose knobs | the kit's `JointHandleOverlay` |
+ *
+ * Preview mounts its own instance in its own viewport (`preview`, `StepPreviewLayers.jsx`):
+ * a second scene of the same model, posed and played by Preview's own motion, with nothing to
+ * pick, measure or hover. The editor's instance alone answers the file's memory accounting, the
+ * detail loader's adoption protocol and the debug seams.
  *
  * Hover is the one input that is not a prop. The layers subscribe to the surface's hover store
  * and resolve it through the surface (`surfaceProps.resolveHover`), so a hover change re-renders
@@ -47,9 +52,9 @@ export default function StepSceneLayers({ viewport, stepScene, policy, props: su
   const hover = useViewerHover(surfaceProps.hoverStore, surfaceProps.resolveHover);
   const props = { ...surfaceProps, hoveredPartId: hover.hoveredPartId, hoveredReferenceId: hover.hoveredReferenceId };
   const {
-    meshData, modelKey, isLoading, renderMode, previewMode, pickMode, hiddenPartIds, selectedPartIds,
+    meshData, modelKey, isLoading, renderMode, preview = false, pickMode, measureSnaps, hiddenPartIds, selectedPartIds,
     hoveredPartId, selectorRuntime, stepParameterRuntime, stepAnimationRuntime, animateMode,
-    jointHandles, measureState, activeMeasurementId, measureModeActive,
+    jointHandles, measureState, activeMeasurementId, selectedMeasurementIds = [], hoveredMeasurementId = "", measureModeActive,
     onLodCameraChange, onMeshSourceAdoption, onViewerAlertChange,
     onHoverReferenceChange, onActivateReference, onDoubleActivateReference, deferActivation, onMeasurePick, onMeasureHoverPoint
   } = props;
@@ -185,7 +190,8 @@ export default function StepSceneLayers({ viewport, stepScene, policy, props: su
     normalizedClipSettings.axis,
     normalizedClipSettings.enabled,
     normalizedClipSettings.invert,
-    normalizedClipSettings.offset
+    normalizedClipSettings.at,
+    normalizedClipSettings.partColors
   ]);
 
   const refs = {
@@ -220,7 +226,8 @@ export default function StepSceneLayers({ viewport, stepScene, policy, props: su
     if (pick && !measureLockedAnchorRef.current) {
       measureLockedAnchorRef.current = pick;
       measureHoverRef.current = pick;
-    } else if (pick && measureLockedAnchorRef.current) {
+    } else {
+      // The second end, the held pick pressed again, or a press on nothing: each lets go of it.
       measureLockedAnchorRef.current = null;
     }
     onMeasurePick?.(pick);
@@ -238,17 +245,18 @@ export default function StepSceneLayers({ viewport, stepScene, policy, props: su
     }
   }, [measureState]);
 
-  useStepMeasureOverlay({
-    measureCanvasRef, measureState, activeMeasurementId, measureHoverRef, measureModeActive,
-    runtimeRef, mountRef, previewMode, viewerReadyTick
+  useMeasureOverlay({
+    measureCanvasRef, measureState, activeMeasurementId, selectedMeasurementIds, hoveredMeasurementId, measureHoverRef, measureModeActive,
+    runtimeRef, mountRef, preview, viewerReadyTick
   });
 
   useStepPicking({
     runtimeRef,
     mountRef: hostRef,
     sceneMountRef: mountRef,
-    previewMode,
+    preview,
     pickMode,
+    measureSnaps,
     selectorRuntime: activeSelectorRuntime,
     pickableFaces: filteredPickableFaces,
     pickableEdges: filteredPickableEdges,
@@ -259,17 +267,24 @@ export default function StepSceneLayers({ viewport, stepScene, policy, props: su
     onDoubleActivateReference,
     deferActivation,
     pickAtRef: props.pickAtRef,
+    topologyAtRef: props.topologyAtRef,
+    measureAtRef: props.measureAtRef,
+    onMeasureWantsTopology: props.onMeasureWantsTopology,
     onMeasurePick: handleMeasurePick,
     onMeasureHoverPoint: handleMeasureHoverPoint,
     viewerReadyTick,
-    // Nothing under the pointer is picked or hovered while a routine plays, in preview or under Position.
-    suppressTopologyPicking: animateMode || Array.isArray(jointHandles) || stepAnimationPlaying
+    // Nothing under the pointer is picked or hovered while a routine plays, in preview, or under Animation or Position.
+    // Position's knobs are Select's and leave its picks alone: a press is the knob's only on a knob.
+    suppressTopologyPicking: animateMode || stepAnimationPlaying
   });
 
   // Read-only debug/test seams. `__cadCamera` and `__cadStage` are the viewport's.
   const placementRef = useRef(null);
   placementRef.current = { modelKey, renderMode, floor: normalizedThemeSettings.floor || {}, renderConfiguration: props.renderConfiguration };
   useEffect(() => {
+    // The view on screen answers them: Preview's layers while it is open, and as it closes the
+    // layers it covered (the editor's) answer again. The memory probe is the editor's alone: the
+    // Preview's scene shares its geometry, and the file's accounting is the editor's.
     // Byte attribution for the headless memory harness (read, never polled here).
     const memoryProbe = () => renderMemoryAccounting(runtimeRef.current);
     // The LIVE record transforms, so a browser test can assert where a posed occurrence
@@ -302,15 +317,22 @@ export default function StepSceneLayers({ viewport, stepScene, policy, props: su
           : current.floor.enabled === true && current.floor.followModel !== false
       };
     };
-    Object.assign(window, { __cadRenderMemoryProbe: memoryProbe, __cadDisplayRecords: displayRecords, __cadJointHandles: jointHandleLayout });
+    const seams = { __cadDisplayRecords: displayRecords, __cadJointHandles: jointHandleLayout, ...(preview ? {} : { __cadRenderMemoryProbe: memoryProbe }) };
+    const covered = Object.fromEntries(Object.keys(seams).map(name => [name, window[name]]));
+    const coveredPlacement = Object.getOwnPropertyDescriptor(window, "__cadModelPlacement");
+    Object.assign(window, seams);
     Object.defineProperty(window, "__cadModelPlacement", { configurable: true, get: placement });
     return () => {
-      if (window.__cadRenderMemoryProbe === memoryProbe) delete window.__cadRenderMemoryProbe;
-      if (window.__cadDisplayRecords === displayRecords) delete window.__cadDisplayRecords;
-      if (window.__cadJointHandles === jointHandleLayout) delete window.__cadJointHandles;
-      if (Object.getOwnPropertyDescriptor(window, "__cadModelPlacement")?.get === placement) delete window.__cadModelPlacement;
+      for (const [name, own] of Object.entries(seams)) {
+        if (window[name] !== own) continue;
+        if (covered[name]) window[name] = covered[name]; else delete window[name];
+      }
+      if (Object.getOwnPropertyDescriptor(window, "__cadModelPlacement")?.get === placement) {
+        if (coveredPlacement) Object.defineProperty(window, "__cadModelPlacement", coveredPlacement);
+        else delete window.__cadModelPlacement;
+      }
     };
-  }, [runtimeRef, stepScene]);
+  }, [runtimeRef, stepScene, preview]);
 
   return (
     <>
