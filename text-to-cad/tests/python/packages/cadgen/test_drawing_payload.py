@@ -304,7 +304,7 @@ class ColourResolution(DrawingFixture):
             lambda doc, msp: msp.add_line((0, 0), (1, 1), dxfattribs={"layer": "NOPE"}),
         )
         self.assertEqual(self.colors(payload), [None])
-        self.assertEqual(payload["layers"], [{"name": "NOPE", "color": None, "count": 1}])
+        self.assertEqual(payload["layers"], [{"name": "NOPE", "color": None, "entities": 1}])
 
     def test_no_primitive_carries_the_sentinel_or_a_stroke_width(self) -> None:
         def build(doc, msp):
@@ -314,7 +314,7 @@ class ColourResolution(DrawingFixture):
 
         payload = self.payload("shape.dxf", build)
         for primitive in payload["primitives"]:
-            self.assertEqual(set(primitive), {"type", "layer", "color", "geometry"})
+            self.assertEqual(set(primitive), {"type", "layer", "color", "entity", "geometry"})
             self.assertNotEqual(primitive["color"], drawing_payload._DEFAULT_PEN_SENTINEL)
 
 
@@ -332,11 +332,20 @@ class LayersAndUnits(DrawingFixture):
         self.assertEqual(
             payload["layers"],
             [
-                {"name": "PLAIN", "color": None, "count": 1},
-                {"name": "CUT", "color": "#ff0000", "count": 2},
+                {"name": "PLAIN", "color": None, "entities": 1},
+                {"name": "CUT", "color": "#ff0000", "entities": 2},
             ],
             "first-seen order, and a layer nothing drew on is not a row",
         )
+
+    def test_a_layer_counts_entities_not_the_primitives_they_became(self) -> None:
+        def build(doc, msp):
+            doc.layers.add("CUT", color=1)
+            msp.add_circle((0, 0), 2, dxfattribs={"layer": "CUT"})
+            msp.add_lwpolyline([(0, 0), (1, 0), (1, 1)], dxfattribs={"layer": "CUT"})
+
+        payload = self.payload("layer_entities.dxf", build)
+        self.assertEqual(payload["layers"], [{"name": "CUT", "color": "#ff0000", "entities": 2}])
 
     def test_units_report_the_code_the_name_and_the_millimetre_factor(self) -> None:
         payload = self.payload("mm.dxf", lambda doc, msp: msp.add_line((0, 0), (1, 1)))
@@ -547,3 +556,50 @@ class TheStoreAnswersTheSecondTime(DrawingFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EntitiesNameWhatDrew(DrawingFixture):
+    """Every primitive names its modelspace entity by handle, and ``entities`` says what each is."""
+
+    def test_each_primitive_names_its_entity_and_each_entity_is_listed_once(self) -> None:
+        handles = {}
+
+        def build(doc, msp):
+            doc.layers.add("CUT", color=1)
+            handles["line"] = msp.add_line((0, 0), (10, 0), dxfattribs={"layer": "CUT"}).dxf.handle
+            handles["circle"] = msp.add_circle((5, 5), 1.5, dxfattribs={"layer": "CUT"}).dxf.handle
+
+        payload = self.payload("entities.dxf", build)
+        self.assertEqual({primitive["entity"] for primitive in payload["primitives"]}, set(handles.values()))
+        self.assertEqual(payload["entities"], [
+            {"handle": handles["line"], "type": "LINE", "layer": "CUT"},
+            {"handle": handles["circle"], "type": "CIRCLE", "layer": "CUT", "center": [5, 5], "radius": 1.5},
+        ])
+
+    def test_a_block_reference_draws_under_its_insert_handle_on_its_contents_layers(self) -> None:
+        handles = {}
+
+        def build(doc, msp):
+            block = doc.blocks.new("BOLT")
+            block.add_circle((0, 0), 2)
+            block.add_line((-2, 0), (2, 0), dxfattribs={"layer": "CENTRE"})
+            handles["insert"] = msp.add_blockref("BOLT", (20, 20), dxfattribs={"layer": "HARDWARE"}).dxf.handle
+
+        payload = self.payload("insert.dxf", build)
+        self.assertEqual({primitive["entity"] for primitive in payload["primitives"]}, {handles["insert"]})
+        self.assertEqual(payload["entities"], [{"handle": handles["insert"], "type": "INSERT", "layer": "HARDWARE", "block": "BOLT"}])
+        # The block's circle is on "0", which takes the INSERT's layer; its line keeps its own.
+        self.assertEqual({row["name"]: row["entities"] for row in payload["layers"]}, {"HARDWARE": 1, "CENTRE": 1})
+
+    def test_a_dimension_is_one_entity_however_many_primitives_draw_it(self) -> None:
+        handles = {}
+
+        def build(doc, msp):
+            dimension = msp.add_linear_dim(base=(0, -5), p1=(0, 0), p2=(10, 0))
+            dimension.render()
+            handles["dimension"] = dimension.dimension.dxf.handle
+
+        payload = self.payload("dimension_entity.dxf", build)
+        self.assertGreater(len(payload["primitives"]), 1)
+        self.assertEqual([row["handle"] for row in payload["entities"]], [handles["dimension"]])
+        self.assertEqual(payload["entities"][0]["type"], "DIMENSION")

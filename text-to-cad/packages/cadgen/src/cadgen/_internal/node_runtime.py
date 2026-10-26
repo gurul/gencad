@@ -41,6 +41,7 @@ or ezdxf may be reachable from here.
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import json
 import os
 import shutil
@@ -89,9 +90,10 @@ class NodeBuilderError(RuntimeError):
 def cad_node_executable(repo_root: Path | str | None = None) -> str:
     """Absolute path to the ``node`` binary to spawn builders with.
 
-    Env-first (:data:`NODE_ENV_VARS`), then ``PATH``. ``repo_root`` is accepted for call-site
-    symmetry with the other cadgen entrypoints and is not otherwise used -- Node is a
-    system/runtime dependency, not a repo-relative one.
+    Env-first (:data:`NODE_ENV_VARS`), then ``PATH``, then the Node that Playwright ships
+    (:func:`_playwright_node`). ``repo_root`` is accepted for call-site symmetry with the
+    other cadgen entrypoints and is not otherwise used -- Node is a system/runtime
+    dependency, not a repo-relative one.
 
     Raises :class:`NodeUnavailable` with an actionable message. This is a soft, CALL-TIME
     dependency: cadgen publishes to PyPI and must not *require* Node, so nothing looks for it
@@ -114,10 +116,33 @@ def cad_node_executable(repo_root: Path | str | None = None) -> str:
     if found:
         return str(Path(found).resolve())
 
+    bundled = _playwright_node()
+    if bundled:
+        return bundled
+
     raise NodeUnavailable(
-        "node was not found on PATH. The DXF and mesh-export builders run in Node. "
-        "Install Node.js (>=20), or point CADGEN_NODE at an existing node binary."
+        "node was not found on PATH, nor inside the installed playwright package. The DXF "
+        "and mesh-export builders run in Node. Install Node.js (>=20), or point CADGEN_NODE "
+        "at an existing node binary."
     )
+
+
+def _playwright_node() -> str | None:
+    """The Node binary inside the installed ``playwright`` package, if it has one.
+
+    Playwright runs its driver on a Node of its own (``playwright/driver/node``,
+    ``node.exe`` on Windows), and cadgen depends on Playwright, so every cadgen install
+    has a Node even on a machine with none on ``PATH`` -- the usual state of a PyPI
+    install on Windows. ``cadgen`` pins Playwright, so this Node's version moves only
+    with that pin. The package is located, never imported.
+    """
+    spec = importlib.util.find_spec("playwright")
+    if spec is None or not spec.origin:
+        return None
+    candidate = Path(spec.origin).parent / "driver" / ("node.exe" if sys.platform == "win32" else "node")
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate.resolve())
+    return None
 
 
 def node_package_root() -> Path:

@@ -1,8 +1,7 @@
 import { STEP_MODEL_ROOT_ID } from "@text-to-cad/core/lib/step/stepTree.js";
-import { buildSelectionCopyPayload, buildWholeStepEntryCopyReference, copyTextLines } from "../workbench/referenceSelection.js";
+import { buildSelectionCopyPayload, buildWholeStepEntryCopyReference } from "../workbench/referenceSelection.js";
 import {
   copyPayloadWithSelectedIdFallback,
-  copyReferenceForAssemblyPartSelection,
   copyReferenceForRawSelectorSelection,
   copyReferenceForStepTreeNodeSelection,
   copyableStepTreeNodeForWorkspace
@@ -43,34 +42,4 @@ export function selectionCopyPayload(context, { referenceIds, partIds }) {
   return copyPayloadWithSelectedIdFallback(buildSelectionCopyPayload({ references: [...references, ...parts], parts: [], entry: context.entry }), {
     selectedReferenceIds: referenceIds, selectedPartIds: partIds, copyReferenceMap: context.copyReferenceMap
   });
-}
-
-/**
- * What one node copies — a Features row or a picked face, edge or part — shaped the one way
- * copied text is (`copyTextLines`): canonical, carrying the file's prefix. "" when it has none.
- *
- * @param {StepCopyContext} context
- * @param {string} id
- * @param {{ topology?: boolean }} [options]  `topology`: the id is a face or edge reference.
- */
-export function nodeCopyText(context, id, { topology = false } = {}) {
-  const normalizedId = String(id || "").trim();
-  if (!normalizedId) return "";
-  const whole = !topology && !context.isAssemblyView && normalizedId === STEP_MODEL_ROOT_ID
-    ? buildWholeStepEntryCopyReference(context.entry) : null;
-  const reference = topology ? topologyReference(context, normalizedId) || null : null;
-  const part = !topology && !whole
-    ? context.copyReferenceMap.get(normalizedId) ||
-      copyReferenceForStepTreeNodeSelection(treeNode(context, normalizedId), normalizedId, "assembly-part") ||
-      copyReferenceForAssemblyPartSelection(treeNode(context, normalizedId), normalizedId) ||
-      copyReferenceForRawSelectorSelection(normalizedId, "assembly-part")
-    : null;
-  const { lines } = copyPayloadWithSelectedIdFallback(buildSelectionCopyPayload({
-    references: [whole, reference, part].filter(Boolean), parts: [], entry: context.entry
-  }), {
-    selectedReferenceIds: topology ? [normalizedId] : [],
-    selectedPartIds: topology ? [] : [normalizedId],
-    copyReferenceMap: context.copyReferenceMap
-  });
-  return copyTextLines(lines.slice(0, 1), context.entry?.fileRefPrefix)[0] || "";
 }

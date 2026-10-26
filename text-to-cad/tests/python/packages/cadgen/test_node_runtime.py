@@ -290,12 +290,25 @@ class DiscoveryTest(NodeRuntimeTestCase):
     def test_missing_node_raises_an_actionable_error(self):
         cleared = {name: "" for name in node_runtime.NODE_ENV_VARS}
         with mock.patch.dict(os.environ, {**cleared, "PATH": str(self.root)}, clear=False):
-            with mock.patch.object(node_runtime.shutil, "which", return_value=None):
+            with mock.patch.object(node_runtime.shutil, "which", return_value=None), \
+                    mock.patch.object(node_runtime, "_playwright_node", return_value=None):
                 with self.assertRaises(NodeUnavailable) as ctx:
                     cad_node_executable()
         message = str(ctx.exception)
         self.assertIn("node was not found", message)
         self.assertIn("CADGEN_NODE", message)
+
+    def test_no_node_on_path_falls_back_to_playwrights_own(self):
+        """A machine with no Node still has the one Playwright, a cadgen dependency, ships."""
+        cleared = {name: "" for name in node_runtime.NODE_ENV_VARS}
+        with mock.patch.dict(os.environ, {**cleared, "PATH": str(self.root)}, clear=False):
+            with mock.patch.object(node_runtime.shutil, "which", return_value=None):
+                node = cad_node_executable()
+        import playwright
+
+        self.assertEqual(Path(playwright.__file__).resolve().parent / "driver", Path(node).parent)
+        version = subprocess.run([node, "--version"], capture_output=True, text=True, check=True).stdout
+        self.assertGreaterEqual(int(version.strip().lstrip("v").split(".")[0]), 20)
 
     def test_node_path_is_derived_from_the_configured_builder_location(self):
         root = node_package_root()

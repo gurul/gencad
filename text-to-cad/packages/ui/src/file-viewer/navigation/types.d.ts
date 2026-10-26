@@ -13,8 +13,8 @@ export type EntryMenuItem = { action: EntryAction; label: string };
 
 export const ENTRY_ACTIONS: readonly EntryAction[];
 /** The menu for the file on screen: the actions the host can perform, in a fixed order. */
-export function entryMenu(platform: Platform, capabilities: ReadonlySet<EntryAction>): EntryMenuItem[];
-export function revealLabel(platform: Platform): string;
+export function entryMenu(platform: Platform, capabilities: ReadonlySet<EntryAction>, t?: (key: string) => string): EntryMenuItem[];
+export function revealLabel(platform: Platform, t?: (key: string) => string): string;
 
 /* -------------------------------------------------------------------- */
 /* The explorer                                                          */
@@ -54,16 +54,15 @@ export function fuzzyMatch(
 ): { score: number; indices: number[] } | null;
 
 /**
- * The one navbar, over a file (a host's home has none). Left: the logo, which opens the app's menu
+ * The one navbar, over a file and over a host's home (with no file, history or Back to files). Left: the logo, which opens the app's menu
  * (`AppMenu`), Back and Forward where the host keeps the view's history (`history`), the open file's
- * name (the explorer's door, where the host's files can be browsed) and its ⋯. Right: `update`, `trailing` (the file's actions), `fullSize`, then the box the
- * renderer draws its view controls into (`controlsRef`).
+ * name (the explorer's door, where the host's files can be browsed) and its ⋯. Right: `update`, `trailing` (the file's actions), `fullSize`, then the renderer's view controls (`controlsRef`).
  */
 export const ViewerNavbar: ComponentType<{
   /** The host's home, where it has one: the app menu's Back to files. */
   onHome?: () => void;
   /** The rest of the app's menu: the host's links and the person's settings. */
-  menu?: { links?: import("../../host/types.js").ViewerLinks; appSettings?: readonly import("../types.js").AppSetting[]; platform?: string } | null;
+  menu?: { links?: import("../../host/types.js").ViewerLinks; appSettings?: readonly import("../types.js").AppSetting[]; colorScheme?: import("../types.js").ColorSchemeSetting; language?: import("../types.js").LanguageSetting; platform?: string } | null;
   /** The view's own history, where the host keeps one: Back and Forward, each disabled where there is nowhere to go. */
   history?: import("../types.js").ViewerHistory | null;
   /** The open file, by its absolute path. */
@@ -90,6 +89,8 @@ export const AppMenu: ComponentType<{
   onHome?: () => void;
   links?: import("../../host/types.js").ViewerLinks;
   appSettings?: readonly import("../types.js").AppSetting[];
+  colorScheme?: import("../types.js").ColorSchemeSetting;
+  language?: import("../types.js").LanguageSetting;
   platform?: string;
 }>;
 

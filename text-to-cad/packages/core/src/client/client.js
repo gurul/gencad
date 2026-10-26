@@ -259,6 +259,10 @@ export function createCadClient({ origin = '', fetch: fetchImpl = globalThis.fet
       return change === undefined ? request('/__cad/features', { operation: 'features' })
         : request('/__cad/features', { method: 'POST', headers: JSON_POST, body: change, operation: 'features' });
     },
+    language(locale) {
+      return locale === undefined ? request('/__cad/language', { operation: 'language' })
+        : request('/__cad/language', { method: 'POST', headers: JSON_POST, body: { locale }, operation: 'language' });
+    },
     version() {
       return request('/__cad/version', { operation: 'version' });
     },

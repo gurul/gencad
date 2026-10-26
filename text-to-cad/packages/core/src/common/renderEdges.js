@@ -99,7 +99,7 @@ export function syncLineMaterialOpacity(material, opacity) {
 // pixel ratio uncancelled and makes every configured thickness
 // `devicePixelRatio` times wider on screen: 2x on a Retina Mac, 3x at dpr 3.
 //
-// CAD classes, topology overlays, drawing strokes and highlights share this
+// CAD classes, topology overlays, annotation strokes and highlights share this
 // device-pixel resolution contract. Their resolved widths can differ without
 // an accidental extra devicePixelRatio multiplier in any one path.
 export function screenSpaceLineDeviceResolution(renderer, width, height) {

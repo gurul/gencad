@@ -7,8 +7,11 @@ export declare function referencePart(reference: PromptReference, id?: string): 
 export declare function textPart(text: string, id?: string): Extract<PromptPart, { kind: 'text' }>;
 export declare function promptReferenceIds(reference: PromptReference): string[];
 export declare function formatPromptReference(reference: PromptReference): string;
+export declare function parsePromptReference(text: string): PromptReference | null;
 export declare function formatPromptContextText(context: PromptContext): string;
 export declare function formatPromptMessage(context: PromptContext, options?: PromptMessageOptions): string;
+export declare function resolvePromptMessage(context: PromptContext): Promise<string>;
+export declare function resolveAttachmentPaths(context: PromptContext): Promise<Map<string, string>>;
 export declare const unavailablePromptContext: PromptContextPort;
 /** One delivery per operation id, a bound on deliveries in flight, and a bounded memory of completed ones. */
 export interface PromptDeliveryLedger {

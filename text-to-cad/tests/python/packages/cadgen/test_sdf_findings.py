@@ -127,6 +127,11 @@ CASES = [
     ("missing_joint_type", _model(f'{TWO_LINKS}<joint name="j1"><parent>base</parent><child>arm</child></joint>'), "missing_joint_type", "error"),
     ("unknown_joint_type", _model(_joint(AXIS, joint_type="twisty")), "unknown_joint_type", "error"),
     ("missing_joint_parent", _model(f'{TWO_LINKS}<joint name="j1" type="fixed"><child>arm</child></joint>'), "missing_child_text", "error"),
+    # An empty element has no text (None), which is no more an answer than a blank one.
+    ("empty_joint_parent", _model(f'{TWO_LINKS}<joint name="j1" type="fixed"><parent/><child>arm</child></joint>'), "missing_child_text", "error"),
+    ("include_self_closing_uri", '<sdf version="1.12"><include><uri/></include></sdf>', "missing_child_text", "error"),
+    ("include_empty_uri", '<sdf version="1.12"><include><uri></uri></include></sdf>', "missing_child_text", "error"),
+    ("include_blank_uri", '<sdf version="1.12"><include><uri>   </uri></include></sdf>', "missing_child_text", "error"),
     ("world_as_child", _model(f'{TWO_LINKS}<joint name="j1" type="fixed"><parent>base</parent><child>world</child></joint>'), "invalid_joint_child", "error"),
     ("missing_link_reference", _model(f'{TWO_LINKS}<joint name="j1" type="fixed"><parent>base</parent><child>ghost</child></joint>'), "missing_link_reference", "error"),
     ("missing_axis", _model(_joint("")), "missing_joint_axis", "warning"),

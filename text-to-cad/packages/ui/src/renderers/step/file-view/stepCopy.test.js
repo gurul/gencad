@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { STEP_MODEL_ROOT_ID } from "@text-to-cad/core/lib/step/stepTree.js";
-import { nodeCopyText, selectionCopyPayload } from "./stepCopy.js";
+import { selectionCopyPayload } from "./stepCopy.js";
 
 const face = { id: "o1.1.f3", selectorType: "face", copyText: "#o1.1.f3" };
 const context = (overrides = {}) => ({
@@ -23,9 +23,3 @@ test("a single part's root copies as the whole file", () => {
   assert.deepEqual(payload.lines, ["#"], "the whole document, which Copy then prefixes with its file");
 });
 
-test("one node copies the way the Copy Reference button does: canonical, with the file's prefix", () => {
-  assert.equal(nodeCopyText(context(), "o1.1.f3", { topology: true }), "hinge.step#o1.1.f3");
-  assert.equal(nodeCopyText(context(), "o1.2"), "hinge.step#o1.2");
-  assert.equal(nodeCopyText(context({ entry: { file: "hinge.step", kind: "assembly" } }), "o1.2"), "#o1.2", "no prefix, the bare ref");
-  assert.equal(nodeCopyText(context(), "  "), "");
-});

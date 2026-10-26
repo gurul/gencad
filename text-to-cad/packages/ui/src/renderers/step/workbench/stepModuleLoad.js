@@ -26,7 +26,7 @@ export function stepPoseLogic(definition) {
 //
 // So null resolves to a ready state with no pose values, and the section is
 // then absent on its own terms: a model with no mates has no Position section,
-// exactly as a model with no clips has no playbar in preview.
+// exactly as a model with no clips has no Animation section.
 export function resolveStepModuleLoad({ url = "", definition = null, restored = null } = {}) {
   return {
     loadState: {
