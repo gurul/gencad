@@ -23,10 +23,18 @@ const NOISE = {
   worker_stopped: [-15, -2, -1].map(status => crash({ where: 'build', type: 'WorkerDied', handled: false, status })),
   their_recursion: [crash({ where: 'build', type: 'RecursionError' }, [
     ...Array(14).fill([USER, { file: 'cadgen/authoring.py', function: '_decorator.<locals>._apply.<locals>.model', line: 573 }]).flat(),
-    { file: 'cadgen/authoring.py', function: '_same_file', line: 223 }, { file: 'pathlib/_local.py', function: 'PurePath.__str__', line: 233 }])],
+    { file: 'cadgen/authoring.py', function: '_same_file', line: 223 }, { file: 'pathlib/_local.py', function: 'PurePath.__str__', line: 233 }]),
+    // 0.10's names: the library's own frames are `cad/`.
+    crash({ where: 'build', type: 'RecursionError' },
+      Array(14).fill([USER, { file: 'cad/engine/model.py', function: 'model.<locals>.call', line: 412 }]).flat())],
   page_cancelled: [crash({ where: 'page', type: 'AbortError', handled: false }, [
     { file: 'vendor-react.js', function: 'commitHookEffectListUnmount', line: 8, column: 52011 },
     { file: 'index.js', function: '<anonymous>', line: 1, column: 48213 }])],
+  not_the_pages: [
+    crash({ where: 'page', type: 'i', handled: false }, [{ file: '<?>', function: 'Object.connect', line: 12, column: 4822 }]),
+    crash({ where: 'page', type: 'SyntaxError', handled: false }, ['UtilityScript.<anonymous>', 'UtilityScript.evaluate', 'eval', 'predicate']
+      .map(name => ({ file: '<?>', function: name, line: 1, column: 44 }))),
+  ],
 };
 
 // cadgen's bugs, which look like noise in one way or another: every one goes on to PostHog.
@@ -51,6 +59,9 @@ const BUGS = [
   crash({ where: 'build', type: 'KeyError' }, [USER, { file: 'cadgen/color.py', function: '_parse_hex', line: 42 }]),
   crash({ where: 'build', type: 'RecursionError' }, Array(30).fill({ file: 'cadgen/_internal/tree.py', function: 'walk', line: 12 })),
   crash({ where: 'page', type: 'TimeoutError' }), // only a cancellation is asked for; a timeout is a server that did not answer
+  // A page's crash with one frame of its own among an extension's or an automation's: the page called what threw.
+  crash({ where: 'page', type: 'TypeError' }, [{ file: '<?>', function: '<anonymous>', line: 1, column: 1 },
+    { file: 'vendor-three-Cu8Rn7rr.js', function: 'hg.vg', line: 4, column: 200 }]),
   crash({ where: 'tool', tool: 'cad_sync', type: 'OSError' }, [{ file: 'cadgen/_internal/atomic_replace.py', function: 'write_bytes_atomic', line: 246 },
     { file: 'pathlib/_local.py', function: 'Path.open', line: 537 }]),
   crash({ where: 'page', type: 'NotFoundError' }, [{ file: 'assets/vendor-react.js', function: 'Au', line: 8, column: 109111 }]),
@@ -75,7 +86,7 @@ test("cadgen's own bugs, and every row that is not a crash, all go on", () => {
 const INSTALL = '8c347ec3-1342-4db5-a19a-491cbc8c59be';
 const SESSION = '0b1e6f1a-6a52-4c39-9d43-2f5e0f0b9d11';
 const batch = events => ({ schema: 3, install: INSTALL, session: SESSION, process: 'viewer', version: '0.7.17', channel: 'codex-github',
-  platform: 'win32', arch: 'AMD64', client: { name: 'cadgen-viewer' }, presentation: 'browser', events });
+  platform: 'win32', arch: 'AMD64', client: { name: 'cad-viewer' }, presentation: 'browser', events });
 const named = ({ event, ...fields }) => ({ name: event, ...fields });
 
 test('a batch with noise in it is taken whole: its other rows are stored, and one line counts what was left out', async () => {
@@ -99,7 +110,7 @@ test('a batch with noise in it is taken whole: its other rows are stored, and on
   } finally { info.mock.restore(); }
   assert.equal(stored.length, 2);
   assert.deepEqual(lines, [
-    'telemetry dropped page_left 4 (schema 3, cadgen 0.7.17)',
-    'telemetry dropped worker_stopped 1 (schema 3, cadgen 0.7.17)',
+    'telemetry dropped page_left 4 (schema 3, release 0.7.17)',
+    'telemetry dropped worker_stopped 1 (schema 3, release 0.7.17)',
   ]);
 });

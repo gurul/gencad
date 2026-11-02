@@ -3,12 +3,12 @@
 // Inspect and Render paint their own scene backgrounds. The app's `--background`
 // token provides the fallback for the frame around that scene.
 // A missing or unreadable token falls back to the viewer's neutral light and
-// charcoal dark palette. This is app UI resolution; the standalone snapshot
+// cool blue-grey dark palette. This is app UI resolution; the standalone snapshot
 // renderer consumes its own supplied theme settings without app preferences.
 //
 // Plain functions, no `@/` imports and no React, so `node --test` loads this
 // file directly; `document` arrives as an argument for the same reason.
-import { APP_THEME_COLORS } from "@text-to-cad/core/lib/appTheme.js";
+import { APP_THEME_COLORS } from "@cad/core/lib/appTheme.js";
 
 /** The `--background` pair, written out: what the tokens resolve to.
  *

@@ -1,11 +1,11 @@
 "use client";
 
 import * as React from "react";
-import { Check, ChevronRight } from "lucide-react";
+import { Check, ChevronRight, Minus } from "lucide-react";
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
 
-import { cn } from "@text-to-cad/ui/utils"
-import { ScrollArea } from "@text-to-cad/ui/primitives/scroll-area";
+import { cn } from "@cad/ui/utils"
+import { ScrollArea } from "@cad/ui/primitives/scroll-area";
 
 function DropdownMenu({
   ...props
@@ -49,6 +49,7 @@ const DropdownMenuContent = React.forwardRef(/**
   );
 });
 
+/** @param {React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Item> & { inset?: boolean, variant?: "default" | "destructive" }} props */
 function DropdownMenuItem({
   className,
   inset,
@@ -88,8 +89,9 @@ function DropdownMenuCheckboxItem({
       {...props}
     >
       <span className="pointer-events-none absolute right-2 flex size-3.5 items-center justify-center">
+        {/* A box some of whose items are ticked (`checked` "indeterminate") shows a dash, not a tick. */}
         <DropdownMenuPrimitive.ItemIndicator>
-          <Check className="size-4" />
+          {checked === "indeterminate" ? <Minus className="size-4" /> : <Check className="size-4" />}
         </DropdownMenuPrimitive.ItemIndicator>
       </span>
       {children}
@@ -127,6 +129,7 @@ function DropdownMenuRadioItem({
   );
 }
 
+/** @param {React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Label> & { inset?: boolean }} props */
 function DropdownMenuLabel({
   className,
   inset,
@@ -142,6 +145,7 @@ function DropdownMenuLabel({
   );
 }
 
+/** @param {React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Separator>} props */
 function DropdownMenuSeparator({
   className,
   ...props
@@ -174,6 +178,7 @@ function DropdownMenuSub({
   return <DropdownMenuPrimitive.Sub data-slot="dropdown-menu-sub" {...props} />;
 }
 
+/** @param {React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.SubTrigger> & { inset?: boolean }} props */
 function DropdownMenuSubTrigger({
   className,
   inset,
@@ -199,6 +204,7 @@ function DropdownMenuSubTrigger({
 // Portaled like the menu itself: rendered inside its parent menu, a submenu is positioned
 // against — and clipped by — that menu whenever it is a containing block (a translucent,
 // backdrop-blurred menu is one), which drew it off its trigger and out of sight.
+/** @param {React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.SubContent>} props */
 function DropdownMenuSubContent({
   className,
   ...props

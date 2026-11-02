@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { captureSettled, fitCapture } from './capture';
 import { createLiveRegistry, type LiveController } from './live';
 import { TUNNEL_REPLY_MAX_BYTES } from './tunnel';
@@ -15,7 +15,8 @@ function view(path: string, { loading = true, fails = '' } = {}) {
 }
 
 describe("a view's picture for the agent", () => {
-  afterEach(() => { vi.unstubAllGlobals(); });
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
   it('waits for the model the agent showed to load, rather than failing while it does', async () => {
     const live = createLiveRegistry();
@@ -23,12 +24,13 @@ describe("a view's picture for the agent", () => {
     const a = view('/m/a.step', { loading: false });
     live.binding.bind(a.controller);
     const picture = captureSettled(live, () => '/m/b.step', { timeoutMs: 5_000 });
-    await new Promise(resolve => setTimeout(resolve, 150));
+    await vi.advanceTimersByTimeAsync(150);
     const b = view('/m/b.step');
     live.binding.bind(b.controller);
-    await new Promise(resolve => setTimeout(resolve, 150));
+    await vi.advanceTimersByTimeAsync(4_000);  // loading, however long
     expect(b.controller.capture).not.toHaveBeenCalled();
     b.loaded();
+    await vi.advanceTimersByTimeAsync(100);  // its next look
     expect(await (await picture).text()).toBe('/m/b.step');
     expect(a.controller.capture).not.toHaveBeenCalled();
   });
@@ -39,15 +41,17 @@ describe("a view's picture for the agent", () => {
     expect(await (await captureSettled(live, () => 'c:\\Models\\a.step', { timeoutMs: 1_000 })).text()).toBe('C:/Models/a.step');
     await expect(captureSettled(live, () => null)).rejects.toThrow('No model is showing');
     live.binding.bind(view('/m/a.step', { loading: false, fails: 'Screenshot capture failed' }).controller);
-    const started = Date.now();
+    // No time passes (the clock is fake): a capture that waited would never answer.
     await expect(captureSettled(live, () => '/m/a.step', { timeoutMs: 5_000 })).rejects.toThrow('Screenshot capture failed');
-    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('says the model did not finish loading once its wait is over', async () => {
     const live = createLiveRegistry();
     live.binding.bind(view('/m/a.step').controller);
-    await expect(captureSettled(live, () => '/m/a.step', { timeoutMs: 300 })).rejects.toThrow(/did not finish loading.*Capture again/);
+    const failed = expect(captureSettled(live, () => '/m/a.step', { timeoutMs: 300 })).rejects.toThrow(/did not finish loading.*Capture again/);
+    await vi.advanceTimersByTimeAsync(300);
+    await failed;
   });
 
   it('goes as it is when it fits in one reply, and is drawn again smaller until it does', async () => {

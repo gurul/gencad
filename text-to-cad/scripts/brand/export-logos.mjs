@@ -38,7 +38,6 @@ for (const file of ['favicon.png', 'favicon.ico']) {
 // directory) use the C icon.
 await copyFile(path.join(brand, 'logo-c.svg'), path.join(root, 'packages/ui/src/assets/logo-c.svg'));
 await copyFile(path.join(brand, 'logo-cad.svg'), path.join(root, 'packages/ui/src/assets/logo-cad.svg'));
-await copyFile(path.join(brand, 'logo-texttocad.svg'), path.join(root, 'packages/ui/src/assets/logo-texttocad.svg'));
 await copyFile(path.join(brand, 'logo-c.png'), path.join(root, '.codex-plugin/logo.png'));
 await copyFile(path.join(brand, 'logo-c.png'), path.join(root, '.claude-plugin/icon.png'));
 console.log('Exported C, CAD, TEXTTOCAD and stacked TEXT TO CAD PNGs, the favicons, the viewer wordmarks and the plugin icons.');
