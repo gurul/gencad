@@ -1,8 +1,8 @@
-import { normalizeFormat } from "@text-to-cad/core/lib/fileFormats.js";
+import { normalizeFormat } from "@cad/core/lib/fileFormats.js";
 import {
   entryIconKindForRenderFormat,
   ENTRY_ICON_KIND
-} from "@text-to-cad/core/lib/renderCapabilities.js";
+} from "@cad/core/lib/renderCapabilities.js";
 
 export { ENTRY_ICON_KIND };
 
@@ -27,7 +27,7 @@ export function entryIconKind(entry, {
   status = {}
 } = {}) {
   const safeStatus = status || {};
-  if (safeStatus.artifactGenerating || safeStatus.loading) {
+  if (safeStatus.loading) {
     return ENTRY_ICON_KIND.LOADING;
   }
 

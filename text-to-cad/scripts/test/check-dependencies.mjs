@@ -6,7 +6,7 @@ import { isBuiltin } from 'node:module';
 import ts from 'typescript';
 
 export function checkDependencies(repo) {
-const packages = new Map(['core', 'ui'].map(name => [`@text-to-cad/${name}`, path.join(repo, 'packages', name)]));
+const packages = new Map(['core', 'ui'].map(name => [`@cad/${name}`, path.join(repo, 'packages', name)]));
 const extensions = ['', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.d.ts', '/index.ts', '/index.tsx', '/index.js'];
 function existing(file) {
   const base = file.replace(/\.(?:js|jsx)$/, '');
@@ -20,7 +20,7 @@ function resolveImport(specifier, file) {
   const clean = specifier.split('?')[0];
   if (clean.startsWith('.')) return existing(path.resolve(path.dirname(file), clean));
   const app = owner(file);
-  const aliases = app === 'apps/desktop' ? { '@renderer': 'src/renderer', '@shared': 'src/shared', '@main': 'src/main', '@preload': 'src/preload' } : app === 'apps/web' ? { '@': 'src/client' } : app === 'apps/docs' ? { '@': 'src' } : {};
+  const aliases = app === 'apps/web' ? { '@': 'src/client' } : app === 'apps/docs' ? { '@': 'src' } : {};
   for (const [name, target] of Object.entries(aliases)) if (clean.startsWith(name + '/')) return existing(path.join(repo, app, target, clean.slice(name.length + 1)));
   for (const [name, root] of packages) {
     if (clean !== name && !clean.startsWith(name + '/')) continue;
@@ -80,17 +80,16 @@ function walk(dir) {
     else if (/\.[cm]?[jt]sx?$/.test(item.name) && !/\.(test|spec)\./.test(item.name)) files.push(file);
   }
 }
-for (const root of ['apps/docs/src', 'apps/web/src', 'apps/mcp/src', 'apps/desktop/src', 'packages/core/src', 'packages/ui/src']) walk(path.join(repo, root));
+for (const root of ['apps/docs/src', 'apps/web/src', 'apps/mcp/src', 'packages/core/src', 'packages/ui/src']) walk(path.join(repo, root));
 const errors = [];
 const edges = new Map();
 const nodeModules = new Set();
 for (const file of files) {
   const from = owner(file); const code = fs.readFileSync(file, 'utf8'); const imports = sourceImports(code, file);
   if (from === 'packages/ui') for (const effect of hostEffects(code, file)) errors.push(`${path.relative(repo, file)} uses ${effect}; inject a host service`);
-  if (from === 'packages/ui' && /\b(?:window|globalThis)\.textToCad\b/.test(code)) errors.push(`${path.relative(repo, file)} uses a desktop global`);
   for (const item of imports) {
     if (isBuiltin(item.name)) nodeModules.add(file);
-    if (from === 'packages/ui' && item.name === '@text-to-cad/core/client' && !item.typesOnly) {
+    if (from === 'packages/ui' && item.name === '@cad/core/client' && !item.typesOnly) {
       const ast = ts.createSourceFile(file, code, ts.ScriptTarget.Latest, true);
       for (const node of ast.statements) if (ts.isImportDeclaration(node) && node.moduleSpecifier.text === item.name) {
         const bindings = node.importClause?.namedBindings;
@@ -103,10 +102,9 @@ for (const file of files) {
     if (/^(cadgen-js|cad-viewer(?:\/|$)|cadgen-react)/.test(item.name)) errors.push(`${label}: retired package`);
     if (from.startsWith('apps/') && to?.startsWith('apps/') && from !== to) errors.push(`${label}: app-to-app dependency`);
     if (from.startsWith('packages/') && to?.startsWith('apps/')) errors.push(`${label}: package depends on app source`);
-    if (from === 'packages/core' && (/^(react(?:-dom)?(?:\/|$)|electron(?:\/|$)|next(?:\/|$)|@text-to-cad\/ui(?:\/|$))/.test(item.name) || to === 'packages/ui')) errors.push(`${label}: core depends on UI/platform framework`);
-    if (from === 'packages/ui' && (isBuiltin(item.name) || /^(electron(?:\/|$)|@renderer\/|@main\/|@shared\/|@\/)/.test(item.name))) errors.push(`${label}: UI depends on a host or Node module`);
-    if (from === 'apps/desktop' && repoPath(file).startsWith('apps/desktop/src/renderer/') && to === from && repoPath(resolved).startsWith('apps/desktop/src/main/')) errors.push(`${label}: renderer imports main`);
-    if (item.name.startsWith('@text-to-cad/') && !resolved && !item.name.endsWith('.css')) errors.push(`${label}: missing package export/source`);
+    if (from === 'packages/core' && (/^(react(?:-dom)?(?:\/|$)|electron(?:\/|$)|next(?:\/|$)|@cad\/ui(?:\/|$))/.test(item.name) || to === 'packages/ui')) errors.push(`${label}: core depends on UI/platform framework`);
+    if (from === 'packages/ui' && (isBuiltin(item.name) || /^(electron(?:\/|$)|@\/)/.test(item.name))) errors.push(`${label}: UI depends on a host or Node module`);
+    if (item.name.startsWith('@cad/') && !resolved && !item.name.endsWith('.css')) errors.push(`${label}: missing package export/source`);
     if (item.name.startsWith('.') && !resolved && !/\.(css|svg|png|webp|ico|glb|wasm|json)$/.test(item.name.split('?')[0])) errors.push(`${label}: unresolved relative module`);
     if (resolved && !item.typesOnly) edges.set(file, [...(edges.get(file) || []), resolved]);
   }
@@ -122,7 +120,7 @@ function inspect(file) {
 inspect(start);
 // Any Node-only helper reachable from UI or an app's browser renderer is a leak,
 // even through a re-export or an otherwise framework-independent core module.
-for (const root of files.filter(file => ['packages/ui/', 'apps/web/', 'apps/mcp/', 'apps/docs/', 'apps/desktop/src/renderer/'].some(prefix => repoPath(file).startsWith(prefix)))) {
+for (const root of files.filter(file => ['packages/ui/', 'apps/web/', 'apps/mcp/', 'apps/docs/'].some(prefix => repoPath(file).startsWith(prefix)))) {
   const seen = new Set();
   function checkBrowser(file) {
     if (seen.has(file)) return; seen.add(file);

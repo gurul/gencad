@@ -6,8 +6,8 @@ import { normalizeToolStack } from '../renderers/kit/tools/toolStackLayout.js';
  *
  *   { version, settings, files }
  *
- * `settings` is tab-wide — the tool stack's layout, the appearance and how the home lays out its
- * library — and replaces every global preference.
+ * `settings` is tab-wide — the tool stack's layout, the appearance, how the home lays out its
+ * library and the folder the explorer was last in — and replaces every global preference.
  * `files` is the view of the file on screen (`kit/shell/fileView.js`: its camera, its Display
  * settings, its playback, its renderer's own slices) under `[absolute file path, renderer id]`,
  * and nothing else: a write puts a file last and drops any other (`TAB_FILE_LIMIT`), and a host
@@ -27,14 +27,16 @@ export const TAB_FILE_LIMIT = 1;
 export type Appearance = 'system' | 'light' | 'dark';
 /** How the home lays out its models: a grid of cards, or a list of rows. */
 export type LibraryLayout = 'grid' | 'list';
-export interface ToolStackLayout { panels: Record<string, { width?: number; height?: number }>; collapsed: Record<string, boolean>; closed: Record<string, boolean> }
+export interface ToolStackLayout { panels: Record<string, { width?: number; height?: number }>; collapsed: Record<string, boolean> }
 export interface TabSettings {
-  /** The tool stack's layout (`kit/tools/toolStackLayout.js`): the resizable panels' sizes, the folded panels and the closed ones. */
+  /** The tool stack's layout (`kit/tools/toolStackLayout.js`): the resizable panels' sizes and the folded panels. */
   toolStack: ToolStackLayout;
   /** System, Light or Dark; a new tab follows the OS until the person picks. */
   appearance: Appearance;
   /** The home's library: its models as a grid of cards (the default) or a list. */
   library: { layout: LibraryLayout };
+  /** The folder the name menu's Files was last in, this tab: where a model's Files starts; null, none yet. */
+  explorer: { folder: string | null };
 }
 export interface TabRecord {
   version: typeof TAB_RECORD_VERSION;
@@ -55,6 +57,11 @@ function normalizeLibrary(value: unknown): TabSettings['library'] {
   return { layout: LIBRARY_LAYOUTS.includes(layout as LibraryLayout) ? (layout as LibraryLayout) : 'grid' };
 }
 
+function normalizeExplorer(value: unknown): TabSettings['explorer'] {
+  const folder = plainObject(value) ? value.folder : undefined;
+  return { folder: typeof folder === 'string' && folder ? folder : null };
+}
+
 /** The settings as the tab keeps them, from anything a store handed back. */
 export function normalizeTabSettings(value: unknown): TabSettings {
   const record = plainObject(value) ? value : {};
@@ -62,6 +69,7 @@ export function normalizeTabSettings(value: unknown): TabSettings {
     toolStack: normalizeToolStack(record.toolStack) as ToolStackLayout,
     appearance: normalizeAppearance(record.appearance),
     library: normalizeLibrary(record.library),
+    explorer: normalizeExplorer(record.explorer),
   };
 }
 

@@ -1,4 +1,4 @@
-import { buildCadRefToken, parseCadRefSelector } from '../lib/cadRefs.js';
+import { buildCadRefToken, isDocumentId, isEngineRefFile, isEngineSelector, isLabelSelector, parseCadRefToken } from '../lib/cadRefs.js';
 
 let operationSequence = 0;
 const operationNamespace = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
@@ -13,6 +13,9 @@ export function validatePromptReference(reference) {
     // A file is named by its absolute path, `/`-separated (`/a/b.step`, `C:/a/b.step`).
     requireValue(typeof resource.path === 'string' && /^(?:[A-Za-z]:)?\//.test(resource.path) && !/[\\\0]/.test(resource.path)
       && resource.path.replace(/^(?:[A-Za-z]:)?\//, '').split('/').every(part => part && part !== '.' && part !== '..'), 'file paths must be normalized and absolute');
+  } else if (resource.kind === 'cad-model') {
+    // A document the engine holds by its id alone (a model's): its id, never a path.
+    requireValue(isDocumentId(resource.path), 'model references name the document by its id');
   } else {
     requireValue(resource.kind === 'url' && typeof resource.url === 'string', 'unknown resource kind');
     let url; try { url = new URL(resource.url); } catch { /* Report the contract error below. */ }
@@ -21,14 +24,16 @@ export function validatePromptReference(reference) {
   requireValue(resource.revision === undefined || typeof resource.revision === 'string', 'revision must be a string');
   requireValue(reference.label === undefined || typeof reference.label === 'string', 'label must be text');
   if (target.kind === 'text-range') {
+    requireValue(resource.kind !== 'cad-model', 'a model has no text ranges');
     requireValue(position(target.start) && position(target.end), 'invalid text range');
     requireValue(target.end.line > target.start.line || (target.end.line === target.start.line && target.end.character >= target.start.character), 'range end precedes its start');
   } else if (target.kind === 'cad-selector') {
-    requireValue(resource.kind === 'workspace-file', 'CAD selectors require a workspace file');
-    requireValue(Array.isArray(target.selectors) && target.selectors.length > 0 && target.selectors.every(selector => {
-      const parsed = typeof selector === 'string' && selector === selector.trim() ? parseCadRefSelector(selector) : null;
-      return parsed && parsed.selectorType !== 'opaque';
-    }), 'invalid CAD selector');
+    requireValue(resource.kind === 'workspace-file' || resource.kind === 'cad-model', 'CAD selectors require a file or a model');
+    // A document the engine draws (an .xbf, a STEP, a model) is named in the engine's grammar; any
+    // other file by its renderer's labels (cadRefs.js).
+    const valid = isEngineRefFile(resource.path) ? isEngineSelector : isLabelSelector;
+    requireValue(Array.isArray(target.selectors) && target.selectors.length > 0 && target.selectors.every(selector => valid(selector)),
+      'invalid CAD selector');
   } else requireValue(target.kind === 'whole-resource', 'unknown reference target');
   return reference;
 }
@@ -51,6 +56,8 @@ export function validatePromptContext(context) {
       requireValue(part.content && (typeof part.content.arrayBuffer === 'function' || typeof part.content.then === 'function'), 'attachment must provide binary content');
       requireValue(part.about === undefined || (Array.isArray(part.about) && part.about.every(id => typeof id === 'string')), 'attachment relationships must name reference parts');
       requireValue(part.label === undefined || typeof part.label === 'string', 'attachment label must be text');
+      requireValue(part.inlineText === undefined || typeof part.inlineText === 'string' || typeof part.inlineText?.then === 'function', 'inline attachment text must be text or its promise');
+      requireValue(part.path === undefined || typeof part.path === 'string' || typeof part.path?.then === 'function', 'attachment path must be a path or the promise of one');
     }
   }
   for (const part of context.parts) if (part.kind === 'attachment') {
@@ -90,6 +97,18 @@ export function promptReferenceIds(reference) {
   return reference.label ? [reference.label] : [];
 }
 
+/**
+ * A line that is one reference and nothing else — a file's absolute path and the ids in it, as a
+ * copied reference is written (`/models/base.step#base/face 3`) — as that reference; null for any other.
+ */
+export function parsePromptReference(text) {
+  const line = String(text || '').trim();
+  const parsed = line ? parseCadRefToken(line) : null;
+  if (!parsed || parsed.token.trim() !== line || !parsed.selectors.length) return null;
+  try { return validatePromptReference({ resource: { kind: isDocumentId(parsed.cadPath) ? 'cad-model' : 'workspace-file', path: parsed.cadPath }, target: { kind: 'cad-selector', selectors: parsed.selectors } }); }
+  catch { return null; }
+}
+
 /** Keep machine identity structured; these strings are the portable human/prompt representation. */
 export function formatPromptReference(reference) {
   validatePromptReference(reference);
@@ -110,24 +129,51 @@ export function formatPromptContextText(context) {
 }
 
 /**
+ * Where each attachment that is already saved is (`part.path`: a path, or the promise of one), by
+ * part id: what a message names when it carries the attachment as a file.
+ * @returns {Promise<Map<string, string>>}
+ */
+export async function resolveAttachmentPaths(context) {
+  const saved = new Map();
+  for (const part of context.parts) {
+    if (part.kind === 'attachment' && part.path !== undefined) saved.set(part.id, String(await part.path));
+  }
+  return saved;
+}
+
+/**
  * A context as one message, the way a person would write it: what they said, then what it is
  * about — each whole file on a `File:` line, the selections in it under `References:`, one per
  * line — then each attachment that travels as a file, by its label and path (`attachmentPath`;
  * one sent beside the text is left out). One spelling, whether the message is sent, queued or copied.
  */
-export function formatPromptMessage(context, { attachmentPath } = {}) {
+export function formatPromptMessage(context, { attachmentPath, attachmentText } = {}) {
   validatePromptContext(context);
   const said = context.parts.filter(part => part.kind === 'text').map(part => part.text.trim()).filter(Boolean);
   const files = [], references = [], attachments = [];
   for (const part of context.parts) {
     if (part.kind === 'reference') (part.reference.target.kind === 'whole-resource' ? files : references).push(formatPromptReference(part.reference));
     else if (part.kind === 'attachment') {
+      const inline = attachmentText?.(part);
+      if (inline) { attachments.push(inline); continue; }
       const path = attachmentPath?.(part);
       if (path) attachments.push(`${part.label || 'Attachment'}: ${path}`);
     }
   }
   const about = [...files.map(file => `File: ${file}`), ...(references.length ? ['References:', ...references] : []), ...attachments];
   return [said.join('\n\n'), about.join('\n')].filter(Boolean).join('\n\n');
+}
+
+/** Resolve a prompt's inline text or file paths after the host has bound its destination. */
+export async function resolvePromptMessage(context) {
+  validatePromptContext(context);
+  const inline = new Map(), paths = new Map();
+  await Promise.all(context.parts.filter(part => part.kind === 'attachment').map(async part => {
+    const text = await part.inlineText;
+    if (text) inline.set(part.id, text);
+    else if (part.path !== undefined) paths.set(part.id, String(await part.path));
+  }));
+  return formatPromptMessage(context, { attachmentText: part => inline.get(part.id), attachmentPath: part => paths.get(part.id) });
 }
 
 const failureMessage = error => error instanceof Error ? error.message : String(error);

@@ -1,6 +1,6 @@
 {
   "name": "text-to-cad-workspace",
-  "version": "0.7.21",
+  "version": "0.10.0",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -11,14 +11,14 @@
     "apps/docs"
   ],
   "scripts": {
-    "build:packages": "npm run build -w @text-to-cad/core && npm run build -w @text-to-cad/ui",
-    "build:web": "npm run build:packages && npm run build -w @text-to-cad/web",
-    "build:docs": "npm run build -w @text-to-cad/core && npm run build -w cad-skills-docs",
-    "dev:web": "npm run build:packages && npm run dev -w @text-to-cad/web",
-    "dev:docs": "npm run build -w @text-to-cad/core && npm run dev -w cad-skills-docs",
+    "build:packages": "npm run build -w @cad/core && npm run build -w @cad/ui",
+    "build:web": "npm run build:packages && npm run build -w @cad/web",
+    "build:docs": "npm run build -w @cad/core && npm run build -w cad-skills-docs",
+    "dev:web": "npm run build:packages && npm run dev -w @cad/web",
+    "dev:docs": "npm run build -w @cad/core && npm run dev -w cad-skills-docs",
     "test": "scripts/test/test-js.sh",
     "check:boundaries": "node scripts/test/check-dependencies.mjs && node scripts/test/check-kit-boundaries.mjs",
-    "build:mcp": "npm run build:packages && npm run build -w @text-to-cad/mcp"
+    "build:mcp": "npm run build:packages && npm run build -w @cad/mcp"
   },
   "overrides": {
     "postcss": "^8.5.14"
@@ -27,5 +27,8 @@
     "esbuild@0.28.2": true,
     "fsevents@2.3.3": true,
     "esbuild@0.27.7": true
+  },
+  "devDependencies": {
+    "gltf-validator": "2.0.0-dev.3.10"
   }
 }

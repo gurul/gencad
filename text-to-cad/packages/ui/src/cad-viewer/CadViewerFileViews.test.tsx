@@ -1,6 +1,6 @@
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
-import { unavailablePromptContext } from '@text-to-cad/core/prompt';
+import { unavailablePromptContext } from '@cad/core/prompt';
 import type { FileViewerProps } from '../file-viewer/types.js';
 // The built package: its renderers' modules are JSX in `.js`, which only the build compiles.
 import { CadViewer, createCadFileSource } from '../../dist/cad-viewer/index.js';
@@ -13,14 +13,16 @@ import { tabFileKey } from '../../dist/tab-store/tabRecord.js';
 // every renderer makes when its file is left (`useRendererShell`), a cleanup of the very commit that
 // left it.
 const key = (path: string) => JSON.stringify([path, 'step']);
-const viewer = vi.hoisted(() => ({ props: null as FileViewerProps | null, opened: [] as [string, unknown][] }));
+// `paths`: a document's id, as a host addresses a file, to the file it names (the renderer keys its view
+// by the file's path, whichever way it was addressed).
+const viewer = vi.hoisted(() => ({ props: null as FileViewerProps | null, opened: [] as [string, unknown][], paths: {} as Record<string, string> }));
 vi.mock('../../dist/file-viewer/FileViewer.js', async () => {
   const { createElement, useEffect, useRef } = await import('react');
   function Renderer({ props }: { props: FileViewerProps }) {
     const latest = useRef(props);
     latest.current = props;
     useEffect(() => {
-      const path = String(latest.current.file);
+      const path = viewer.paths[String(latest.current.file)] ?? String(latest.current.file);
       viewer.opened.push([path, latest.current.state.renderers?.[key(path)] ?? null]);
       return () => {
         const { state, onStateChange } = latest.current;
@@ -34,11 +36,13 @@ vi.mock('../../dist/file-viewer/FileViewer.js', async () => {
     return props.file ? createElement(Renderer, { key: String(props.file), props }) : null;
   } };
 });
-afterEach(() => { cleanup(); viewer.props = null; viewer.opened.length = 0; });
+afterEach(() => { cleanup(); viewer.props = null; viewer.opened.length = 0; viewer.paths = {}; });
 
-function catalogClient() {
-  const snapshot = { hydrated: true, entries: [], error: '', revision: 1, refreshing: false, catalogRevision: '' };
+function catalogClient(known = true) {
+  const entries = ['a', 'b'].map(name => ({ id: `id-${name}`, file: `/models/${name}.step`, sourcePath: `/models/${name}.step`, name: `${name}.step` }));
+  const snapshot = { hydrated: true, entries: known ? entries : [], error: '', revision: 1, refreshing: false, catalogRevision: '' };
   return { getSnapshot: () => snapshot as never, subscribe: () => () => {}, refresh: vi.fn(async () => ({ entries: [] })),
+    entryOf: (file: string) => snapshot.entries.find(entry => entry.id === file || entry.file === file) ?? null,
     resolveEntry: vi.fn(async () => { throw new Error('unused'); }) };
 }
 
@@ -47,7 +51,7 @@ test('only the file on screen keeps its view: a reload brings it back, and a fil
   const tabStore = createTabStore(memoryTabRecord());
   tabStore.settings.update({ appearance: 'dark', library: { layout: 'list' } });
   const settings = tabStore.settings.getSnapshot();
-  const host = { files: createCadFileSource(client as never), clipboard: { writeText: async () => {}, readText: async () => '', writeImage: async () => {} },
+  const host = { files: createCadFileSource(client as never), clipboard: { writeText: async () => {}, writeImage: async () => {} },
     promptContext: unavailablePromptContext, environment: { colorScheme: 'light' as const } };
   const view = (file: string) => <CadViewer client={client as never} host={host} tabStore={tabStore} live={createLiveRegistry()} file={file} onShow={() => {}} />;
   const opened = () => viewer.opened.at(-1);
@@ -75,4 +79,29 @@ test('only the file on screen keeps its view: a reload brings it back, and a fil
 
   // None of it is a setting: the tab's are as they were.
   expect(tabStore.settings.getSnapshot()).toBe(settings);
+});
+
+test('a file addressed by its id, as the web host does, opens as it was left after a reload, before and after the catalog knows it', () => {
+  viewer.paths = { 'id-a': '/models/a.step', 'id-b': '/models/b.step' };
+  for (const known of [true, false]) {
+    const client = catalogClient(known);
+    const tabStore = createTabStore(memoryTabRecord());
+    const host = { files: createCadFileSource(client as never), clipboard: { writeText: async () => {}, writeImage: async () => {} },
+      promptContext: unavailablePromptContext, environment: { colorScheme: 'light' as const } };
+    const view = (file: string) => <CadViewer client={client as never} host={host} tabStore={tabStore} live={createLiveRegistry()} file={file} onShow={() => {}} />;
+    render(view('id-a')).unmount();
+    expect(tabStore.getSnapshot().files).toEqual({ [tabFileKey('/models/a.step', 'step')]: { left: '/models/a.step' } });
+    const { rerender, unmount } = render(view('id-a'));
+    // A renderer reads its view as its file loads, after the page has settled what it keeps: the
+    // record must still hold it then.
+    expect(viewer.opened.at(-1)).toEqual(['/models/a.step', { left: '/models/a.step' }]);
+    expect(tabStore.getSnapshot().files).toEqual({ [tabFileKey('/models/a.step', 'step')]: { left: '/models/a.step' } });
+    if (known) {
+      // Another file by its id: the one left keeps nothing.
+      rerender(view('id-b'));
+      rerender(view('id-a'));
+      expect(viewer.opened.at(-1)).toEqual(['/models/a.step', null]);
+    }
+    unmount();
+  }
 });

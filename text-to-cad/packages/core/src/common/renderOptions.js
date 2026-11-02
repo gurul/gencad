@@ -1,5 +1,5 @@
 import { resolveCadGridSettings } from "./cadInk.js";
-import { buildGridConfig } from "../lib/viewer/stageGrid.js";
+import { buildGridConfig, createGridMesh, GRID_AXIS_COLORS } from "../lib/viewer/stageGrid.js";
 import * as THREE from "three";
 import {
   RENDER_CAMERA_PRESETS,
@@ -12,7 +12,6 @@ import {
 import {
   DEFAULT_FILL_LIGHT_SETTINGS,
   DEFAULT_FLOOR_AXIS_SETTINGS,
-  DEFAULT_FLOOR_GRID_SETTINGS,
   DEFAULT_RIM_LIGHT_SETTINGS,
   FLOOR_AXIS_RADIUS_MULTIPLE,
   THEME_FLOOR_MODES
@@ -42,50 +41,6 @@ export const RENDER_SCENE_SCALE = Object.freeze({
 
 export { TOP_VIEW_UP, WORLD_UP };
 export const RENDER_VIEW_PRESETS = RENDER_CAMERA_PRESETS;
-
-export const SHARED_RENDER_OPTION_KEYS = Object.freeze([
-  "themeSettings",
-  "display",
-  "camera",
-  "framing",
-  "sceneScale",
-  "clip",
-  "selection",
-  "floor",
-  "background",
-  "lighting",
-  "outputSize",
-  "renderScale"
-]);
-
-/**
- * SharedRenderOptions is the policy-free shape consumed by lower-level render
- * helpers after snapshot or viewer code has already chosen defaults.
- *
- * @typedef {Object} SharedRenderOptions
- * @property {Object|null} themeSettings Explicit, normalized theme settings.
- * @property {Object|null} display Explicit display settings.
- * @property {Object|null} camera Explicit camera/view state.
- * @property {Object|null} framing Explicit framing settings.
- * @property {string|null} sceneScale Explicit CAD/URDF scene scale.
- * @property {Object|null} clip Explicit clip settings.
- * @property {Object|null} selection Explicit part/selection settings.
- * @property {Object|null} floor Explicit floor settings.
- * @property {Object|null} background Explicit background settings.
- * @property {Object|null} lighting Explicit lighting settings.
- * @property {Object|null} outputSize Explicit output width/height.
- * @property {number|null} renderScale Explicit render scale.
- */
-
-export function createSharedRenderOptions(explicitOptions = {}) {
-  const result = {};
-  for (const key of SHARED_RENDER_OPTION_KEYS) {
-    result[key] = Object.prototype.hasOwnProperty.call(explicitOptions, key)
-      ? explicitOptions[key]
-      : null;
-  }
-  return result;
-}
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -359,30 +314,13 @@ export function addFloor(scene, bounds, themeSettings, sceneScale, settingsBySca
   const minZ = followModel ? Math.min(0, boundsMinZ) : 0;
   let gridBounds = null;
   if (gridEnabled) {
-    // The grid's density is the viewer's too (`updateGridHelper`): the Grid preset is twice as fine.
-    const gridConfig = buildGridConfig(radius, sceneScale, { grid: gridSettings });
+    // The viewer's grid, for the same settings (`updateGridHelper`): the same object, step and fade.
+    const gridConfig = { ...buildGridConfig(radius, sceneScale, { grid: gridSettings }), ...gridSettings };
     gridBounds = {
       min: [-gridConfig.size / 2, -gridConfig.size / 2, 0],
       max: [gridConfig.size / 2, gridConfig.size / 2, 0]
     };
-    const grid = new THREE.GridHelper(
-      gridConfig.size,
-      gridConfig.divisions,
-      gridSettings.centerColor,
-      gridSettings.cellColor
-    );
-    const materials = Array.isArray(grid.material) ? grid.material : [grid.material];
-    for (const material of materials) {
-      material.transparent = true;
-      material.opacity = clamp(
-        toFiniteNumber(gridSettings.opacity, DEFAULT_FLOOR_GRID_SETTINGS.opacity),
-        0,
-        1
-      );
-      material.depthWrite = false;
-      material.toneMapped = false;
-    }
-    grid.rotation.x = Math.PI / 2;
+    const grid = createGridMesh(THREE, gridConfig);
     grid.position.set(0, 0, 0);
     scene.add(grid);
   }
@@ -396,9 +334,7 @@ export function addFloor(scene, bounds, themeSettings, sceneScale, settingsBySca
         new THREE.Vector3(0, 0, axisLength)
       ]),
       new THREE.LineBasicMaterial({
-        color: axisSettings.color
-          || gridSettings.centerColor
-          || DEFAULT_FLOOR_GRID_SETTINGS.centerColor,
+        color: axisSettings.color || GRID_AXIS_COLORS.light.z,
         transparent: true,
         opacity: clamp(toFiniteNumber(axisSettings.opacity, DEFAULT_FLOOR_AXIS_SETTINGS.opacity), 0, 1),
         depthWrite: false,
@@ -647,8 +583,7 @@ function closeupSubjectNear(camera, placedObjects, modelGroup) {
     if (!Array.isArray(bounds?.min) || !Array.isArray(bounds?.max)
       || bounds.min.length !== 3 || bounds.max.length !== 3
       || !bounds.min.every(Number.isFinite) || !bounds.max.every(Number.isFinite)
-      || bounds.max.some((value, axis) => value < bounds.min[axis])
-      || record.effectDeformation || record.tubeDeformationState?.active || record.tubeGpuState?.active) return null;
+      || bounds.max.some((value, axis) => value < bounds.min[axis])) return null;
     world.identity();
     if (record.effectMatrix) world.premultiply(record.effectMatrix);
     if (record.explodedViewMatrix) world.premultiply(record.explodedViewMatrix);
@@ -675,8 +610,8 @@ function closeupSubjectNear(camera, placedObjects, modelGroup) {
 
 // A perspective camera's depth step at distance z is about z^2 / (near * 2^24), so it is the
 // near plane, not the far one, that decides whether two close surfaces resolve. A closeup with
-// nothing better to fit on (the camera inside a part's own box, or a routine deforming what the
-// closeup fit measures) would otherwise put near at the 1e-5-radius safety floor and turn every
+// nothing better to fit on (the camera inside a part's own box, or a part with no bounds to
+// measure) would otherwise put near at the 1e-5-radius safety floor and turn every
 // close pair at the pivot into a fight: a flange on its case, a rod in its tube, fins on their
 // barrel. Nothing that near the eye is worth that. Kept at 1/256 of the pivot's depth, the step
 // at the pivot stays under 2e-5 of its depth, and what lies nearer than that would fill the view.
@@ -748,8 +683,7 @@ export function configurePngRenderer(width, height, job, {
     preserveDrawingBuffer: true,
     // Ordinary depth in every preset, as the viewer draws them (`viewerLogarithmicDepthBuffer`):
     // each output fits its camera's depth range to what it frames (`fitCameraDepthToBounds`).
-    // A logarithmic buffer drops the studio's shadows, and the instanced CAD edges, which write
-    // no logarithmic depth, would lose every depth test against a perspective surface.
+    // A logarithmic buffer drops the studio's shadows.
     logarithmicDepthBuffer: false
   });
   renderer.outputColorSpace = THREE.SRGBColorSpace;

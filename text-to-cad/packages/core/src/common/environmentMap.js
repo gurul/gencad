@@ -4,8 +4,10 @@ import { clamp, finiteOr } from "./numbers.js";
 import { DEFAULT_RENDER_LIGHTING } from "./sceneSettings.js";
 import {
   PHOTOGRAPHIC_STUDIO_BOUNCE_DIRECTION,
+  PHOTOGRAPHIC_STUDIO_CARD_DISTANCE,
   PHOTOGRAPHIC_STUDIO_CARD_RADIANCE,
   PHOTOGRAPHIC_STUDIO_FILL_DIRECTION,
+  PHOTOGRAPHIC_STUDIO_KEY_CARD,
   PHOTOGRAPHIC_STUDIO_KEY_DIRECTION,
   PHOTOGRAPHIC_STUDIO_PANELS,
   PHOTOGRAPHIC_STUDIO_ROOM_RADIANCE
@@ -68,7 +70,7 @@ function card(scene, {
   }
   const mesh = new THREE.Mesh(geometry, material);
   mesh.name = name;
-  mesh.position.copy(direction).normalize().multiplyScalar(6);
+  mesh.position.copy(direction).normalize().multiplyScalar(PHOTOGRAPHIC_STUDIO_CARD_DISTANCE);
   if (up) mesh.up.set(...up);
   mesh.lookAt(0, 0, 0);
   mesh.updateMatrixWorld(true);
@@ -130,8 +132,8 @@ export function createStudioEnvironmentScene(configuration = {}) {
   card(scene, {
     name: "studio-key-card",
     direction: new THREE.Vector3(...PHOTOGRAPHIC_STUDIO_KEY_DIRECTION),
-    width: 2.5 * lighting.size,
-    height: 3.6 * lighting.size,
+    width: PHOTOGRAPHIC_STUDIO_KEY_CARD.width * lighting.size,
+    height: PHOTOGRAPHIC_STUDIO_KEY_CARD.height * lighting.size,
     intensity: cardRadiance
   });
   // Fill sets both fill cards: the rear one for horizontal reflections and the

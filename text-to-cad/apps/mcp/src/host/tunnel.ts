@@ -1,6 +1,8 @@
-import { createCadClient, encodeBase64 } from '@text-to-cad/core/client';
-import type { CadClientOptions } from '@text-to-cad/core/client';
-import type { HttpReply, Server } from './server';
+import { createCadClient, encodeBase64 } from '@cad/core/client';
+import type { CadClientOptions } from '@cad/core/client';
+import { HostError } from './bridge';
+import { isHostRefusal } from './channel';
+import { ServerError, type HttpReply, type Server } from './server';
 
 /**
  * The origin the CAD client builds its URLs against. The page's own address is the host's
@@ -12,8 +14,8 @@ export const TUNNEL_ORIGIN = 'http://cad.invalid';
 const NULL_BODY = new Set([101, 103, 204, 205, 304]);
 
 /**
- * The most body one `cad_http` reply carries (`cadgen/mcp/tunnel.py`'s `MAX_REPLY_BYTES`): the
- * most one batched read asks for, and one part of a longer body. A reply crosses the host's
+ * The most body one `cad_http` reply carries (`cad_server/mcp/tunnel.py`'s `MAX_REPLY_BYTES`): one
+ * part of a longer body. A reply crosses the host's
  * JSON-RPC channel as one message, its body base64, 4/3 of its size, and a host reads its
  * server's messages with a ceiling: the MCP TypeScript SDK's stdio reader stops at 10 MiB unless
  * a host sets more (Claude Code reads 16 MiB, Claude Desktop sets 32 MiB), and a longer message
@@ -24,7 +26,7 @@ export const TUNNEL_REPLY_MAX_BYTES = 4 * 1024 * 1024;
 
 /**
  * A `cad_http` reply. `encoding: 'gzip'`: the server gzipped a JSON body for the trip
- * (`cadgen/mcp/tunnel.py`), and its headers describe the inflated body.
+ * (`cad_server/mcp/tunnel.py`), and its headers describe the inflated body.
  */
 type TunnelReply = HttpReply & { encoding?: string };
 
@@ -90,6 +92,18 @@ function wholeOfParts(first: TunnelReply, ask: (range: string, etag: string) => 
 }
 
 /**
+ * Why a `cad_http` call got no reply, in words a person can act on, as the view shows a request's
+ * failure: the engine's own reason where it gave one (an answer that was an error), never the
+ * host's or the transport's own text (`host/channel.ts`).
+ */
+export function tunnelFailure(error: unknown): string {
+  if (isHostRefusal(error)) return 'This chat cannot connect the CAD viewer to its engine.';
+  if (error instanceof HostError && error.kind === 'timeout') return 'The CAD plugin did not answer in time.';
+  if (error instanceof ServerError) return error.message;
+  return 'The CAD plugin could not be reached.';
+}
+
+/**
  * A `fetch` over `cad_http`. It is a distinct function (never a patched
  * `window.fetch`), so the CAD client hands workers bytes rather than URLs they could not reach.
  * A GET asks for its first `TUNNEL_REPLY_MAX_BYTES` and gets the rest in parts (`wholeOfParts`).
@@ -98,17 +112,20 @@ export function createTunnelFetch(server: Pick<Server, 'http'>): typeof fetch {
   return async (input, init) => {
     const request = new Request(input, init);
     const method = request.method.toUpperCase();
+    const target = new URL(request.url);
+    // Host call slots must remain available while the page waits for a model edit.
+    if (target.pathname.endsWith('/version')) target.searchParams.set('wait', '0');
     const body = method === 'GET' || method === 'HEAD' ? '' : encodeBase64(new Uint8Array(await request.arrayBuffer()));
     const headers: Record<string, string> = {};
     request.headers.forEach((value, name) => { headers[name] = value; });
     const send = async (range?: string, etag?: string): Promise<TunnelReply> => {
       const asked = range ? { ...headers, range, ...(etag ? { 'if-range': etag } : {}) } : headers;
       try {
-        return await server.http({ method, url: request.url, headers: asked, body }, { signal: request.signal });
+        return await server.http({ method, url: target.href, headers: asked, body }, { signal: request.signal });
       } catch (error) {
         if (request.signal.aborted) throw request.signal.reason ?? error;
-        // What fetch itself throws for a request that never got a response.
-        throw new TypeError(error instanceof Error ? error.message : String(error));
+        // What fetch itself throws for a request that never got a response, in words of ours.
+        throw new TypeError(tunnelFailure(error));
       }
     };
     const reply = await send(method === 'GET' ? `bytes=0-${TUNNEL_REPLY_MAX_BYTES - 1}` : undefined);
@@ -118,7 +135,7 @@ export function createTunnelFetch(server: Pick<Server, 'http'>): typeof fetch {
   };
 }
 
-/** A CAD client whose requests travel over `cad_http` (`tunnel`), its batched reads within `TUNNEL_REPLY_MAX_BYTES`. */
-export function createTunnelClient(tunnel: typeof fetch, options: Omit<CadClientOptions, 'origin' | 'fetch' | 'maxBatchBytes'> = {}) {
-  return createCadClient({ ...options, origin: TUNNEL_ORIGIN, fetch: tunnel, maxBatchBytes: TUNNEL_REPLY_MAX_BYTES });
+/** A CAD client whose requests travel over `cad_http` (`tunnel`). */
+export function createTunnelClient(tunnel: typeof fetch, options: Omit<CadClientOptions, 'origin' | 'fetch'> = {}) {
+  return createCadClient({ ...options, origin: TUNNEL_ORIGIN, fetch: tunnel });
 }

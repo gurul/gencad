@@ -1,9 +1,10 @@
 // The contract a family's scene exposes to whatever shows it: the viewer's viewport
-// (`@text-to-cad/ui` renderers/kit) and the snapshot CLI's headless stage
+// (`@cad/ui` renderers/kit) and the parity page's headless stage
 // (`common/headlessScene.js`). It is deliberately tiny, so neither reaches into a
 // scene: the host adopts `object3D`, frames `restBounds` (else `bounds`), hands over
-// the surface look it resolved, and the scene's OWNER calls `dispose()` (a host only
-// detaches). Everything else about a scene is its family's business.
+// the surface look it resolved, lights it with its own `rig` where it brings one, and the
+// scene's OWNER calls `dispose()` (a host only detaches). Everything else about a scene is
+// its family's business.
 //
 // One builder per family makes these scenes, and both hosts call the same one: the
 // viewer and a snapshot cannot draw a family differently, because there is only one
@@ -19,13 +20,24 @@
  *   Surfaces section's style and opacity. `resolveSceneSurfaceLook` (`common/sceneSettings.js`)
  *   is the one place a look is resolved from display settings.
  *
+ * @typedef {{ id: string, ambient: { color: string, intensity: number } | null,
+ *   lights: { name: string, towards: [number, number, number], color: string, intensity: number }[],
+ *   environment: { width: number, height: number, data: Float32Array, intensity: number,
+ *     rotation: [number, number, number] } | null,
+ *   exposure: number, toneCurve: string, blend?: "linear" }} SceneRig
+ *   A scene's own lighting, in three's units (`sceneRig.js`): an ambient light or none, directional
+ *   lights shining from `towards` (world frame) that cast no shadow, an equirectangular environment
+ *   image the stage turns into its PMREM and lights the scene with, the renderer's exposure and a
+ *   tone curve of `SCENE_RIG_TONE_CURVES`; `blend: "linear"`, its see-through surfaces blended in
+ *   linear light as an sRGB frame buffer blends them, which a stage draws through the rig's frame
+ *   (`renderWithSceneRig`).
+ *
  * @typedef {object} KitScene
  * @property {import("three").Object3D} object3D  What the host adopts under its model group.
  * @property {SceneBounds} bounds  The scene as posed now: lighting, floor and depth fit follow it.
  * @property {SceneBounds} [restBounds]  The authored placement, unmoved by any pose: what the
- *   camera frames, what 100% zoom means and what the ground is sized from. A scene that knows
- *   its whole box before all of it has arrived (a STEP package's declared `bbox`) reports that
- *   box from the start. Absent means `bounds` never moves.
+ *   camera frames, what 100% zoom means and what the ground is sized from. Absent means `bounds`
+ *   never moves.
  * @property {() => void} dispose  Release everything the scene created.
  * @property {(look: SurfaceLook) => void} [setSurfaceLook]  Wear the look the host resolved.
  *   Called on adoption and whenever it changes; a scene applies it to its own materials.
@@ -34,6 +46,17 @@
  *   surfaces do not all take shadows (unlit or see-through ones) implements it and applies its own rule.
  * @property {boolean} [keepsAuthoredFinish]  The scene shows authored finishes in Inspect too,
  *   so Inspect gives it a small neutral environment to reflect.
+ * @property {SceneRig | null} [rig]  The lighting the scene is drawn under in the regular display
+ *   modes, in place of the theme's: a scene drawn as its source's own renderer draws it (an engine
+ *   document: `lib/xbf/xbfLook.js`). Outside Preview's Render the host hides the theme's lights and
+ *   puts this up instead (`sceneRig.js`, `applySceneRig`): its lights, its environment as the
+ *   scene's (every surface, an authored finish included, reflects it), its exposure and its tone
+ *   curve as three's `CustomToneMapping`, and draws the scene as it blends (`renderWithSceneRig`);
+ *   Render lights every scene alike. Absent or null: the theme's rig, as ever.
+ * @property {(look: SurfaceLook | null) => (SceneRig | null)} [rigFor]  The rig for the surface look
+ *   the host resolved, where a scene lights one look otherwise than the rest (an engine document's
+ *   X-ray: `lib/xbf/xbfLook.js`); a host asks it (`sceneRig.js`'s `sceneRigFor`) before `rig`. Each
+ *   answer is one of a few rigs the scene holds, so a host can tell whether it changed by identity.
  * @property {(ray: import("three").Ray) => ({ id: string, point: import("three").Vector3 } | null)} [pick]
  *   Only scenes that select.
  * @property {boolean} [complete]  `false` while `restBounds` may still GROW: a large model published
