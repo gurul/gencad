@@ -65,14 +65,14 @@ class ResultShape(unittest.TestCase):
         self.assertEqual(result.timings, SnapshotTimings(job_count=1, total_ms=42.0))
 
     def test_the_encoding_follows_the_render_not_the_filename(self) -> None:
-        """An SVG served under a `.png` name is still SVG: the renderer's mime
+        """A PNG renamed without an extension is still PNG: the renderer's mime
         type is what actually happened, so it wins over the suffix."""
         listing = {
             "ok": True,
             "mode": "view",
-            "outputs": [{"path": "/tmp/plate.png", "mimeType": "image/svg+xml"}],
+            "outputs": [{"path": "/tmp/plate", "mimeType": "image/png"}],
         }
-        self.assertEqual(snapshot_result(listing).files[0].kind, "svg")
+        self.assertEqual(snapshot_result(listing).files[0].kind, "png")
 
     def test_a_path_less_output_is_not_a_file(self) -> None:
         # An animation's frame outputs carry no path; only what was WRITTEN counts.
@@ -276,7 +276,7 @@ class BrowserDiagnostics(unittest.IsolatedAsyncioTestCase):
         renderer = mock.Mock(render=mock.AsyncMock(side_effect=results), close=mock.AsyncMock())
         packet = {"single": single, "jobs": jobs}
         rendered = await render_resolved_job_packet(packet, runtime_dir=Path("."), renderer=renderer)
-        renderer.close.assert_awaited_once()
+        renderer.close.assert_not_awaited()
         return result_payload(snapshot_result(rendered, packet=packet))
 
     async def test_browser_stages_survive_single_job_typed_json_with_resolution_and_input(self):
@@ -362,12 +362,13 @@ class PublicVerbs(unittest.TestCase):
             "the STEP door carries the full surface",
         )
         self.assertNotIn("joint_values", step, "a STEP model has no joints to pose")
+        self.assertNotIn("section", step)
 
         for door in ("stl", "threemf", "glb"):
             with self.subTest(door=door):
                 mesh = parameters(f"cadgen.{door}")
-                self.assertLessEqual({"camera", "display"}, mesh)
-                self.assertNotIn("render", mesh)
+                self.assertLessEqual({"camera", "display", "grid", "preview"}, mesh)
+                self.assertNotIn("render", mesh, "Preview's look is --preview")
                 for absent in ("kinematics", "focus", "hide", "joint_values"):
                     self.assertNotIn(absent, mesh, f"{absent} has nothing to act on here")
 
@@ -375,7 +376,7 @@ class PublicVerbs(unittest.TestCase):
         # flat, so there is no scene to stage and nothing to pose or frame.
         drawing = parameters("cadgen.dxf")
         self.assertIn("appearance", drawing)
-        for absent in ("camera", "display", "mode", "view_labels",
+        for absent in ("camera", "display", "grid", "preview", "mode", "view_labels",
                        "kinematics", "focus", "hide", "joint_values", "section"):
             self.assertNotIn(absent, drawing, f"{absent} describes a scene a drawing does not have")
 
@@ -383,8 +384,7 @@ class PublicVerbs(unittest.TestCase):
             with self.subTest(door=door):
                 robot = parameters(f"cadgen.{door}")
                 self.assertIn("joint_values", robot)
-                self.assertLessEqual({"camera", "display"}, robot)
-                self.assertNotIn("render", robot)
+                self.assertLessEqual({"camera", "display", "grid", "preview"}, robot)
                 for absent in ("kinematics", "focus", "hide"):
                     self.assertNotIn(absent, robot, f"{absent} requires STEP topology")
 

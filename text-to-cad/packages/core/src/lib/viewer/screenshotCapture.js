@@ -108,7 +108,6 @@ export function resolveElementBackgroundColor(element, fallback = "#ffffff") {
 export function paintScreenshotImageData(context, imageData, width, height, {
   backgroundColor = "",
   crop = null,
-  overlayCanvas = null,
   createCanvas = () => globalThis.document?.createElement?.("canvas")
 } = {}) {
   if (!context) {
@@ -148,36 +147,11 @@ export function paintScreenshotImageData(context, imageData, width, height, {
   } else {
     context.putImageData(imageData, 0, 0);
   }
-
-  paintScreenshotOverlay(context, overlayCanvas, width, height, cropRect);
-}
-
-// An overlay covers the same viewport as the frame but keeps its own pixel
-// ratio (the drawing editor renders at the display's, the viewport at a capped
-// one), so the crop is mapped into the overlay's pixels rather than copied 1:1.
-function paintScreenshotOverlay(context, overlayCanvas, width, height, cropRect) {
-  if (!overlayCanvas || !(overlayCanvas.width > 0) || !(overlayCanvas.height > 0)) {
-    return;
-  }
-  const scaleX = overlayCanvas.width / width;
-  const scaleY = overlayCanvas.height / height;
-  context.drawImage(
-    overlayCanvas,
-    cropRect.x * scaleX,
-    cropRect.y * scaleY,
-    cropRect.width * scaleX,
-    cropRect.height * scaleY,
-    0,
-    0,
-    cropRect.width,
-    cropRect.height
-  );
 }
 
 export function paintScreenshotSourceCanvas(context, sourceCanvas, width, height, {
   backgroundColor = "",
-  crop = null,
-  overlayCanvas = null
+  crop = null
 } = {}) {
   if (!context || !sourceCanvas) {
     throw new Error("Screenshot capture failed");
@@ -203,13 +177,11 @@ export function paintScreenshotSourceCanvas(context, sourceCanvas, width, height
     cropRect.height
   );
   context.fillStyle = previousFillStyle;
-
-  paintScreenshotOverlay(context, overlayCanvas, width, height, cropRect);
 }
 
 // Render the live framebuffer once and immediately copy it into a 2D export
 // canvas, keeping normal interaction free to use `preserveDrawingBuffer: false`.
-export async function buildCompositeScreenshotBlob(runtime, overlayCanvas, {
+export async function buildCompositeScreenshotBlob(runtime, {
   backgroundColor = "",
   crop = null
 } = {}) {
@@ -246,10 +218,11 @@ export async function buildCompositeScreenshotBlob(runtime, overlayCanvas, {
     throw new Error("Screenshot capture failed");
   }
 
-  paintScreenshotSourceCanvas(context, renderer.domElement, width, height, {
+  // A view of a shared GPU device draws in the device's buffer and hands its canvas the frame
+  // later: the pixels just drawn are read from where they were drawn.
+  paintScreenshotSourceCanvas(context, renderer.drawingCanvas || renderer.domElement, width, height, {
     backgroundColor,
-    crop: cropRect,
-    overlayCanvas
+    crop: cropRect
   });
   return canvasToBlob(exportCanvas);
 }

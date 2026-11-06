@@ -1,5 +1,6 @@
 import { Button } from "@text-to-cad/ui/primitives/button";
 import { TooltipHint } from "@text-to-cad/ui/primitives/tooltip";
+import { useI18n } from "@text-to-cad/ui/i18n";
 
 import { DiscordMark, GitHubMark, XMark } from "./brandMarks.jsx";
 import { issueUrl } from "./links.js";
@@ -69,8 +70,9 @@ function IconLink({ href, label, icon: Icon, onFollow }) {
  * @param {{ links: import("../../host/types.js").ViewerLinks, onError?: (error: Error) => void }} props
  */
 export function MadeBy({ links, onError }) {
+  const { t } = useI18n();
   const follow = useFollow(links, onError);
   const handle = String(links.x || "").replace(/\/+$/, "").split("/").pop();
   if (!links.x || !handle) return null;
-  return <a href={links.x} target="_blank" rel="noreferrer" onClick={follow} className="hover:text-foreground" data-link="made-by">Made by @{handle}</a>;
+  return <a href={links.x} target="_blank" rel="noreferrer" onClick={follow} className="hover:text-foreground" data-link="made-by">{t("menu.madeBy", { handle })}</a>;
 }

@@ -84,10 +84,25 @@ const ROBOT_FAMILY = Object.freeze({
     // Where the viewer OPENS this robot, with the joints the request names on top: one
     // write through the one path a pose takes (the scene's joint matrices).
     scene.setJointValues({ ...robotOpeningPose(robot.description), ...jointValuesOf(job) });
+    // The parts a person hid in the viewer, as a Quick Edit's view names them (`selection.hide`).
+    const hidden = hiddenPartsOf(job);
+    if (hidden.length) {
+      const unknown = hidden.filter(id => !scene.hasComponent(id));
+      if (unknown.length) {
+        scene.dispose();
+        throw new Error(`selection.hide names no part of ${jobFile(job)}: ${unknown.join(", ")}. Its parts: ${robot.parts.map(part => part.id).join(", ")}`);
+      }
+      scene.setHiddenPartIds(hidden);
+    }
     return scene;
   },
   release: () => {}
 });
+
+function hiddenPartsOf(job) {
+  const hide = job?.selection?.hide ?? job?.resolved?.selection?.hide;
+  return Array.isArray(hide) ? hide.map(String) : [];
+}
 
 function jointValuesOf(job) {
   const values = job?.jointValues ?? job?.resolved?.jointValues ?? null;
@@ -211,4 +226,16 @@ export function headlessSceneModel(THREE, scene, { look = null, receiveShadows =
     dispose: () => scene.dispose()
   };
   return model;
+}
+
+// Explode is asked of a scene that has parts to move apart (a GLB of several); any other
+// file was refused it before the job got here (`validate_display_for_kind`), but how many parts a
+// GLB has is known only once it is read. Refused, never drawn as though it had not been asked.
+export function refuseUnexplodable(scene, job) {
+  const exploded = job?.display?.exploded;
+  if (!exploded || typeof exploded !== "object" || exploded.enabled === false || Number(exploded.amount ?? 0.5) <= 0) return;
+  if (!scene.explodeParts) {
+    throw new Error(`display.exploded moves a model's parts apart; ${String(job?.resolved?.inputPath || "this GLB").split("/").pop()} has `
+      + "fewer than two rigid nodes that draw, so there is nothing to explode. Remove display.exploded.");
+  }
 }

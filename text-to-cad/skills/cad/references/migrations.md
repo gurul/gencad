@@ -33,7 +33,7 @@ materials and animation and looks like a plain part.
   the document's hash, the build printed no migration warning, and the model
   articulates (a `cadgen step snapshot --kinematics …` pose differs from rest,
   or the Viewer shows a Position section in the file's panel, the Position
-  tool and, for a model with routines, a playbar in preview).
+  tool and, for a model with routines, its routines playing in preview).
 - If the script itself no longer runs on the installed cadgen, migrate the
   script using the sections below, then rebuild.
 

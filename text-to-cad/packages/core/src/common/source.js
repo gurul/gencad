@@ -229,7 +229,7 @@ export function tessellationForSnapshotQuality(input = {}) {
   if (explicit != null) {
     return normalizeRenderTessellation(explicit);
   }
-  const view = resolveViewSettings(input.display ?? {});
+  const view = resolveViewSettings(input.display ?? {}, { preview: input.preview === true });
   const quality = view.lighting.enabled
     ? resolveRenderQuality(view.lighting.quality)
     : resolveSceneQuality(SCENE_QUALITY.INTERACTIVE);
@@ -595,11 +595,11 @@ export async function loadSource(input, options = {}) {
     // kinds have none, and loading them anyway re-downloads the mesh binary just to
     // fail the GLB container parse — gate by kind so "no selectors for meshes" is
     // intent, not a swallowed error (matches the CLI's mesh-input validation).
-    // A still whose display mode is Render does not draw CAD edges and has no
+    // A Preview still (`preview: true`) does not draw CAD edges and has no
     // pointer interaction, so it must not pull selector topology solely because
     // its source is STEP. Explicit runtimes remain an opt-in demand (the shared
     // interactive loader can carry them while switching display modes).
-    const renderOnlyLoad = String(inputObject.display?.mode || "").trim().toLowerCase() === "render";
+    const renderOnlyLoad = inputObject.preview === true;
     const stepSidecarsEnabled = sourceIsStep(kind) && !renderOnlyLoad;
     const selectorRuntime = inputObject.selectorRuntime || options.selectorRuntime || (
       stepSidecarsEnabled ? await loadSelectorRuntime(glbUrl || url, { cadPath, resources, signal: options.signal }) : null

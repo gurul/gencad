@@ -172,6 +172,29 @@ class SdfValidateCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertIn("error: gz_check_unavailable", output)
 
+    @unittest.skipUnless(os.name == "posix", "native POSIX interpreter lookup")
+    def test_broken_gz_launcher_returns_a_validation_failure(self) -> None:
+        from cadgen import sdf
+
+        sdf_path = self._write("model.sdf", VALID_MODEL_SDF)
+        launcher = self._write("gz", f"#!{self.temp_root / 'missing-interpreter'}\n")
+        launcher.chmod(0o755)
+
+        with mock.patch.dict(os.environ, {"PATH": str(self.temp_root)}):
+            for mode in ("auto", "required"):
+                with self.subTest(mode=mode):
+                    result = sdf.validate(sdf_path, gz_check=mode)
+                    self.assertFalse(result.ok)
+                    self.assertIn("gz_check_failed", {issue.code for issue in result.issues})
+                    self.assertEqual([sdf_path], list(self.temp_root.glob("*.sdf")))
+
+            # The same native executable is usable once its interpreter exists.
+            launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            result = sdf.validate(sdf_path, gz_check="required")
+            self.assertTrue(result.ok)
+            self.assertIn("gz_check_passed", {issue.code for issue in result.issues})
+            self.assertEqual([sdf_path], list(self.temp_root.glob("*.sdf")))
+
     def test_missing_file_fails(self) -> None:
         exit_code, output = self._run(str(self.temp_root / "absent.sdf"), "--gz-check", "never")
         self.assertEqual(exit_code, 1)

@@ -15,12 +15,6 @@ Browser entry points never import Node-only code. Node builders remain in `bin/`
 `@text-to-cad/core/client` communicates with `cadgen.viewer` over HTTP; this
 protocol relationship never imports Python or discovers an interpreter.
 
-`@text-to-cad/core/drawing` validates bounded Excalidraw v2 scene snapshots for the
-desktop's temporary sketch tabs. It imports no editor, React, filesystem or
-storage service. Document limits and shared editor/host ownership are described
-in [the drawing contract](../ui/docs/drawing.md); the mechanism is
-[`src/drawing/index.js`](src/drawing/index.js).
-
 ## The laws that live here
 
 - **Viewer three-input law**: a client renders from the file, its optional
@@ -71,15 +65,15 @@ in [the drawing contract](../ui/docs/drawing.md); the mechanism is
   reports a typed miss before tessellation starts rather than turning a cheap
   decoded-mesh request into unbudgeted surface tessellation. Mechanism:
   [docs/resource-ownership.md](docs/resource-ownership.md) §5.
-- **One grouped view state**: `common/viewSettings.js` validates the public
-  Solid, Render, X-ray, Hidden line and Wireframe presets. Every preset exposes
-  the same independent camera, surfaces, edges, lighting, background, floor,
-  grid and axes groups. `resolveViewSceneSettings()` in `common/sceneSettings.js`
-  is the Viewer/snapshot policy boundary: enabled capabilities select scene
-  resources, never the preset name. Disabled lighting retains neutral CAD
-  illumination; disabled background restores the workbench canvas. Camera pose,
-  clipping and explode remain model tools, outside preset selection and Custom
-  comparison. View Reset clears display overrides and disables those tools. The grouped contract and the rig it drives:
+- **One view state, a mode and a grid**: `common/viewSettings.js` validates the
+  display: a mode (Solid, Shaded, Parts, X-ray, Hidden line, Wireframe), each a look
+  at its own defaults with nothing to set, the Grid switch, and what modes share
+  (appearance, camera, clipping, explode). Preview's own settings are kept apart
+  from it, and Preview's look (Render) is no mode but asked for on its own
+  (`preview`). `resolveViewSceneSettings()` maps the mode, or Render, into renderer
+  groups, preserving the Viewer/snapshot policy boundary.
+  Format capabilities are injected. There are no legacy display aliases or
+  saved-shape migrations. The contract and rendering mechanism:
   [docs/render-pipeline.md](docs/render-pipeline.md).
 - **Kinematics is data, choreography is JS, independently**: the FK
   evaluator (`kinematicsRuntime.js`) folds sidecar mate data into
@@ -104,7 +98,12 @@ in [the drawing contract](../ui/docs/drawing.md); the mechanism is
   both call; the look they wear is resolved in one place (`resolveSceneSurfaceLook`,
   `common/sceneSettings.js`) and a robot opens at one pose (`robotOpeningPose`). A
   snapshot therefore cannot draw one of them differently from the viewer, and none is
-  flattened into mesh data for a render. `npm run check:boundaries` holds both callers
+  flattened into mesh data for a render. They are cut, exploded and measured the same
+  way in both, too: Clip through `lib/viewer/sceneClip.js`, Explode through the scene's
+  `setExplode` (`lib/viewer/sceneExplode.js`, a GLB's), Measure's snapping through
+  `lib/viewer/meshMeasure.js`, every number in the FILE's unit (`lib/viewer/sceneUnits.js`)
+  and a mesh's measurement marked approximate. What a file's view offers is one rule,
+  `viewFeaturesForKind` (`common/viewSettings.js`). `npm run check:boundaries` holds both callers
   to the shared modules. A STEP document's scene is `buildModel`, shared the same way.
 - **Direct GLB stays native**: a direct GLB is its glTF scene graph (nodes, skins,
   morph targets, authored materials) with its translation, rotation, scale, skin and
@@ -198,8 +197,8 @@ inert; subscriptions start catalog polling, which the host's `shouldPoll` gates
 (the web's pauses while its page is hidden). The client also carries what every
 CAD view asks of its server, so each host reaches it the same way: the model
 library (`recents`, `changeRecents`, `thumbnail`, `keepThumbnail`), Open
-(`pick`), Reveal (`reveal`), the person's analytics answer and features
-(`consent`, `features`), the update check (`version`) and what the page did for
+(`pick`), Reveal (`reveal`), the person's analytics answer and feature settings (`consent`, `features`), the
+update check (`version`) and what the page did for
 telemetry (`reportActivity`: a touch, a Quick Edit that went, or a crash); every
 change is a POST with the viewer's guard header. A host reports its page's crashes
 with `createCrashReporter(send, { fileOf })`, which makes each with `crashOf` (a
@@ -241,9 +240,15 @@ transport](docs/workspace-resources.md) for worker transfer, nested dependencies
 cache generations and the standalone static-HTTP default. No client reads model
 source or starts a source build.
 
-`createHttpAttachmentStore({ origin, fetch })` is the viewer server's store for a
-picture a prompt names by path: `save(png, name)` posts it to `POST /__cad/sketches`
-and answers the saved file's absolute path.
+`createHttpPromptFiles({ origin, fetch })` is the viewer server's maker of a Quick
+Edit's files: `create(request)` posts its views and annotation to `POST /__cad/prompt-files`,
+validates the packet without rendering and answers `{ inline: compactJson }` up to
+1024 UTF-8 bytes, otherwise writes one `.snapshot.json` and answers `{ snapshot: absolutePath }`.
+The client sends `acceptInline: true`; without this capability the server always saves
+and returns a path for compatibility with already-open viewers;
+`read(path)` fetches a JSON file. The annotation format, and
+the code that draws an annotation in a scene for the viewer and for a snapshot alike, is
+`common/annotation.js`.
 
 Inspect and Render each resolve their fixed scene base. Legacy host theme input
 cannot replace either base.
@@ -273,7 +278,7 @@ person wrote, then `File:`, `References:` and, for a picture that travels as a f
 its label and path. Text, typed resource
 references and attachments travel in one ordered, immutable snapshot with an
 operation ID; attachment relationships name reference parts, and an attachment's
-optional `label` ("Sketch") names it in that message. Text ranges use
+optional `label` ("Annotation") names it in that message. Text ranges use
 zero-based UTF-16 coordinates with an exclusive end. CAD targets retain the
 existing selector grammar and document revision, without interpreting a code
 range as a CAD fragment. Apps own clipboard/draft delivery, MIME/size limits and

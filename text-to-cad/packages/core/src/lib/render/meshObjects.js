@@ -10,10 +10,11 @@
 
 /**
  * @typedef {{ name: string, geometry: import("three").BufferGeometry,
- *   color: import("three").Color | null, paletteIndex: number }} MeshObject
+ *   color: import("three").Color | null, paletteIndex: number, path: number[] | null }} MeshObject
  *   `color`: the object's source colour (linear, as authored), or null when the
  *   file gave it none and the viewer's own surface colour applies.
  *   `paletteIndex`: the object's place when a palette is cycled over the file.
+ *   `path`: a 3MF object's place in the file's build (`threeMfMeshData.js`), or null (an STL).
  */
 
 // A palette has always been dealt over a file's objects in the order of this key
@@ -86,7 +87,8 @@ export function buildMeshObjects(THREE, meshData) {
       name: String(range.label || range.name || ""),
       geometry: objectGeometry(THREE, meshData, range),
       color: colored ? new THREE.Color(meshData.colors[at], meshData.colors[at + 1], meshData.colors[at + 2]) : null,
-      paletteIndex: places[index]
+      paletteIndex: places[index],
+      path: Array.isArray(range.path) && range.path.length ? range.path : null
     };
   }).filter(Boolean);
 }

@@ -243,6 +243,24 @@ class SdfSourceTests(unittest.TestCase):
         with self.assertRaisesRegex(SdfSourceError, "missing link"):
             read_sdf_source(source_path)
 
+    def test_empty_required_text_is_missing_not_the_name_none(self) -> None:
+        # An empty element's text is None. The validator rejects it before this reader
+        # runs (missing_child_text), so the reader's own check is called directly.
+        import xml.etree.ElementTree as ET
+
+        from cadgen.sdf_source import _required_child_text
+
+        for joint in ("<joint><child/></joint>", "<joint><child></child></joint>", "<joint><child> </child></joint>"):
+            with self.subTest(joint=joint), self.assertRaisesRegex(SdfSourceError, "joint child is required"):
+                _required_child_text(ET.fromstring(joint), "child", source_path=self._file_ref("robot"), label="joint child")
+        self.assertEqual(
+            _required_child_text(
+                ET.fromstring("<joint><child> arm </child></joint>"), "child",
+                source_path=self._file_ref("robot"), label="joint child",
+            ),
+            "arm",
+        )
+
     def test_read_sdf_source_rejects_duplicate_joints(self) -> None:
         source_path = self._write_sdf(
             "robot",

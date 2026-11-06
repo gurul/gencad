@@ -241,6 +241,13 @@ export function useJointHandles({ handles = null, handlesRef: ownerHandlesRef = 
     const handlePointerLeave = () => {
       if (!drag && hoverId) setHover("");
     };
+    // The knobs share their tool with its picks: two quick presses on a knob are the knob's, never a
+    // double-click on the part under it (which would isolate it, or copy its face).
+    const handleDoubleClick = (event) => {
+      if (!jointHandleAt(layout.layouts, localPoint(event), JOINT_HANDLE_HIT_PX)) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
 
     host.addEventListener("pointerdown", handlePointerDown, true);
     host.addEventListener("pointermove", handlePointerMove, true);
@@ -248,6 +255,7 @@ export function useJointHandles({ handles = null, handlesRef: ownerHandlesRef = 
     host.addEventListener("pointercancel", handlePointerEnd, true);
     host.addEventListener("lostpointercapture", handlePointerEnd, true);
     host.addEventListener("pointerleave", handlePointerLeave);
+    host.addEventListener("dblclick", handleDoubleClick, true);
     frameId = window.requestAnimationFrame(paint);
 
     return () => {
@@ -260,6 +268,7 @@ export function useJointHandles({ handles = null, handlesRef: ownerHandlesRef = 
       host.removeEventListener("pointerup", handlePointerEnd, true);
       host.removeEventListener("pointercancel", handlePointerEnd, true);
       host.removeEventListener("lostpointercapture", handlePointerEnd, true);
+      host.removeEventListener("dblclick", handleDoubleClick, true);
       host.removeEventListener("pointerleave", handlePointerLeave);
       host.style.cursor = "";
       label.hidden = true;

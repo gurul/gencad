@@ -346,8 +346,8 @@ those — `--video` needs the clip named too, so both flags go together.
 For `.deformTube()` authoring, morph fitting, memory limits and braid export
 limitations, read [tube deformation and morph export](animation-deformation.md).
 
-The CAD Viewer plays a GLB's embedded rigid, skinned and morph animation through
-the playbar it always shows under the model, in both Inspect and Render. These are baked clips: the STEP
+The CAD Viewer plays a GLB's embedded rigid, skinned and morph animation from its
+file sidebar's Animation section, in the tools view and Preview alike. These are baked clips: the STEP
 sidecar module's procedural controls are not available in the exported GLB.
 
 An animated export writes ONE node per occurrence instead of the flat,

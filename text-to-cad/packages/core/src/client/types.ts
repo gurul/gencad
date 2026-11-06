@@ -178,6 +178,8 @@ export interface CadWorkspaceService {
   consent(share?: boolean): Promise<CadConsent>;
   /** The features the person can turn off, as they left them; with `change`, their change of some. */
   features(change?: Record<string, boolean>): Promise<Record<string, boolean>>;
+  /** The language the person chose for every CAD view, or null (Automatic); with `locale`, their choice (null clears it). */
+  language(locale?: string | null): Promise<{ locale: string | null }>;
   /** Whether a newer text-to-cad is out: the update button's notice, or null. */
   version(): Promise<{ notice: CadUpdateNotice | null }>;
   /**

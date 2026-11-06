@@ -682,6 +682,29 @@ function nativeRestBounds(scene, cadRootMatrix) {
   return { min: box.min.toArray(), max: box.max.toArray() };
 }
 
+// Which glTF node each object of the scene is (`userData.gltfNode`, its index in the file's
+// `nodes`), and where that node stands in the default scene's tree (`userData.gltfNodePath`,
+// "1.2": the first root node's second child, counted from 1). A reference names a node by its
+// index (`model.glb#n12`); Explode reads the tree's levels from the path. A mesh of several
+// primitives is a group of meshes under its node's object; those meshes are no node of their own.
+function markGlbNodes(gltf) {
+  const json = gltf.parser?.json || {};
+  const paths = new Map();
+  const walk = (indices, prefix) => (Array.isArray(indices) ? indices : []).forEach((node, place) => {
+    if (!Number.isInteger(node) || paths.has(node)) return;
+    const path = [...prefix, place + 1];
+    paths.set(node, path.join("."));
+    walk(json.nodes?.[node]?.children, path);
+  });
+  walk(json.scenes?.[json.scene ?? 0]?.nodes, []);
+  gltf.scene.traverse((object) => {
+    const node = gltf.parser?.associations?.get(object)?.nodes;
+    if (!Number.isInteger(node)) return;
+    object.userData.gltfNode = node;
+    if (paths.has(node)) object.userData.gltfNodePath = paths.get(node);
+  });
+}
+
 /**
  * Parse an interactive direct GLB once, as the document a viewer shows: the
  * native hierarchy (nodes, skins, morphs, authored materials), its playable
@@ -698,6 +721,7 @@ export async function buildGlbDocumentFromBuffer(buffer, options) {
   const gltf = await parseGlb(GLTFLoader, decoder, buffer, options);
   try {
     markGlbSourceColors(gltf);
+    markGlbNodes(gltf);
     const clips = playableGlbAnimationClips(gltf);
     const cadRootMatrix = nativeCadRootMatrix(gltf);
     const restBounds = nativeRestBounds(gltf.scene, cadRootMatrix);

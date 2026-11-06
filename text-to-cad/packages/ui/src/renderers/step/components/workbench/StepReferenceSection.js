@@ -1,12 +1,10 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { referenceMeasurements } from "../../workbench/referenceMeasurements.js";
 import { nodeVolume } from "../../workbench/partVolume.js";
 import { STEP_MODEL_ROOT_ID, stepTreeNodeLeafPartIds } from "@text-to-cad/core/lib/step/stepTree.js";
-import { stepPartNameFromFile, stepProductName } from "@text-to-cad/core/lib/step/productName.js";
+import { stepPartNameFromFile } from "@text-to-cad/core/lib/step/productName.js";
 
-import { TooltipHint } from "@text-to-cad/ui/primitives/tooltip";
 import { InfoRow, MonoValue, formatNumber } from "../../../kit/inspector/referenceRows.jsx";
-import { Select, SelectContent, SelectItem, SelectTrigger } from "@text-to-cad/ui/primitives/select";
 
 // A selected "element" is either a topology reference (face / edge / solid,
 // carrying reference.pickData) or an assembly node (component / subassembly).
@@ -86,18 +84,25 @@ function itemKey(item) {
  * A reference as a person reads it: its own label when it has one (a part's or subassembly's
  * name, a named face), otherwise where it is and what — "base · face 3" — from its part as the
  * tree names it (`partName`) and its selector's last token. A generated label that only
- * restates the selector ("Face o1.1.f3") is not a name, and neither is an XCAF label entry
- * (`=>[0:1:1:2]`, `stepProductName`). A single-part file's part with no name of its own is the
- * file's ("l_bracket · face 11"): the tree's root is that part, named after the file. Never the
- * raw id: that is what a copy carries, with the file it is in.
+ * restates the selector ("Face o1.1.f3") is not a name. A single-part file's part with no name of
+ * its own is the file's ("l_bracket · face 11"): the tree's root is that part, named after the
+ * file. Never the raw id: that is what a copy carries, with the file it is in.
  */
 function referenceName(item, meshData, partName) {
   if (isPartNode(item)) return String(item.name || item.displayName || "").trim() || itemKey(item);
+  const { own, parent, kind, number } = referenceParts(item, meshData, partName);
+  if (own) return own;
+  return [parent, number ? `${kind} ${number}` : kind].filter(Boolean).join(" · ");
+}
+
+// A face's or an edge's name, in its pieces: its own label where it has one, its part as the tree
+// names it, its kind ("face") and its number on that part ("3").
+function referenceParts(item, meshData, partName) {
   const selector = String(item.displaySelector || item.normalizedSelector || item.id || "").split("|").pop();
   const token = selector.split(".").filter(Boolean).pop() || "";
-  const own = [item.name, item.pickData?.name, item.label].map(stepProductName)
-    .find(value => value && !(token && value.includes(token)) && !value.includes(selector));
-  if (own) return own;
+  const text = value => String(value ?? "").trim();
+  const own = [item.name, item.pickData?.name, item.label].map(text)
+    .find(value => value && !(token && value.includes(token)) && !value.includes(selector)) || "";
   const kind = (SELECTOR_TYPE_LABELS[item.selectorType] || "Reference").toLowerCase();
   const number = token.match(/^[a-z]+(\d+)$/i)?.[1] || "";
   const occurrence = item.occurrenceId || selector.slice(0, -token.length - 1);
@@ -105,61 +110,94 @@ function referenceName(item, meshData, partName) {
   const part = parts.find(entry => [entry.occurrenceId, entry.id].includes(occurrence));
   // The part's own name, where it is one: an occurrence with none goes by its id, and that is
   // the last resort here, after the name a single-part file gives its part.
-  const partLabel = [part?.name, part?.displayName].map(stepProductName).find(value => value && value !== occurrence) || "";
+  const partLabel = [part?.name, part?.displayName].map(text).find(value => value && value !== occurrence) || "";
   const fileName = stepPartNameFromFile(partName?.(STEP_MODEL_ROOT_ID));
   const parent = [item.pickData?.sourceName, item.sourceName, partName?.(occurrence), partLabel, fileName, occurrence]
-    .map(stepProductName).find(Boolean) || "";
-  return [parent, number ? `${kind} ${number}` : kind].filter(Boolean).join(" · ");
+    .map(text).find(Boolean) || "";
+  return { own, parent, kind, number, occurrence };
+}
+
+const PLURAL_KINDS = Object.freeze({ face: "faces", edge: "edges", solid: "solids", component: "components" });
+
+// A run of faces or edges on one part, one row each: its number (or its own name) and its first
+// measurement, an area or a length.
+function TopologyRunDetail({ members }) {
+  return members.map(({ item, label }) => {
+    const [, value, unit] = referenceMeasurements(item).rows[0] || [];
+    return <InfoRow key={itemKey(item)} label={label}>
+      <MonoValue>{value === undefined ? "—" : `${formatNumber(value)} ${unit}`}</MonoValue>
+    </InfoRow>;
+  });
 }
 
 /**
- * The Reference panel's heading and rows for what is selected, compact: the heading names the
- * reference (its name, or its part and kind) and the rows are its key measurements alone — a
- * face's area and a round face's radii, an edge's length, radii and sweep, a part's or a
- * subassembly's part count, size and volume. What a person copies for their agent (the reference,
- * with its file) is the panel's Copy; its raw id, where it sits and points, and its material are
- * not rows. With several selected, the heading is a picker that browses them; it never changes
- * the selection, and it is the only thing a multi-selection adds: the rows are always the browsed
- * reference's alone. `null` with nothing to say.
+ * The selection as Quick Edit's chips (`kit/tools/quick-edit/ReferenceChips.jsx`): a component or
+ * a subassembly is a chip of its own; faces, edges and solids are a chip for each kind on each
+ * part — "base · face 3" alone, "base · 6 faces" for several, however they were picked (one by
+ * one, or grown by Group faces or Group edges) — so a large selection stays a few chips. Each
+ * chip's card is what the Reference panel said of it: a face's or an edge's key measurements, a
+ * run's one row each, a part's size and volume. `onRemove(ids)` drops a chip's picks from the
+ * selection; `onHover(target)` lights them while the pointer rests on the chip (`{ referenceId }`
+ * for one face or edge, `{ nodeId }` for a part, a subassembly or a run on one part), or nothing.
+ * `copyText(ids)` is what a click on the chip copies, its references as Copy References writes
+ * them; the card's ID is their selectors, without the file.
  *
- * `measurements.size`: the selection's overall size. `partsSize(ids)`: the overall size of these
- * parts together, so a part or subassembly browsed among several has its own.
- *
- * @returns {{ title: import("react").ReactNode, content: import("react").ReactNode } | null}
+ * @returns {import("../../../kit/tools/quick-edit/ReferenceChips.jsx").ReferenceChip[]}
  */
-export function useStepReference({ references = [], meshData = null, measurements = null, partsSize = null, partName = null }) {
-  const items = useMemo(() => Array.isArray(references) ? references.filter(Boolean) : [], [references]);
-  const idsKey = JSON.stringify(items.map(itemKey));
-  const [browsed, setBrowsed] = useState(null);
-  // A new selection shows its newest reference immediately, without an effect
-  // briefly rendering the previous reference first.
-  const activeItem = (browsed?.selection === idsKey && items.find(item=>itemKey(item) === browsed.id)) || items.at(-1);
-  // Parts measured without a reference of their own: their overall size is all there is to say.
-  const partsOnlySize = !items.length && measurements?.size;
-  if (!activeItem && !partsOnlySize) return null;
-
-  const name = item => referenceName(item, meshData, partName);
-  // Flush with the rows' labels: the trigger brings no inset of its own. Several references
-  // add their count ("1/2") so the name reads as a chooser. It is quiet like the heading's other
-  // buttons: no fill on hover in either theme — only its chevron comes up to full strength — and
-  // nothing that changes its size, so hovering never moves the heading.
-  const at = items.indexOf(activeItem) + 1;
-  const title = items.length > 1 ? <Select value={itemKey(activeItem)} onValueChange={id=>setBrowsed({selection:idsKey,id})}>
-    <SelectTrigger size="sm" aria-label="Inspect selected reference" data-reference-picker=""
-      className="!h-6 min-w-0 max-w-full gap-1 rounded-sm border-none bg-transparent !px-0 text-tiny leading-4 shadow-none hover:bg-transparent focus-visible:ring-2 focus-visible:ring-ring/45 dark:bg-transparent dark:hover:bg-transparent [&_svg]:size-3 [&_svg]:opacity-50 hover:[&_svg]:opacity-100 data-[state=open]:[&_svg]:opacity-100">
-      <span className="flex min-w-0 flex-1 items-baseline gap-1.5 text-left" data-reference-label="">
-        <span className="min-w-0 truncate">{name(activeItem)}</span>
-        <span className="shrink-0 text-tiny text-muted-foreground tabular-nums" data-reference-count="">{at}/{items.length}</span>
-      </span>
-    </SelectTrigger>
-    <SelectContent className="max-w-[max(var(--radix-select-trigger-width),12rem)]">{items.map(item=><SelectItem className="break-all" key={itemKey(item)} value={itemKey(item)}>{name(item)}</SelectItem>)}</SelectContent>
-  </Select> : activeItem ? <TooltipHint content={name(activeItem)} overflowOnly><span className="block truncate" data-reference-label="">{name(activeItem)}</span></TooltipHint> : null;
-  const content = <div className="flex min-w-0 flex-col text-tiny font-normal">
-    {partsOnlySize && <SizeRow size={partsOnlySize}/>}
-    {activeItem && (isPartNode(activeItem)
-      ? <PartDetail node={activeItem} meshData={meshData} size={boxSize(activeItem) || partsSize?.(stepTreeNodeLeafPartIds(activeItem))
-        || (items.length === 1 ? measurements?.size : null)}/>
-      : <TopologyDetail reference={activeItem}/>)}
-  </div>;
-  return { title, content };
+export function useStepReferenceChips({ references = [], meshData = null, partsSize = null, partName = null, onRemove = null, onHover = null, copyText = null }) {
+  return useMemo(() => {
+    const chips = [];
+    const runs = new Map();
+    for (const item of Array.isArray(references) ? references : []) {
+      if (!item) continue;
+      const id = itemKey(item);
+      if (isPartNode(item)) {
+        const name = referenceName(item, meshData, partName);
+        const size = boxSize(item) || partsSize?.(stepTreeNodeLeafPartIds(item)) || null;
+        chips.push({ key: `node:${id}`, label: name, ids: [id], glyph: "solid",
+          card: <PartDetail node={item} meshData={meshData} size={size}/>,
+          hover: { nodeId: id } });
+        continue;
+      }
+      const parts = referenceParts(item, meshData, partName);
+      const runKey = `${parts.occurrence}|${item.selectorType}`;
+      let run = runs.get(runKey);
+      if (!run) {
+        run = { key: `run:${runKey}`, parts, members: [] };
+        runs.set(runKey, run);
+        chips.push(run);
+      }
+      run.members.push({ item, label: parts.own || (parts.number ? `${parts.kind} ${parts.number}` : parts.kind) });
+    }
+    return chips.map(chip => ({ ...chipFor(chip), ...copyFields(chip.ids || chip.members.map(member => itemKey(member.item))) }));
+    function copyFields(ids) {
+      const copy = copyText?.(ids) || "";
+      const id = copy.split("\n").filter(line => line.includes("#")).flatMap(line => line.slice(line.lastIndexOf("#") + 1).split(",")).join(", ");
+      return { ...(copy ? { copy } : {}), ...(id ? { id } : {}) };
+    }
+    function chipFor(chip) {
+      if (!chip.members) {
+        return { key: chip.key, label: chip.label, glyph: chip.glyph, card: chip.card,
+          onRemove: onRemove ? () => onRemove(chip.ids) : undefined,
+          onHover: onHover ? on => onHover(on ? chip.hover : null) : undefined };
+      }
+      const { parts, members } = chip;
+      const ids = members.map(member => itemKey(member.item));
+      if (members.length === 1) {
+        const [{ item }] = members;
+        // Named in its own right, it shows that name; otherwise its part, glyph and number.
+        const compact = !parts.own && parts.number && parts.parent ? { name: parts.parent, kind: parts.kind, number: parts.number } : undefined;
+        return { key: chip.key, label: referenceName(item, meshData, partName), glyph: parts.kind, ...(compact ? { compact } : {}),
+          card: <TopologyDetail reference={item}/>,
+          onRemove: onRemove ? () => onRemove(ids) : undefined,
+          onHover: onHover ? on => onHover(on ? { referenceId: ids[0] } : null) : undefined };
+      }
+      const kinds = PLURAL_KINDS[parts.kind] || `${parts.kind}s`;
+      return { key: chip.key, label: [parts.parent, `${members.length} ${kinds}`].filter(Boolean).join(" · "),
+        compact: { name: parts.parent, kind: parts.kind, count: members.length },
+        card: <TopologyRunDetail members={members}/>,
+        onRemove: onRemove ? () => onRemove(ids) : undefined,
+        onHover: onHover ? on => onHover(on ? (parts.occurrence ? { nodeId: parts.occurrence } : { referenceId: ids[0] }) : null) : undefined };
+    }
+  }, [references, meshData, partsSize, partName, onRemove, onHover, copyText]);
 }

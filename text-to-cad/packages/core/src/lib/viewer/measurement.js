@@ -18,6 +18,10 @@ export const MEASURE_SNAP_LABELS = {
   vertex: "Vertex",
   edge: "Edge",
   face: "Face",
+  // A point on a mesh's triangle (`meshMeasure.js`), between its corners and sides.
+  surface: "Surface",
+  // A circle's or arc's centre, where a drawing's pick snaps to a hole.
+  center: "Centre",
   free: "Point"
 };
 
@@ -415,6 +419,21 @@ export function measurementFromPicks(pickA, pickB) {
   if (euclidean === null) {
     return null;
   }
+  // Picks on a mesh carry the units the scene is read in and are approximate (`meshMeasure.js`);
+  // a STEP's are exact, in its millimetres.
+  const units = pickA?.units || pickB?.units || null;
+  if (units) {
+    const perWorld = Number(units.perWorld) || 1;
+    return {
+      euclidean: euclidean * perWorld,
+      perpendicular: null,
+      centerDistance: null,
+      angleDeg: null,
+      delta: [0, 1, 2].map(axis => (pointB[axis] - pointA[axis]) * perWorld),
+      unit: String(units.unit || ""),
+      approximate: pickA?.approximate === true || pickB?.approximate === true
+    };
+  }
   const result = {
     euclidean,
     perpendicular: null,
@@ -599,8 +618,16 @@ export function formatMeasurement(measurement, { precision = 2 } = {}) {
   if (value === null) {
     return "";
   }
+  if (measurement.approximate === true) {
+    // A mesh's reading: "≈", to a tenth of a millimetre or so in whatever its file measures in.
+    const unit = measurement.unit || "";
+    return `≈ ${value.toFixed(APPROXIMATE_DECIMALS[unit] ?? 2)}${unit ? ` ${unit}` : ""}`;
+  }
   return `${value.toFixed(roundedPrecision(precision))} ${measurement.unit || "mm"}`;
 }
+
+// How many decimals an approximate reading keeps, by its unit: about a tenth of a millimetre.
+const APPROXIMATE_DECIMALS = Object.freeze({ m: 4, cm: 2, mm: 1, "µm": 0, in: 3, ft: 4 });
 
 export function formatMeasurementAngle(measurement, { precision = 1 } = {}) {
   const angle = finiteNumber(measurement?.angleDeg);

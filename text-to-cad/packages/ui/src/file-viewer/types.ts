@@ -1,6 +1,9 @@
 import type { ComponentType, ElementType, ReactNode } from "react";
 import type { EntryAction, Platform } from "./navigation/index.js";
 import type { ViewerHost } from "../host/types.js";
+import type { LanguageSetting } from "../i18n/index.js";
+
+export type { LanguageSetting };
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 export interface FileEntry { path: string; name: string; kind: "file" | "directory" }
@@ -67,9 +70,19 @@ export interface AppSetting {
   id: string;
   label: string;
   checked: boolean;
+  /** What the setting means, in a hint beside its name (an info icon). */
+  info?: string;
   /** Shown, not changeable: something outside the app decided it (the label says what). */
   disabled?: boolean;
   onCheckedChange: (checked: boolean) => void;
+}
+/**
+ * The person's colour scheme: System, Light or Dark, in the app menu over every file. The host keeps
+ * it and resolves System (the web against the OS, the CAD app against its host's theme).
+ */
+export interface ColorSchemeSetting {
+  preference: "system" | "light" | "dark";
+  onPreferenceChange: (preference: "system" | "light" | "dark") => void;
 }
 /**
  * A view's own history, where the host keeps one: what it showed, in order, as a browser keeps a
@@ -82,35 +95,18 @@ export interface ViewerHistory {
   back(): void;
   forward(): void;
 }
-/**
- * The viewer's features a person can turn off in the app menu, as the host keeps
- * them: each is on unless the host says it is off.
- */
-export interface ViewerFeatures {
-  /** Quick Edit: the note to the agent at the viewport's top-right, and every way it opens. */
-  quickEdit?: boolean;
-}
 export interface RendererViewProps {
   /** The host's notice: the viewport's top-right once the file is on screen, Quick Edit under it. */
   notice?: ReactNode;
-  /** The features the person has left on (in the app menu): what is off is not offered at all. */
-  features?: ViewerFeatures;
-  /** Optional host-owned controls inside the Display panel (the web's appearance). */
-  displayActions?: ReactNode;
   onNavigationActionsChange?: (actions: readonly FileNavigationAction[]) => void;
   file: FileMetadata;
   source: FileSource;
   /**
    * The navbar's box for the renderer's own view controls, last at its right end (the CAD
-   * viewer's Display and Preview, for a 3D view); null where no navbar is drawn, as while the
-   * renderer shows its file fullscreen.
+   * viewer's Display and Preview, for a 3D view); null where no navbar is drawn (a compact view),
+   * when the renderer draws them over its view instead.
    */
-  navbarSlot: HTMLElement | null;
-  /**
-   * The renderer shows its file fullscreen (the CAD viewer's Preview), or no longer does: the
-   * navbar steps aside while it lasts.
-   */
-  onFullscreenChange: (fullscreen: boolean) => void;
+  navbarSlot?: HTMLElement | null;
   onReady: (ready: boolean) => void;
   /**
    * Show another file, by its absolute path, in this view (a robot's mesh). Absent where the view
@@ -151,8 +147,10 @@ export interface FileViewerProps {
   renderers: readonly RendererRegistration[];
   state: FileViewerState;
   onStateChange: (next: FileViewerState) => void;
-  /** Host controls inside the CAD Display panel. */
-  displayActions?: ReactNode;
+  /** The person's colour scheme, its rows in the app menu the navbar's logo opens over every file. */
+  colorScheme?: ColorSchemeSetting;
+  /** The person's language, its row in the app menu over every file (Automatic, or one they chose). */
+  language?: LanguageSetting;
   /**
    * The person's on/off settings, in the app menu the navbar's logo opens over every file, with
    * the host's links (`host.links`).
@@ -165,18 +163,16 @@ export interface FileViewerProps {
   update?: ReactNode;
   /**
    * The host's Full size button, where the host shows the view small (inline in a conversation):
-   * the last of the navbar's own controls, before the renderer's view controls.
+   * last at the navbar's right end.
    */
   fullSize?: ReactNode;
-  /** The view's own history, where the host keeps one: Back and Forward, between the navbar's logo and the file's name. */
+  /** The view's own history, where the host keeps one: Back and Forward after the navbar's logo, over a file and on the home. */
   history?: ViewerHistory;
-  /** The features the person has left on (in the app menu), for every renderer (`RendererViewProps.features`). */
-  features?: ViewerFeatures;
   /** The host's notice, shown at the viewport's top-right once the file is on screen (`RendererViewProps.notice`). */
   notice?: ReactNode;
   onError?: (error: Error) => void;
   presentation?: {
-    /** The host's home, shown with no file: a page of its own, with no navbar over it (it holds the host's links itself). */
+    /** The host's home, shown with no file: a page of its own under the navbar, which has only its logo's menu, Back and Forward, update and Full size there. */
     home?: ReactNode;
     loading?: ReactNode;
     /** A file that will not open: `missing` when it does not exist. */

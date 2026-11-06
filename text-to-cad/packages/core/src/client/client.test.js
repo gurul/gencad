@@ -325,6 +325,9 @@ test('the library, Open, Reveal and the person\'s settings are guarded requests 
   await client.consent(true);
   await client.consent(false);
   await client.features({ quickEdit: false });
+  await client.language();
+  await client.language('zh-CN');
+  await client.language(null);
   await client.version();
   client.reportActivity({ touched: true });
   await new Promise((resolve) => setImmediate(resolve));
@@ -339,6 +342,8 @@ test('the library, Open, Reveal and the person\'s settings are guarded requests 
     ['/__cad/analytics', 'GET', null, null],
     ['/__cad/analytics', 'POST', '1', { share: true }], ['/__cad/analytics', 'POST', '1', { share: false }],
     ['/__cad/features', 'POST', '1', { quickEdit: false }],
+    ['/__cad/language', 'GET', null, null],
+    ['/__cad/language', 'POST', '1', { locale: 'zh-CN' }], ['/__cad/language', 'POST', '1', { locale: null }],
     ['/__cad/version', 'GET', null, null],
     ['/__cad/analytics/activity', 'POST', '1', { touched: true }],
   ]);

@@ -139,13 +139,13 @@ test("a departing renderer flushes its own state on file changes and reloads, bu
   await waitPayload('root-a next');
   assert.deepEqual(await page.evaluate(() => window.harness.state.renderers['["/work/notes.txt","in-memory"]']), { selection: 'last frame' });
   const mount = await pane().getByTestId('mount').textContent();
-  await page.evaluate(() => { window.harness.cleanupWrites.set('root-a:/work/next.txt', { drawing: 'pending stroke' }); window.harness.rendererCallbacks.get('root-a').reload(); });
+  await page.evaluate(() => { window.harness.cleanupWrites.set('root-a:/work/next.txt', { annotation: 'pending stroke' }); window.harness.rendererCallbacks.get('root-a').reload(); });
   await page.waitForFunction(previous => document.querySelector('[data-testid="primary"] [data-testid="mount"]')?.textContent !== previous, mount);
   await waitPayload('root-a next');
-  assert.deepEqual(await page.evaluate(() => window.harness.state.renderers['["/work/next.txt","in-memory"]']), { drawing: 'pending stroke' });
-  await page.evaluate(() => { window.harness.cleanupWrites.set('root-a:/work/next.txt', { drawing: 'wrong source' }); window.harness.setRoot('root-b'); });
+  assert.deepEqual(await page.evaluate(() => window.harness.state.renderers['["/work/next.txt","in-memory"]']), { annotation: 'pending stroke' });
+  await page.evaluate(() => { window.harness.cleanupWrites.set('root-a:/work/next.txt', { annotation: 'wrong source' }); window.harness.setRoot('root-b'); });
   await waitPayload('root-b next');
-  assert.deepEqual(await page.evaluate(() => window.harness.state.renderers['["/work/next.txt","in-memory"]']), { drawing: 'pending stroke' });
+  assert.deepEqual(await page.evaluate(() => window.harness.state.renderers['["/work/next.txt","in-memory"]']), { annotation: 'pending stroke' });
 });
 
 test("the renderer is not re-rendered by the frame's own chrome: a navbar action it published or a resize within a layout", async () => {

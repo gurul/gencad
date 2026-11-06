@@ -5,13 +5,13 @@ import type { CadLiveController, CadLiveState } from './live';
 const state = (): Omit<CadLiveState, 'active'> => ({
   resource: { kind: 'workspace-file', path: '/models/model.step', revision: 'r1' },
   revision: 'r1', loading: false, selection: [], selectedPartIds: [], selectedReferenceIds: [],
-  hiddenPartIds: [], isolatedPartIds: [], camera: null, display: { mode: 'solid' }, renderMode: 'inspect',
+  hiddenPartIds: [], isolatedPartIds: [], camera: null, display: { mode: 'solid' },
 });
 function harness(settle = () => Promise.resolve()) {
   let current = state();
   let controller!: CadLiveController;
   const commands = { select: vi.fn(), clearSelection: vi.fn(), setCamera: vi.fn(), resetCamera: vi.fn(),
-    setDisplaySettings: vi.fn(), setRenderMode: vi.fn(), capture: vi.fn(() => Promise.resolve(new Blob(['png']))) };
+    setDisplaySettings: vi.fn(), capture: vi.fn(() => Promise.resolve(new Blob(['png']))) };
   const release = vi.fn();
   const readRuntime = vi.fn(() => ({ ...commands, readState: () => current }));
   // The binding production attaches (`useRendererShell`): the shared surface plus this
@@ -22,7 +22,7 @@ function harness(settle = () => Promise.resolve()) {
 }
 
 describe('live CAD viewer binding', () => {
-  it('routes camera, clear, display and mode commands and returns the committed actual frame', async () => {
+  it('routes camera, clear and display commands and returns the committed actual frame', async () => {
     const view = harness();
     const camera = { position: [4, 5, 6], target: [0, 0, 0], up: [0, 0, 1] } as const;
     view.commands.setCamera.mockImplementation(snapshot => view.update({ ...state(), camera: snapshot }));
@@ -32,9 +32,6 @@ describe('live CAD viewer binding', () => {
     expect((await view.controller.clearSelection()).selection).toEqual([]);
     view.commands.setDisplaySettings.mockImplementation(display => view.update({ ...state(), display }));
     await view.controller.setDisplaySettings({ mode: 'wireframe' }); expect(view.commands.setDisplaySettings).toHaveBeenCalledWith({ mode: 'wireframe' });
-    view.commands.setRenderMode.mockImplementation(enabled => view.update({ ...state(), renderMode: enabled ? 'render' : 'inspect' }));
-    expect((await view.controller.setRenderMode(true)).renderMode).toBe('render');
-    expect((await view.controller.setRenderMode(false)).renderMode).toBe('inspect');
   });
   it('reads the actual latest view and returns detached pure snapshots', async () => {
     const view = harness();
@@ -46,21 +43,12 @@ describe('live CAD viewer binding', () => {
     await view.controller.select({ selectors: ['f1'], replace: false });
     expect(view.commands.select).toHaveBeenCalledWith({ selectors: ['f1'], replace: false });
   });
-  it('waits for a lazy render-mode commit instead of returning its predecessor state', async () => {
+  it('waits for a display mode to commit instead of returning its predecessor state', async () => {
     let frames = 0;
     const view = harness(async () => {
-      if (++frames === 3) view.update({ ...state(), renderMode: 'render' });
+      if (++frames === 3) view.update({ ...state(), display: { mode: 'xray' } });
     });
-    expect((await view.controller.setRenderMode(true)).renderMode).toBe('render');
-    expect(frames).toBe(3);
-    expect(view.commands.setRenderMode).toHaveBeenCalledExactlyOnceWith(true);
-  });
-  it('waits for a unified display mode to commit through the lazy Render chunk', async () => {
-    let frames = 0;
-    const view = harness(async () => {
-      if (++frames === 3) view.update({ ...state(), display: { mode: 'render' }, renderMode: 'render' });
-    });
-    expect((await view.controller.setDisplaySettings({ mode: 'render' })).display.mode).toBe('render');
+    expect((await view.controller.setDisplaySettings({ mode: 'xray' })).display.mode).toBe('xray');
     expect(frames).toBe(3);
   });
   it('rejects retired public display schema before dispatch', async () => {
@@ -72,25 +60,25 @@ describe('live CAD viewer binding', () => {
   it('waits for a grouped edit to commit without resetting the selected mode', async () => {
     let frames = 0;
     const view = harness(async () => {
-      if (++frames === 3) view.update({ ...state(), display: { mode: 'render', lighting: { exposure: 1 } } });
+      if (++frames === 3) view.update({ ...state(), display: { mode: 'xray', grid: true } });
     });
-    view.update({ ...state(), display: { mode: 'render' } });
-    expect((await view.controller.setDisplaySettings({ lighting: { exposure: 1 } })).display.mode).toBe('render');
-    expect(view.commands.setDisplaySettings).toHaveBeenCalledExactlyOnceWith({ lighting: { exposure: 1 } });
+    view.update({ ...state(), display: { mode: 'xray' } });
+    expect((await view.controller.setDisplaySettings({ grid: true })).display).toEqual({ mode: 'xray', grid: true });
+    expect(view.commands.setDisplaySettings).toHaveBeenCalledExactlyOnceWith({ grid: true });
     expect(frames).toBe(3);
   });
-  it('waits for normalized clip precedence rather than an overridden scalar offset', async () => {
+  it('waits for the normalized clip, where a new axis drops the old coordinate', async () => {
     const view = harness();
-    view.update({ ...state(), display: { mode: 'solid', clip: { axis: 'x', offsets: { x: 0.2 } } } });
+    view.update({ ...state(), display: { mode: 'solid', clip: { axis: 'x', at: 2 } } });
     view.commands.setDisplaySettings.mockImplementation(() => view.update({ ...state(), display: {
-      mode: 'solid', clip: { enabled: true, axis: 'y', offset: 0.7, offsets: { x: 0.2, y: 0.7, z: 0 }, invert: false }
+      mode: 'solid', clip: { enabled: true, axis: 'y', invert: false, partColors: true }
     } }));
-    const result = await view.controller.setDisplaySettings({ clip: { axis: 'y', offset: 0.3, offsets: { y: 0.7 } } });
-    expect(result.display.clip).toMatchObject({ axis: 'y', offset: 0.7 });
+    const result = await view.controller.setDisplaySettings({ clip: { axis: 'y' } });
+    expect(result.display.clip).toEqual({ enabled: true, axis: 'y', invert: false, partColors: true });
   });
-  it('bounds a render-mode command that never commits', async () => {
+  it('bounds a display command that never commits', async () => {
     const now = vi.spyOn(Date, 'now').mockReturnValueOnce(0).mockReturnValue(10_001);
-    try { await expect(harness().controller.setRenderMode(true)).rejects.toThrow('did not finish'); }
+    try { await expect(harness().controller.setDisplaySettings({ mode: 'xray' })).rejects.toThrow('did not finish'); }
     finally { now.mockRestore(); }
   });
   it('retains an inactive final state while rejecting controls and releasing the mounted runtime', async () => {
@@ -113,7 +101,7 @@ describe('live CAD viewer binding', () => {
     await expect(view.controller.resetCamera()).rejects.toThrow('finish loading');
     expect(view.commands.resetCamera).not.toHaveBeenCalled();
     view.update(state());
-    const pending = view.controller.setRenderMode(true);
+    const pending = view.controller.setDisplaySettings({ mode: 'xray' });
     view.update({ ...state(), revision: 'r2' });
     finish();
     await expect(pending).rejects.toThrow('revision changed');

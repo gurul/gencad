@@ -139,6 +139,8 @@ After `.sdf` files are created or modified, show them ([Show the model](../SKILL
 | `required` | same as `auto` | `gz_check_unavailable` **error** |
 | `never` | not run | `gz_check_skipped` info |
 
+A `gz` on PATH that cannot start (a broken launcher, a missing interpreter) is a `gz_check_failed` **error** under `auto` and `required` alike, naming why it could not start.
+
 A tool that is not installed says nothing about the document, so under `auto` its absence is a note and never blocks — including under `--strict`, which promotes warnings about the FILE. Use `required` to demand the external check. Record which mode ran in the diagnostics report.
 
 ## SDF validity vs project policy

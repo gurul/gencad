@@ -96,7 +96,18 @@ def scene_to_build123d_compound(scene: LoadedStepScene, *, label: str | None = N
     import build123d
 
     def node_label(node: OccurrenceNode) -> str:
-        return str(node.name or node.source_name or occurrence_selector_id(node)).strip()
+        # An unnamed product reads back under its occurrence id (the canonical tree
+        # stores that id as its name), so a name equal to the node's own id is no
+        # name at all. A group like that holding ONE child is the single-instance
+        # wrapper XCAF writes around a placed part: it carries its child's name, so
+        # a composed STEP never writes an occurrence id as a product name.
+        name = str(node.name or node.source_name or "").strip()
+        own_id = occurrence_selector_id(node)
+        if name and name != own_id:
+            return name
+        if len(node.children) == 1:
+            return node_label(node.children[0])
+        return name or own_id
 
     def node_color(node: OccurrenceNode) -> tuple[float, ...] | None:
         if node.color is not None:

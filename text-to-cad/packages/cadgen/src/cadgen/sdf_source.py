@@ -52,7 +52,7 @@ def read_sdf_source(sdf_path: Path) -> SdfSource:
 
     try:
         root = ET.fromstring(resolved_path.read_text(encoding="utf-8"))
-    except (OSError, ET.ParseError) as exc:
+    except (OSError, UnicodeDecodeError, ET.ParseError) as exc:
         raise SdfSourceError(f"{display_path(resolved_path)} could not be parsed as SDF XML") from exc
     return parse_sdf_root(root, source_path=resolved_path, base_dir=resolved_path.parent)
 
@@ -216,7 +216,7 @@ def _required_child_text(
     label: str,
 ) -> str:
     element = next(iter(children(parent, tag_name)), None)
-    value = str(element.text if element is not None else "").strip()
+    value = (element.text or "").strip() if element is not None else ""
     if not value:
         raise SdfSourceError(f"{display_path(source_path)} {label} is required")
     return value

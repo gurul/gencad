@@ -33,13 +33,14 @@ const root = path.resolve(args.dir || ".");
 // One fixture per LOAD PATH: an exact-surface STEP package, a mesh, a 2D drawing,
 // a robot description.
 const fixtures = [
-  // `tools` is the file's own tool strip (a mesh and a drawing have none: a tool that does not
-  // apply is hidden, not disabled); `threeD` has Display and Preview at the navbar's right end.
-  { format: "stl", file: "smoke.stl", parts: false, tools: [], threeD: true },
-  { format: "step", file: "assembly.step", parts: true, tools: ["Select", "Draw", "Measure"], threeD: true },
+  // `tools` is the file's own tool strip; unavailable tools are hidden. `threeD` has
+  // Projection, Display and Preview at the strip's end; `sections`
+  // are file sidebar tiles it must have (what there is to read of the file, whatever the tool).
+  { format: "stl", file: "smoke.stl", parts: false, tools: ["Annotate", "Clip"], sections: [], threeD: true },
+  { format: "step", file: "assembly.step", parts: true, tools: ["Select", "Annotate", "Measure"], sections: ["Model tree"], threeD: true },
   // A drawing is line work, not shaded surfaces: its outline covers a fraction of what a solid does.
-  { format: "dxf", file: "smoke.dxf", parts: false, tools: [], threeD: false, minCoverage: 0.003 },
-  { format: "urdf", file: "smoke.urdf", parts: false, tools: ["Select", "Position"], threeD: true },
+  { format: "dxf", file: "smoke.dxf", parts: false, tools: ["Select", "Annotate", "Measure"], sections: [], threeD: false, minCoverage: 0.003 },
+  { format: "urdf", file: "smoke.urdf", parts: false, tools: ["Select", "Annotate", "Measure", "Clip"], sections: ["Links"], threeD: true },
 ];
 // Small enough that software WebGL and the PNG encode stay cheap on CI, large enough for the
 // layout to be the desktop one.
@@ -281,20 +282,23 @@ async function formatGate() {
       if (drawn < (fixture.minCoverage ?? 0.03)) failures.push(`${fixture.format}: no foreground model region (${drawn.toFixed(4)})`);
       // The file's own tools, exactly: one that does not apply is hidden, not disabled.
       const strip = await page.locator('[role="group"][aria-label="Interaction tools"] button').evaluateAll((buttons) =>
-        buttons.map((button) => button.getAttribute("aria-label")));
+        buttons.filter((button) => !button.closest("[data-view-controls]")).map((button) => button.getAttribute("aria-label")));
       for (const label of fixture.tools) if (!strip.includes(label)) failures.push(`${fixture.format}: missing ${label} (strip: ${strip.join(", ")})`);
-      if (!fixture.tools.length && strip.length) failures.push(`${fixture.format}: a tool strip on a file with no tools (${strip.join(", ")})`);
-      if (strip.includes("Display")) failures.push(`${fixture.format}: Display is on the strip (strip: ${strip.join(", ")}); it sits in the navbar`);
+      if (!fixture.tools.length && strip.length) failures.push(`${fixture.format}: tools on a file that has none (${strip.join(", ")})`);
       if (!fixture.tools.includes("Measure") && strip.includes("Measure")) {
         failures.push(`${fixture.format}: Measure is offered on a view that cannot measure (must be hidden, not disabled)`);
       }
-      // The view's own controls, last in the navbar: Display then Preview on a 3D view, none on a
-      // drawing. The navbar's left is the logo (the app menu, the person's settings in it), the
-      // file's name and its ⋯, on every file, drawing included.
-      const controls = await page.locator("[data-viewer-navbar] [data-view-controls] button").evaluateAll((buttons) =>
+      // What there is to read of the file is the file sidebar's, a tile per section, never a tool.
+      const tiles = await page.locator("[data-file-sidebar-tools] button").evaluateAll((buttons) =>
         buttons.map((button) => button.getAttribute("aria-label")));
-      const expected = fixture.threeD ? ["Display", "Preview"] : [];
+      for (const label of fixture.sections) if (!tiles.includes(label)) failures.push(`${fixture.format}: missing the ${label} tile (sidebar: ${tiles.join(", ")})`);
+      if (!fixture.sections.length && tiles.length) failures.push(`${fixture.format}: a file sidebar on a file with nothing to read (${tiles.join(", ")})`);
+      // Projection, Display and Preview end the tool strip on 3D views; drawings have none.
+      const controls = await page.locator("[data-cad-toolbar] [data-view-controls] button").evaluateAll((buttons) =>
+        buttons.map((button) => button.getAttribute("aria-label")));
+      const expected = fixture.threeD ? ["Projection: Orthographic", "Display mode: Solid", "Preview"] : [];
       if (JSON.stringify(controls) !== JSON.stringify(expected)) failures.push(`${fixture.format}: the view's controls are ${JSON.stringify(controls)}`);
+      if (await page.locator("[data-viewer-navbar] [data-view-controls] button").count()) failures.push(`${fixture.format}: editor view controls in the navbar`);
       const menus = await page.getByRole("button", { name: "Menu", exact: true }).count();
       if (menus !== 1) failures.push(`${fixture.format}: ${menus} app menus (one on every file)`);
       const menu = await canvasMenuItems(page, canvas);
@@ -316,22 +320,14 @@ async function formatGate() {
   }
 }
 
-// Inspect and Render are the Display settings' Solid and Render presets, chosen from the Mode
-// dropdown of the popover the Display button in the navbar opens (a second press closes it).
-const VIEWING_PRESET = { Inspect: "Solid", Render: "Render" };
+// Inspect is the tools view, in the file's mode (Solid); Render is Preview's alone, in by
+// Preview and out by Exit preview, both in the navbar, each once the cover over the crossing has lifted.
 async function selectViewingMode(page, current, next) {
-  const display = page.locator("[data-view-controls]").getByRole("button", { name: "Display", exact: true });
-  const popover = page.locator("[data-display-popover]");
-  if (!(await popover.count())) await display.click();
-  const mode = popover.getByRole("combobox", { name: "Mode", exact: true });
-  await mode.waitFor();
-  if ((await mode.innerText()).trim() !== VIEWING_PRESET[current]) fail(`viewing mode: expected ${current} before switching to ${next}`);
-  await mode.click();
-  await page.getByRole("option", { name: VIEWING_PRESET[next], exact: true }).click();
-  await page.waitForFunction((label) => document.querySelector('[data-display-popover] [role="combobox"][aria-label="Mode"]')?.textContent.trim() === label,
-    VIEWING_PRESET[next]);
-  await display.click();
-  await popover.waitFor({ state: "detached" });
+  const [press, arrive] = next === "Render" ? ["Preview", "Exit preview"] : ["Exit preview", "Preview"];
+  if (!(await page.getByRole("button", { name: press, exact: true }).count())) fail(`viewing mode: expected ${current} before switching to ${next}`);
+  await page.getByRole("button", { name: press, exact: true }).click();
+  await page.getByRole("button", { name: arrive, exact: true }).waitFor();
+  await page.waitForFunction(() => !document.querySelector("[data-preview-cover]"));
 }
 
 // --- camera grounding -----------------------------------------------------
@@ -410,10 +406,9 @@ async function resetView(page) {
 }
 
 // --- the camera across modes ----------------------------------------------
-// Inspect (Solid) and Render are Display presets over one view: a switch converts
-// the camera to the other projection, keeping what it looks at and how large it
-// draws it, and converting back returns the view exactly. A model opens framed
-// against its own zero pose.
+// Inspect (the tools view, Solid) and Render (Preview) look at one model: Preview converts
+// the camera to its perspective, keeping what it looks at, and leaving it gives the tools view's
+// camera back exactly. A model opens framed against its own zero pose.
 async function settledCameraFrame(page, { projection = null, stage, requireSettledLod = true, timeout = 60_000 } = {}) {
   const startedAt = Date.now();
   cameraReadiness.set(page, { ...cameraReadiness.get(page), pending: { stage, projection, requireSettledLod } });
@@ -453,9 +448,13 @@ async function settledCameraFrame(page, { projection = null, stage, requireSettl
     const stableFrames = stable ? before.stableFrames + 1 : 0;
     window.__viewerTestCameraFrame = { ...after, stableFrames };
     if (stableFrames < 2) return false;
+    // A view draws through the page's GPU device and is handed its frames as bitmaps; a browser
+    // without one draws in a context of the canvas's own.
     const gl = after.canvas.getContext("webgl2");
-    if (!gl || gl.isContextLost()) throw new Error('camera: presented canvas has no live WebGL2 context');
-    gl.finish();
+    if (gl) {
+      if (gl.isContextLost()) throw new Error('camera: presented canvas has lost its WebGL2 context');
+      gl.finish();
+    } else if (!(window.__cadGpuDevice?.().views > 0)) throw new Error('camera: presented canvas draws through no GPU device');
     delete window.__viewerTestCameraFrame;
     return { camera: after.camera, quality: after.quality, levelCounts: after.levelCounts,
       lodSettled: after.lodSettled, lodPendingEvaluation: after.lodPendingEvaluation,
@@ -511,8 +510,8 @@ async function modeCameraGate() {
       failures.push(`mode camera: Inspect did not open orthographic (${inspectFit?.projection})`);
     }
 
-    // Solid and Render are presets over ONE view: a switch converts the camera to the other
-    // projection, keeping what it looks at and how large it draws it, and a round trip is exact.
+    // Preview converts the camera to its projection, keeping what it looks at, and leaving it
+    // is exact.
     await switchMode(page, "Inspect", "Render");
     const renderFit = await cameraState(page);
     if (!renderFit) failures.push("mode camera: the camera seam published nothing in Render");
@@ -523,7 +522,8 @@ async function modeCameraGate() {
     await switchMode(page, "Render", "Inspect");
     await cameraHeld(page, inspectFit, "returning to Inspect");
 
-    // A view taken by hand survives a round trip, in either mode.
+    // A view taken by hand survives a visit to Preview, and what is done to the camera in
+    // Preview is Preview's: the tools view gets its own back.
     await orbitAndZoom(page);
     const handFramed = await cameraMoved(page, inspectFit, "orbit and zoom in Inspect");
     if (handFramed) {
@@ -532,11 +532,9 @@ async function modeCameraGate() {
       await cameraHeld(page, handFramed, "Inspect after a round trip through Render");
       await switchMode(page, "Inspect", "Render");
       await orbitAndZoom(page);
-      const renderFramed = await cameraMoved(page, renderFit, "orbit and zoom in Render");
+      await cameraMoved(page, renderFit, "orbit and zoom in Render");
       await switchMode(page, "Render", "Inspect");
-      await switchMode(page, "Inspect", "Render");
-      if (renderFramed) await cameraHeld(page, renderFramed, "Render after a round trip through Inspect");
-      await switchMode(page, "Render", "Inspect");
+      await cameraHeld(page, handFramed, "Inspect after the camera moved in Render");
     }
 
     // A different model is framed against ITS zero pose, not the camera the
@@ -558,8 +556,8 @@ async function modeCameraGate() {
     if (errors.length) failures.push(`mode camera: ${errors.join(" | ")}`);
     console.log(`  mode camera: Inspect ${describeCamera(inspectFit)}`);
     console.log(`  mode camera: Render  ${describeCamera(renderFit)}`);
-    console.log("  mode camera: a switch converts the view without re-aiming it, a round trip returns "
-      + "the view it started from, and a new model is framed against its own box");
+    console.log("  mode camera: Preview converts the view without re-aiming it, leaving it returns "
+      + "the tools view's camera, and a new model is framed against its own box");
   } finally {
     await context.close();
   }

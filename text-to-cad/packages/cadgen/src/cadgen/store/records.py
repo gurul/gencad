@@ -58,7 +58,11 @@ RECORD_KIND = "record"
 # carries. Their next source run rebuilds; saved-document mappings and objects
 # stay valid.
 RECORD_SCHEMA_VERSION = 8
-DOCUMENT_SCHEMA_VERSION = 4
+# Schema 5: an XCAF label entry (`=>[0:1:1:2]`) reads as no name, so the same
+# bytes name their products differently. A schema-4 entry's tree carries the
+# entry as a name; it is a miss, and the next read recompiles those bytes
+# (components, meshes and surfaces are reused by their own keys).
+DOCUMENT_SCHEMA_VERSION = 5
 
 
 def read_record(model: Path | str) -> dict[str, Any] | None:

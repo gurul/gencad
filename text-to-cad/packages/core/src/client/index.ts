@@ -1,5 +1,5 @@
 export { createCadClient, cadApiUrl, isMissingFileError } from "./client.js";
-export { createHttpAttachmentStore } from "./attachments.js";
+export { createHttpPromptFiles } from "./promptFiles.js";
 export { encodeBase64 } from "./base64.js";
 export { crashOf, createCrashReporter, scriptFileOf } from "./crash.js";
 export * from "./origin.js";

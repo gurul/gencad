@@ -1,6 +1,8 @@
 import { createInspectEnvironmentResource, hasAuthoredMaterials } from "./inspectEnvironment.js";
 import { resolveCadEdgeSettings } from "./cadInk.js";
 import * as THREE from "three";
+import { createAnnotationLayer, normalizeAnnotation, ANNOTATION_REFERENCE_HEIGHT_PX } from "./annotation.js";
+import { drawMeasurementMark, measurementMarkLayout, normalizeMeasurementMarks } from "../lib/viewer/measureDimension.js";
 import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
@@ -31,6 +33,7 @@ import {
   syncTopologyDisplayEdgeLine
 } from "../lib/viewer/topologyDisplayEdgeLine.js";
 import { syncRuntimeStepClipPlane } from "../lib/viewer/modelRuntime.js";
+import { createSceneClip } from "../lib/viewer/sceneClip.js";
 import { disposeSectionCaps } from "../lib/viewer/sectionCaps.js";
 import {
   applyExplodedViewProgress,
@@ -41,12 +44,10 @@ import {
 import {
   addFloor as addSharedFloor,
   applyLighting as applySharedLighting,
-  boundsCorners as sharedBoundsCorners,
   boundsFromVertices as sharedBoundsFromVertices,
   colorTextureFromBackground as sharedColorTextureFromBackground,
   configurePngRenderer,
   createSharedRenderOptions,
-  drawBurnedInLabel as drawSharedBurnedInLabel,
   fitPerspectiveCamera as fitSharedPerspectiveCamera,
   fitCameraDepthToBounds,
   fitOrthographicCamera,
@@ -66,7 +67,7 @@ import {
   resolveDisplayMaterialSettings,
   resolveViewSceneSettings
 } from "./sceneSettings.js";
-import { ALL_VIEW_FEATURES, EDGELESS_VIEW_FEATURES } from "./viewSettings.js";
+import { viewFeaturesForKind } from "./viewSettings.js";
 import {
   createEnvironmentResource,
   disposeEnvironmentResource
@@ -75,8 +76,22 @@ import {
   applyPhotographicStudio,
   disposePhotographicStudio
 } from "./photographicStudio.js";
-import { PHOTOGRAPHIC_STUDIO_MATERIAL_SETTINGS } from "./photographicStudioRig.js";
+import { PHOTOGRAPHIC_STUDIO_FRAME, PHOTOGRAPHIC_STUDIO_MATERIAL_SETTINGS } from "./photographicStudioRig.js";
 import { validateSnapshotRenderJob } from "./snapshotJobValidation.js";
+import { isSoftwareWebGlRenderer } from "../lib/viewer/webglSupport.js";
+
+// A snapshot draws its studio frame (`studioFrame.js`) supersampled at its render scale, so the
+// frame needs no MSAA of its own.
+const SNAPSHOT_STUDIO_FRAME = Object.freeze({ multisample: 0 });
+
+/**
+ * How many samples a snapshot's studio frame converges over: a still's, all of them; a video's
+ * frame (a `frameBounds` capture) and a software renderer's, one, which is a whole picture of
+ * its own (its occlusion smoothed, its shadows the key's own) at the cost of one draw.
+ */
+export function snapshotStudioSamples({ video = false, softwareRendering = false } = {}) {
+  return video || softwareRendering ? 1 : PHOTOGRAPHIC_STUDIO_FRAME.stillSamples;
+}
 
 const DEFAULT_RENDER_SCALE = 1;
 const RENDER_SCENE_SCALE_SETTINGS = Object.freeze({
@@ -141,10 +156,6 @@ function addFloor(scene, bounds, themeSettings, sceneScale = RENDER_SCENE_SCALE.
   return addSharedFloor(scene, bounds, themeSettings, sceneScale, RENDER_SCENE_SCALE_SETTINGS, guideSettings, sizeBounds);
 }
 
-function boundsCorners(bounds) {
-  return sharedBoundsCorners(bounds);
-}
-
 function framePadding(job = {}) {
   return sharedFramePadding(job);
 }
@@ -189,22 +200,8 @@ function shouldBurnInViewLabels(job = {}) {
   return sharedShouldBurnInViewLabels(job);
 }
 
-function drawBurnedInLabel(context, label, width, height, {
-  corner = "top-left",
-  fill = "#111827",
-  background = "rgba(255, 255, 255, 0.9)",
-  border = "rgba(17, 24, 39, 0.42)"
-} = {}) {
-  return drawSharedBurnedInLabel(context, label, width, height, {
-    corner,
-    fill,
-    background,
-    border
-  });
-}
-
-function rendererDataUrlWithOptionalLabel(renderer, label, job, size) {
-  return sharedRendererDataUrlWithOptionalLabel(renderer, label, job, size);
+function rendererDataUrlWithOptionalLabel(renderer, label, job, size, overlay = null) {
+  return sharedRendererDataUrlWithOptionalLabel(renderer, label, job, size, overlay);
 }
 
 export function disposeSnapshotSceneResources(scene, modelRoot = null, extraTextures = []) {
@@ -352,339 +349,6 @@ function applyTightOrthographicFrame(camera, records, width, height, padding, zo
   };
 }
 
-// Where section mode cuts: `job.section` is `{ plane, offset }` and nothing else.
-// The plane is named by the two axes it contains and `offset` moves it along its
-// own normal, in model units. Mirrored as SECTION_PLANES in cadgen's
-// snapshot_core.py, which validates the request before a browser starts (the
-// parity is tested).
-export const SECTION_PLANES = Object.freeze(["XY", "XZ", "YZ"]);
-
-function sectionPlaneName(section = {}) {
-  const plane = section.plane ?? SECTION_PLANES[0];
-  if (!SECTION_PLANES.includes(plane)) {
-    throw new Error(`section.plane must be one of: ${SECTION_PLANES.join(", ")}; got ${JSON.stringify(plane)}`);
-  }
-  return plane;
-}
-
-function resolveSectionPlane(section = {}) {
-  const plane = sectionPlaneName(section);
-  const offset = toFiniteNumber(section.offset, 0);
-  if (plane === "XZ") {
-    return {
-      normal: new THREE.Vector3(0, 1, 0),
-      at: new THREE.Vector3(0, offset, 0),
-      u: new THREE.Vector3(1, 0, 0),
-      v: new THREE.Vector3(0, 0, 1)
-    };
-  }
-  if (plane === "YZ") {
-    return {
-      normal: new THREE.Vector3(1, 0, 0),
-      at: new THREE.Vector3(offset, 0, 0),
-      u: new THREE.Vector3(0, 1, 0),
-      v: new THREE.Vector3(0, 0, 1)
-    };
-  }
-  return {
-    normal: new THREE.Vector3(0, 0, 1),
-    at: new THREE.Vector3(0, 0, offset),
-    u: new THREE.Vector3(1, 0, 0),
-    v: new THREE.Vector3(0, 1, 0)
-  };
-}
-
-function sectionSegments(meshData, section = {}) {
-  const parts = Array.isArray(meshData.parts) ? meshData.parts : [];
-  const chunks = parts.length && parts.every((part) => part.sourceMesh)
-    ? parts.map((part) => ({ mesh: part.sourceMesh, transform: part.transform }))
-    : [{ mesh: meshData, transform: null }];
-  const { normal, at, u, v } = resolveSectionPlane(section);
-  const point = new THREE.Vector3();
-  const tri = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
-  const segments = [];
-  const signedDistance = (candidate) => normal.dot(new THREE.Vector3().subVectors(candidate, at));
-  const project = (candidate) => {
-    const relative = new THREE.Vector3().subVectors(candidate, at);
-    return [relative.dot(u), relative.dot(v)];
-  };
-  for (const chunk of chunks) {
-    const vertices = chunk.mesh.vertices || new Float32Array(0);
-    const indices = chunk.mesh.indices || new Uint32Array(0);
-    const transform = Array.isArray(chunk.transform) && chunk.transform.length === 16
-      ? new THREE.Matrix4().set(...chunk.transform)
-      : null;
-    for (let index = 0; index + 2 < indices.length; index += 3) {
-      for (let corner = 0; corner < 3; corner += 1) {
-        const vertexIndex = Number(indices[index + corner]) * 3;
-        tri[corner].set(vertices[vertexIndex], vertices[vertexIndex + 1], vertices[vertexIndex + 2]);
-        if (transform) tri[corner].applyMatrix4(transform);
-      }
-      const distances = tri.map((corner) => signedDistance(corner));
-      const intersections = [];
-      for (const [a, b] of [[0, 1], [1, 2], [2, 0]]) {
-        const da = distances[a];
-        const db = distances[b];
-        if (Math.abs(da) < 1e-7) {
-          intersections.push(tri[a].clone());
-        }
-        if ((da < 0 && db > 0) || (da > 0 && db < 0)) {
-          const t = da / (da - db);
-          point.copy(tri[a]).lerp(tri[b], t);
-          intersections.push(point.clone());
-        }
-      }
-      if (intersections.length >= 2) {
-        segments.push([project(intersections[0]), project(intersections[1])]);
-      }
-    }
-  }
-  return segments;
-}
-
-function sectionBounds(segments) {
-  const xs = [];
-  const ys = [];
-  for (const segment of segments) {
-    for (const point of segment) {
-      xs.push(point[0]);
-      ys.push(point[1]);
-    }
-  }
-  if (!xs.length) {
-    return { minX: -1, minY: -1, maxX: 1, maxY: 1 };
-  }
-  return {
-    minX: Math.min(...xs),
-    minY: Math.min(...ys),
-    maxX: Math.max(...xs),
-    maxY: Math.max(...ys)
-  };
-}
-
-function sectionPlaneLabel(section = {}) {
-  const plane = sectionPlaneName(section);
-  const offset = toFiniteNumber(section.offset, 0);
-  const axis = plane === "YZ" ? "X" : plane === "XZ" ? "Y" : "Z";
-  return `SECTION ${plane} @ ${axis}=${offset.toFixed(3)}`;
-}
-
-function segmentEndpointKey(point, precision = 1000) {
-  return `${Math.round(point[0] * precision)}:${Math.round(point[1] * precision)}`;
-}
-
-function loopsFromSegments(segments) {
-  const edges = segments.map((segment, index) => ({
-    index,
-    a: segment[0],
-    b: segment[1],
-    aKey: segmentEndpointKey(segment[0]),
-    bKey: segmentEndpointKey(segment[1])
-  }));
-  const byKey = new Map();
-  for (const edge of edges) {
-    for (const key of [edge.aKey, edge.bKey]) {
-      if (!byKey.has(key)) {
-        byKey.set(key, []);
-      }
-      byKey.get(key).push(edge);
-    }
-  }
-  const used = new Set();
-  const loops = [];
-  for (const edge of edges) {
-    if (used.has(edge.index)) {
-      continue;
-    }
-    used.add(edge.index);
-    const startKey = edge.aKey;
-    let currentKey = edge.bKey;
-    const points = [edge.a, edge.b];
-    for (let guard = 0; guard < edges.length; guard += 1) {
-      if (currentKey === startKey) {
-        break;
-      }
-      const next = (byKey.get(currentKey) || []).find((candidate) => !used.has(candidate.index));
-      if (!next) {
-        break;
-      }
-      used.add(next.index);
-      const nextPoint = next.aKey === currentKey ? next.b : next.a;
-      currentKey = next.aKey === currentKey ? next.bKey : next.aKey;
-      points.push(nextPoint);
-    }
-    if (points.length >= 3 && currentKey === startKey) {
-      loops.push(points);
-    }
-  }
-  return loops;
-}
-
-function sectionTransform(segments, width, height, paddingRatio = 0.12) {
-  const { minX, minY, maxX, maxY } = sectionBounds(segments);
-  const spanX = Math.max(maxX - minX, 1);
-  const spanY = Math.max(maxY - minY, 1);
-  const padding = Math.max(20, Math.min(width, height) * paddingRatio);
-  const scale = Math.min((width - padding * 2) / spanX, (height - padding * 2) / spanY);
-  const ox = (width - spanX * scale) / 2 - minX * scale;
-  const oy = (height + spanY * scale) / 2 + minY * scale;
-  return { minX, minY, maxX, maxY, spanX, spanY, scale, ox, oy };
-}
-
-function traceSectionLoops(context, loops, transform) {
-  for (const loop of loops) {
-    if (!loop.length) {
-      continue;
-    }
-    context.moveTo(loop[0][0] * transform.scale + transform.ox, transform.oy - loop[0][1] * transform.scale);
-    for (let index = 1; index < loop.length; index += 1) {
-      context.lineTo(loop[index][0] * transform.scale + transform.ox, transform.oy - loop[index][1] * transform.scale);
-    }
-    context.closePath();
-  }
-}
-
-function drawSectionHatching(context, width, height) {
-  context.save();
-  context.strokeStyle = "rgba(17, 24, 39, 0.2)";
-  context.lineWidth = 1;
-  const spacing = 14;
-  for (let offset = -height; offset < width + height; offset += spacing) {
-    context.beginPath();
-    context.moveTo(offset, height);
-    context.lineTo(offset + height, 0);
-    context.stroke();
-  }
-  context.restore();
-}
-
-function drawSectionCenterlines(context, transform, width, height) {
-  const centerX = ((transform.minX + transform.maxX) / 2) * transform.scale + transform.ox;
-  const centerY = transform.oy - ((transform.minY + transform.maxY) / 2) * transform.scale;
-  context.save();
-  context.strokeStyle = "rgba(239, 68, 68, 0.75)";
-  context.lineWidth = 1.5;
-  context.setLineDash([10, 8, 2, 8]);
-  context.beginPath();
-  context.moveTo(Math.max(0, centerX), 0);
-  context.lineTo(Math.max(0, centerX), height);
-  context.moveTo(0, Math.max(0, centerY));
-  context.lineTo(width, Math.max(0, centerY));
-  context.stroke();
-  context.restore();
-}
-
-function drawSectionLocator(context, section, bounds, width, height) {
-  const plane = resolveSectionPlane(section);
-  const corners = boundsCorners(bounds);
-  const values = corners.map((corner) => corner.dot(plane.normal));
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const atValue = plane.at.dot(plane.normal);
-  const locatorWidth = Math.max(170, Math.min(width * 0.24, 260));
-  const locatorHeight = Math.max(78, Math.min(height * 0.16, 130));
-  const margin = Math.max(18, Math.round(Math.min(width, height) * 0.024));
-  const x = width - margin - locatorWidth;
-  const y = height - margin - locatorHeight;
-  const pad = 16;
-  const trackX = x + pad;
-  const trackY = y + locatorHeight / 2;
-  const trackWidth = locatorWidth - pad * 2;
-  const t = clamp((atValue - min) / Math.max(max - min, 1e-9), 0, 1);
-  const cutX = trackX + t * trackWidth;
-  context.save();
-  context.fillStyle = "rgba(255, 255, 255, 0.92)";
-  context.strokeStyle = "rgba(17, 24, 39, 0.42)";
-  context.lineWidth = 1;
-  context.beginPath();
-  context.roundRect(x, y, locatorWidth, locatorHeight, 8);
-  context.fill();
-  context.stroke();
-  context.fillStyle = "#111827";
-  context.font = "700 13px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
-  context.fillText("CUT LOCATOR", x + pad, y + 10);
-  context.strokeStyle = "#9ca3af";
-  context.lineWidth = 8;
-  context.lineCap = "round";
-  context.beginPath();
-  context.moveTo(trackX, trackY);
-  context.lineTo(trackX + trackWidth, trackY);
-  context.stroke();
-  context.strokeStyle = "#ef4444";
-  context.lineWidth = 3;
-  context.beginPath();
-  context.moveTo(cutX, trackY - 22);
-  context.lineTo(cutX, trackY + 22);
-  context.stroke();
-  context.font = "600 12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
-  context.fillStyle = "#ef4444";
-  context.fillText(sectionPlaneLabel(section).replace(/^SECTION\s+/, ""), x + pad, y + locatorHeight - 22);
-  context.restore();
-}
-
-function renderSectionSvg(segments, edgeColor = "#132232") {
-  const { minX, minY, maxX, maxY } = sectionBounds(segments);
-  const padding = 4;
-  const viewBox = [
-    minX - padding,
-    minY - padding,
-    Math.max(maxX - minX + padding * 2, 1),
-    Math.max(maxY - minY + padding * 2, 1)
-  ].map((value) => Number(value).toFixed(4)).join(" ");
-  const lines = segments.map((segment) => (
-    `<path d="M ${segment[0][0].toFixed(4)} ${segment[0][1].toFixed(4)} L ${segment[1][0].toFixed(4)} ${segment[1][1].toFixed(4)}"/>`
-  )).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" fill="none" stroke="${edgeColor}" stroke-width="0.8" stroke-linecap="round" stroke-linejoin="round">${lines}</svg>`;
-}
-
-function renderSectionPng(segments, width, height, themeSettings, {
-  edgeSettings = null,
-  transparent = false,
-  section = {},
-  bounds = null,
-  viewLabels = false
-} = {}) {
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const context = canvas.getContext("2d");
-  const background = themeSettings.background || {};
-  if (!transparent) {
-    context.fillStyle = background.solidColor || "#ffffff";
-    context.fillRect(0, 0, width, height);
-  }
-  const transform = sectionTransform(segments, width, height);
-  const loops = loopsFromSegments(segments);
-  if (loops.length) {
-    context.save();
-    context.beginPath();
-    traceSectionLoops(context, loops, transform);
-    context.fillStyle = "rgba(209, 213, 219, 0.72)";
-    context.fill("evenodd");
-    context.clip("evenodd");
-    drawSectionHatching(context, width, height);
-    context.restore();
-  }
-  drawSectionCenterlines(context, transform, width, height);
-  context.strokeStyle = edgeSettings?.color || "#132232";
-  context.lineWidth = 3;
-  context.lineCap = "round";
-  context.lineJoin = "round";
-  for (const segment of segments) {
-    context.beginPath();
-    context.moveTo(segment[0][0] * transform.scale + transform.ox, transform.oy - segment[0][1] * transform.scale);
-    context.lineTo(segment[1][0] * transform.scale + transform.ox, transform.oy - segment[1][1] * transform.scale);
-    context.stroke();
-  }
-  if (bounds) {
-    drawSectionLocator(context, section, bounds, width, height);
-  }
-  if (viewLabels) {
-    drawBurnedInLabel(context, sectionPlaneLabel(section), width, height);
-  }
-  return canvas.toDataURL("image/png");
-}
-
 // Coordinates are millimetres. The mesh pipeline emits full float64 precision
 // (-2449.9999046325684 for what is 2450 mm), which is 16 significant figures of noise per
 // number, six numbers per part. Three decimals is a nanometre -- far below any tolerance
@@ -780,8 +444,12 @@ export function renderJobContext(meshData, job = {}) {
     appearance: "light",
     camera: job.camera || null,
     display: job.display ?? {},
-    // The viewer's rule: only a CAD model has edges to draw, parts to explode or solids to section.
-    features: stepDisplayEnabled ? ALL_VIEW_FEATURES : EDGELESS_VIEW_FEATURES
+    // Preview's look is the job's own request (`preview: true`), over the same display, at
+    // Preview's defaults: a snapshot has no Preview settings of its own.
+    preview: job.preview === true,
+    // The viewer's rule for this file: only a CAD model has edges to draw; Parts colours a file of
+    // several parts; a GLB of several parts explodes; every 3D file is cut by Clip (`viewFeaturesForKind`).
+    features: viewFeaturesForKind(sourceKind, { parts: meshData.partCount || 0, explodeParts: meshData.explodeParts || 0 })
   });
   // Neutral CAD lights remain available when only the background/floor is on.
   const theme = sceneSettings.theme;
@@ -859,7 +527,7 @@ export function modelOptionsForRenderJob(context, job = {}) {
   // View/orbit focus keeps every part in the scene so the frame retains
   // assembly context (hide is the removal filter); the focused refs instead
   // ghost the rest of the model through the same focusedPartId path the
-  // interactive viewer uses. Section mode still isolates via filterSelection.
+  // interactive viewer uses. List mode isolates via filterSelection.
   const focusedPartId = keepsAllParts ? normalizedSelectorValues(selection.focus) : [];
   const renderEnabled = context.sceneSettings.view.lighting.enabled;
   return {
@@ -959,10 +627,10 @@ export function renderModel(_THREE, model, viewportOptions = {}) {
       // The viewer sizes the studio floor from the REST placement (`groundBounds`), so a posed
       // still must too, or the CLI and the viewer disagree about how big the ground is.
       groundBounds: viewportOptions.floorBounds ? null : restGroundBounds,
-      sceneScale: context.sceneScale,
       shadowMapSize: context.quality.shadowMapSize,
       // Each kept pixel averages renderScale² drawn ones: the floor's dither is drawn that much wider.
-      ditherScale: renderer.getPixelRatio()
+      ditherScale: renderer.getPixelRatio(),
+      frame: SNAPSHOT_STUDIO_FRAME
     });
   } else if (normalizeBoolean(job.output?.transparent, false) || context.theme.background?.type === "transparent") {
     scene.background = null;
@@ -1038,7 +706,10 @@ export function renderModel(_THREE, model, viewportOptions = {}) {
     dispose() {
       if (disposed) return;
       disposed = true;
+      viewport.annotationLayer?.layer.dispose();
+      viewport.annotationLayer = null;
       if (viewport.clipRuntime) disposeSectionCaps(viewport.clipRuntime);
+      viewport.sceneClip?.dispose();
       model.dispose?.();
       scene.remove?.(model.root);
       if (studioRuntime) disposePhotographicStudio(studioRuntime);
@@ -1161,18 +832,64 @@ function syncViewportTopologyDisplayEdges(viewport) {
   );
 }
 
+function measurementsOverlay(job, camera) {
+  if (!Array.isArray(job.measurements) || !job.measurements.length) return null;
+  const marks = normalizeMeasurementMarks(job.measurements);
+  return (context, width, height) => {
+    const scale = height / ANNOTATION_REFERENCE_HEIGHT_PX;
+    const rect = { left: 0, top: 0, width: width / scale, height: height / scale };
+    camera.updateMatrixWorld?.();
+    context.save();
+    context.scale(scale, scale);
+    for (const mark of marks) {
+      const layout = measurementMarkLayout(mark, camera, rect);
+      if (layout) drawMeasurementMark(context, layout, mark, { active: true, bounds: rect });
+    }
+    context.restore();
+  };
+}
+
+
+function boundsRadius(bounds) {
+  const min = bounds?.min, max = bounds?.max;
+  if (!Array.isArray(min) || !Array.isArray(max)) return 1;
+  const radius = Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) / 2;
+  return Number.isFinite(radius) && radius > 0 ? radius : 1;
+}
+
+// The job's annotation (`job.annotation`, the ink a person drew with the viewer's Annotate tool), drawn over this
+// output with the viewer's own code (`annotation.js`): each mark on its part as the scene now has it,
+// cut by the same clip planes. Its ink is as heavy against this output's height as it was against a
+// viewer `ANNOTATION_REFERENCE_HEIGHT_PX` tall, so one layer serves every output of that height and is
+// rebuilt only for an output of another.
+function syncViewportAnnotation(viewport, job, { height }) {
+  if (job.annotation == null) return;
+  const lineScale = (height / ANNOTATION_REFERENCE_HEIGHT_PX) * (viewport.renderer.getPixelRatio?.() || 1);
+  if (viewport.annotationLayer?.lineScale !== lineScale) {
+    viewport.annotationLayer?.layer.dispose();
+    const { model } = viewport;
+    const layer = createAnnotationLayer(
+      { THREE, Line2, LineGeometry, LineMaterial },
+      normalizeAnnotation(job.annotation),
+      { radius: model.runtime?.modelRadius || boundsRadius(model.restBounds || model.bounds || viewport.context?.bounds), lineScale }
+    );
+    viewport.scene.add(layer.group);
+    viewport.annotationLayer = { layer, lineScale };
+  }
+  if (viewport.renderer) viewport.renderer.localClippingEnabled = true;
+  viewport.annotationLayer.layer.place(viewport.model.root, viewport.clipRuntime?.activeClipPlanes || viewport.sceneClip?.planes || []);
+}
+
 export async function captureModel(viewport, captureOptions = {}) {
   const job = captureOptions.job || {};
   const context = viewport.context || renderJobContext(viewport.model.meshData, job);
   const meshData = viewport.model.meshData;
   const {
     mode,
-    theme,
     sceneScale,
     bounds,
     outputs,
-    warnings,
-    edgeSettings
+    warnings
   } = context;
   const modelBounds = viewport.model?.bounds || meshData?.bounds || bounds;
 
@@ -1183,51 +900,6 @@ export async function captureModel(viewport, captureOptions = {}) {
       // A family's scene lists what it drew; a CAD model its composed part occurrences.
       parts: listRenderableParts(viewport.model.listParts ? { parts: viewport.model.listParts() } : meshData),
       bounds: roundedBounds(modelBounds) || modelBounds,
-      warnings
-    };
-  }
-
-  if (mode === "section") {
-    if (!meshData) {
-      throw new Error("section mode cuts a STEP model's solids; this file has none to section");
-    }
-    const section = job.section || {};
-    const segments = sectionSegments(meshData, section);
-    if (!segments.length) {
-      // An empty drawing is a true answer to a plane that misses the model, and
-      // indistinguishable from a failed cut unless it is said.
-      warnings.push(`${sectionPlaneLabel(section)} does not intersect the model; the section is empty`);
-    }
-    return {
-      ok: true,
-      mode,
-      outputs: outputs.map((output) => {
-        const { width, height } = outputSize(output, job);
-        // The output's extension decides the encoding; no job key does.
-        if (String(output.path || "").toLowerCase().endsWith(".svg")) {
-          return {
-            path: String(output.path || ""),
-            mimeType: "image/svg+xml",
-            text: renderSectionSvg(segments, edgeSettings.color)
-          };
-        }
-        return {
-            path: String(output.path || ""),
-            width,
-            height,
-            mimeType: "image/png",
-            dataUrl: renderSectionPng(segments, width, height, theme, {
-              edgeSettings,
-              transparent: normalizeBoolean(job.output?.transparent, false),
-              section,
-              bounds: modelBounds,
-              viewLabels: shouldBurnInViewLabels(job)
-            })
-          };
-        }),
-      section: {
-        segmentCount: segments.length
-      },
       warnings
     };
   }
@@ -1268,9 +940,19 @@ export async function captureModel(viewport, captureOptions = {}) {
     const restBounds = viewport.model.restBounds || null;
     let outputBounds = baseOutputBounds;
     // The exploded view, topology edges and their screen-space line widths are a CAD
-    // model's (`buildModel`'s runtime). A family's scene has none of them: the viewer's
-    // rule for it (`EDGELESS_VIEW_FEATURES`), which the job was resolved under too.
-    if (viewport.model.runtime) {
+    // model's (`buildModel`'s runtime). A family's scene has no edges; it explodes and is cut
+    // through the scene contract, as the viewer's viewport explodes and cuts it
+    // (`sceneExplode.js`, `sceneClip.js`), under the features the job was resolved with.
+    if (!viewport.model.runtime) {
+      const familyScene = viewport.model.scene;
+      const exploded = context.displaySettings.exploded;
+      if (familyScene.setExplode) {
+        familyScene.setExplode(exploded?.enabled === true ? Number(exploded.amount) || 0 : 0);
+        outputBounds = captureOptions.frameBounds || familyScene.bounds;
+      }
+      viewport.sceneClip ??= createSceneClip(THREE, { stage: viewport.scene });
+      viewport.sceneClip.sync(familyScene, context.displaySettings.clip);
+    } else {
       outputBounds = applyViewportExplodedView(viewport, baseOutputBounds, restBounds || baseOutputBounds);
       syncViewportTopologyDisplayEdges(viewport);
       // The Clip tool cuts and caps the model as the viewer's does, on every material, edge set and
@@ -1333,21 +1015,33 @@ export async function captureModel(viewport, captureOptions = {}) {
         // viewer's are (and as `renderModel` placed them), so an exploded view or a pose never
         // rescales or slides them; a video's locked frame keeps its union box for both.
         groundBounds: captureOptions.frameBounds ? null : restBounds,
-        sceneScale,
         shadowMapSize: context.quality.shadowMapSize,
-        ditherScale: viewport.renderer.getPixelRatio?.() ?? 1
+        ditherScale: viewport.renderer.getPixelRatio?.() ?? 1,
+        frame: SNAPSHOT_STUDIO_FRAME
       });
       fitDepth();
       if (outputTimings) outputTimings.prepareStudioMs = Math.round(performance.now() - stageStarted);
     }
     stageStarted = performance.now();
-    viewport.renderer.render(viewport.scene, renderCamera);
+    syncViewportAnnotation(viewport, job, { height });
+    // Render is drawn through its studio's frame, every sample of it; anything else is one draw.
+    const studioFrame = viewport.studioRuntime?.photographicStudio?.frame || null;
+    if (studioFrame) {
+      studioFrame.renderStill(viewport.renderer, viewport.scene, renderCamera, {
+        samples: snapshotStudioSamples({
+          video: Boolean(captureOptions.frameBounds),
+          softwareRendering: isSoftwareWebGlRenderer(viewport.renderer)
+        })
+      });
+    } else {
+      viewport.renderer.render(viewport.scene, renderCamera);
+    }
     if (outputTimings) outputTimings.drawSubmitMs = Math.round(performance.now() - stageStarted);
     // WebGL submission can return before GPU completion. PNG readback may
     // wait for that work, so this is image readback/encoding, not pure CPU PNG.
     stageStarted = performance.now();
     const viewLabel = String(output.viewLabel || output.label || resolvedCamera.name || "").toUpperCase();
-    const dataUrl = rendererDataUrlWithOptionalLabel(viewport.renderer, viewLabel, job, { width, height });
+    const dataUrl = rendererDataUrlWithOptionalLabel(viewport.renderer, viewLabel, job, { width, height }, measurementsOverlay(job, renderCamera));
     if (outputTimings) {
       outputTimings.encodeImageMs = Math.round(performance.now() - stageStarted);
       stageTimings.outputs.push(outputTimings);
@@ -1384,7 +1078,7 @@ export async function captureModel(viewport, captureOptions = {}) {
 export async function renderMeshJob(meshData, job = {}) {
   const context = renderJobContext(meshData, job);
   const model = buildModel(THREE, meshData, modelOptionsForRenderJob(context, job));
-  if (context.mode === "list" || context.mode === "section") {
+  if (context.mode === "list") {
     try {
       return await captureModel({ model, context }, { job });
     } finally {

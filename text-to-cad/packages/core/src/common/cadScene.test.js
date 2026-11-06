@@ -598,15 +598,11 @@ test("buildModel draws a surf component's CAD edges as ONE instanced screen-spac
   assert.equal(transparent.displayRecords[0].material.polygonOffset, true);
   transparent.dispose();
 
-  // Rendered mode draws no linework at all; wireframe draws the mesh wires instead.
+  // Rendered mode draws no linework at all.
   const rendered = buildModel(THREE, surfComponentMeshData(), { displayMode: CAD_DISPLAY_MODE.SHADED, renderPartsIndividually: true });
   assert.equal(rendered.displayRecords[0].edges, null);
   assert.equal(rendered.displayRecords[0].edgeInstance, null);
   rendered.dispose();
-  const wire = buildModel(THREE, surfComponentMeshData(), { displayMode: CAD_DISPLAY_MODE.WIREFRAME, renderPartsIndividually: true });
-  assert.equal(wire.displayRecords[0].edges.geometry.type, "WireframeGeometry");
-  assert.equal(wire.displayRecords[0].edgeInstance, null);
-  wire.dispose();
   scene.dispose();
   assert.equal(set.disposed, true, "disposing the scene disposes its instance sets");
 });
@@ -684,7 +680,7 @@ test("surface instances follow transforms and keep the unaffected majority insta
   assert.equal(matrix.elements[12], 20);
   assert.equal(matrix.elements[13], 6);
 
-  scene.update({ clip: { enabled: true, axis: "x", offsets: { x: 0.5 } } });
+  scene.update({ clip: { enabled: true, axis: "x", at: (scene.restBounds.min[0] + scene.restBounds.max[0]) / 2 } });
   assert.equal(set.object.material.clippingPlanes.length, 1, "shared surface pass receives clipping");
   const originalRecords = [...scene.displayRecords];
   const originalMaterials = scene.displayRecords.map((item) => item.material);
@@ -926,7 +922,7 @@ test("buildModel reuses cached geometry for posed wrappers with the same geometr
   movedScene.dispose();
 });
 
-test("buildModel wireframe mode keeps a translucent surface and wire edges", () => {
+test("buildModel wireframe mode keeps a translucent surface and the CAD edges, never the triangles", () => {
   const theme = cloneThemePresetSettings("workbench-light");
   const scene = buildModel(THREE, sampleMeshData(), {
     theme,
@@ -938,8 +934,35 @@ test("buildModel wireframe mode keeps a translucent surface and wire edges", () 
   assert.equal(scene.displayRecords.length, 2);
   assert.equal(scene.displayRecords[0].material.type, "MeshBasicMaterial");
   assert.equal(scene.displayRecords[0].material.opacity, 0.035);
-  assert.equal(scene.displayRecords[0].edges.geometry.type, "WireframeGeometry");
+  assert.equal(scene.displayRecords[0].edges.geometry.type, "EdgesGeometry");
   scene.dispose();
+});
+
+// Wireframe is "All CAD edges through the model": the lines every mode draws, so switching to
+// it builds nothing per triangle. It once built three's WireframeGeometry over every triangle
+// of every component on the main thread (10 s and a gigabyte on a large model).
+test("switching to Wireframe reuses the edges Solid built for the open model", () => {
+  const theme = cloneThemePresetSettings("workbench-light");
+  const options = (displayMode) => ({ theme, displayMode, renderPartsIndividually: true });
+
+  // A surf component: one cached segment texture, drawn by both modes' instance sets.
+  const component = surfComponentMeshData();
+  const solid = buildModel(THREE, component, options(CAD_DISPLAY_MODE.SHADED_EDGES));
+  const segments = solid.displayRecords[0].edgeInstance.set.segments;
+  solid.dispose();
+  const wire = buildModel(THREE, component, options(CAD_DISPLAY_MODE.WIREFRAME));
+  assert.equal(wire.displayRecords[0].edgeInstance.set.segments, segments, "the segment texture Solid built");
+  assert.equal(wire.displayRecords[0].edges, null, "no private line object");
+  wire.dispose();
+
+  // A baked mesh without CAD edge segments: one edge geometry per part, whatever the mode.
+  const baked = sampleMeshData();
+  const shaded = buildModel(THREE, baked, options(CAD_DISPLAY_MODE.SHADED_EDGES));
+  const geometry = shaded.displayRecords[0].edges.geometry;
+  shaded.dispose();
+  const bakedWire = buildModel(THREE, baked, options(CAD_DISPLAY_MODE.WIREFRAME));
+  assert.equal(bakedWire.displayRecords[0].edges.geometry, geometry, "the edge geometry Solid built");
+  bakedWire.dispose();
 });
 
 test("buildModel display modes control edges, transparency, and flat surfaces", () => {
@@ -1110,7 +1133,7 @@ test("buildModel uses part records when only source opacity differs", () => {
   scene.dispose();
 });
 
-test("buildModel ignores deprecated mesh edge detail and keeps wireframe all-edge mode", () => {
+test("buildModel ignores deprecated mesh edge detail, and wireframe draws the same edges, not the triangles", () => {
   const baseTheme = cloneThemePresetSettings("workbench-light");
   const deprecatedDetailScene = buildModel(THREE, squareMeshData(), {
     theme: baseTheme,
@@ -1124,8 +1147,8 @@ test("buildModel ignores deprecated mesh edge detail and keeps wireframe all-edg
 
   assert.equal(edgeSegmentCount(deprecatedDetailScene.displayRecords[0]), 4);
   assert.notEqual(deprecatedDetailScene.displayRecords[0].edges.geometry.type, "WireframeGeometry");
-  assert.equal(edgeSegmentCount(wireScene.displayRecords[0]), 5);
-  assert.equal(wireScene.displayRecords[0].edges.geometry.type, "WireframeGeometry");
+  assert.equal(edgeSegmentCount(wireScene.displayRecords[0]), 4, "the outline, without the diagonal");
+  assert.equal(wireScene.displayRecords[0].edges.geometry.type, "EdgesGeometry");
   deprecatedDetailScene.dispose();
   wireScene.dispose();
 });
@@ -1182,7 +1205,7 @@ test("buildModel applies selection, clipping, and STEP parameter effects", () =>
     clip: {
       enabled: true,
       axis: "x",
-      offsets: { x: 0.5 }
+      at: 1.5
     },
     stepParameters: {
       definition: {
@@ -1255,7 +1278,7 @@ test("buildModel keeps restBounds at the zero pose while bounds follow the param
     theme: cloneThemePresetSettings("workbench-light"),
     renderPartsIndividually: true,
     parameterSetup: false,
-    clip: { enabled: true, axis: "x", offset: 0.5 },
+    clip: { enabled: true, axis: "x", at: 1.5 },
     stepParameters: {
       definition: {
         module: {
@@ -1858,7 +1881,7 @@ test("direct viewer effects and clip passes synchronize shared surfaces without 
   assert.equal(record.surfaceInstance.set, set);
   assert.equal(set.object.material.envMapIntensity, 3.25, "material-only reflection changes reach the shared pass");
 
-  syncRuntimeStepClipPlane(runtime, { enabled: true, axis: "x", offsets: { x: 0.25 } });
+  syncRuntimeStepClipPlane(runtime, { enabled: true, axis: "x", at: scene.restBounds.min[0] + (scene.restBounds.max[0] - scene.restBounds.min[0]) * 0.25 });
   assert.equal(set.object.material.clippingPlanes.length, 1, "clip-only update reaches the shared draw");
   assert.equal(set.object.material.clippingPlanes[0].constant, record.material.clippingPlanes[0].constant);
   syncRuntimeStepClipPlane(runtime, { enabled: false });
@@ -1883,7 +1906,9 @@ test("update({ source }) rebuilds when the build settings change with it", () =>
   scene.update({ source: twoComponentPackage(component, component, [0, 1, 2]), displayMode: CAD_DISPLAY_MODE.WIREFRAME });
   assert.notEqual(scene.displayRecords[0], before, "a display-mode change rebuilds every record");
   assert.equal(scene.displayRecords.length, 3);
-  assert.equal(scene.displayRecords[0].edges.geometry.type, "WireframeGeometry");
+  assert.equal(scene.displayRecords[0].edgeInstance.set.segments, before.edgeInstance.set.segments,
+    "wireframe draws the component's CAD edges");
+  assert.equal(scene.displayRecords[0].edges, null);
   scene.dispose();
 });
 
@@ -1963,8 +1988,9 @@ test("shared component GPU resources survive another scene's removal and disposa
   assert.equal(geometryDisposals, 1);
 });
 
-test("shared wireframe geometry is freed only after its last scene, and retained uploads can be released later", () => {
-  const component = surfComponentMeshData();
+test("shared edge geometry is freed only after its last scene, and retained uploads can be released later", () => {
+  // A component without CAD edge segments: its records draw a cached edge geometry.
+  const { cadEdgePositions: _p, cadEdgeIndices: _i, cadEdgeClassRanges: _r, ...component } = surfComponentMeshData();
   const source = twoComponentPackage(component, component, [0, 1]);
   const settings = { renderPartsIndividually: true, displayMode: CAD_DISPLAY_MODE.WIREFRAME };
   const first = buildModel(THREE, source, settings);

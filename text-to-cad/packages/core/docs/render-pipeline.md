@@ -25,7 +25,13 @@ The stages keep ownership narrow:
 - A family builder owns its scene: `createGlbScene` (`lib/render/glbScene.js`),
   `buildMeshScene` (`lib/render/meshScene.js`), `createRobotScene`
   (`lib/urdf/robotScene.js`). Each returns the scene contract of
-  `lib/viewer/sceneContract.js`.
+  `lib/viewer/sceneContract.js`, and each scene gives a sibling (`createSibling()`): a
+  second scene of the same file with its own objects, materials and look over the first's
+  geometry (`lib/render/sharedGeometry.js`), which the viewer's Preview draws beside
+  its editor. A GLB's sibling is a SkeletonUtils clone wearing copies of the file's authored
+  materials, kept before any look, with a sibling `document` for its own routine; a robot's
+  has its own links and pose, and its own vertex colours. Ownership is
+  [resource-ownership §1](resource-ownership.md#1-shared-ownership-and-disposal).
 - `renderModel` owns renderer, scene, camera, lighting, background, floor,
   framing, resizing, and render loop concerns.
 - `captureModel` owns deterministic snapshot outputs without filesystem writes.
@@ -39,65 +45,54 @@ resolution, Playwright routing, and writing returned outputs to disk.
 
 `normalizeViewSettings(display)` is the strict public schema shared with the
 snapshot CLI. It preserves omitted groups and inherited appearance, defaulting
-only `mode` to `solid`. The presets, in order, are `solid`, `render`, `xray`,
-`hidden-line`, and `wireframe`. Legacy public display fields are rejected.
-
-Every preset has the same independent groups:
+only `mode` to `solid`. A file's modes, in order, are `solid`, `shaded`, `parts`,
+`xray`, `hidden-line`, and `wireframe` (`VIEW_MODE_VALUES`); `grid` is a boolean
+switch every mode draws, off unless said. Appearance, camera, clip and exploded are
+shared. A mode is a look at its own defaults: it has no settings of its own, and
+anything else (a per-mode tree, a style group) fails validation.
 
 ```js
-{
-  mode: "render",
-  appearance: "light", // omit to inherit the viewer; CLI defaults to light
-  camera: { projection: "perspective", focalLength: 50 },
-  surfaces: { style: "shaded", colorMode: "original", opacity: 1 },
-  edges: { enabled: false, visibility: "visible", color: "#253443" },
-  lighting: { quality: "final", exposure: 0, rotation: 0, size: 1, fill: 0.25 },
-  background: { color: "#ffffff", opacity: 1 },
-  floor: { placement: "lowest", color: "#e7e7e5", opacity: 0.6 },
-  grid: { enabled: false, color: "#cbd5e1", opacity: 0.16 },
-  axes: { enabled: false, color: "#6b7280", opacity: 0.28 }
-}
+{ mode: "parts", grid: true, camera: { projection: "orthographic", focalLength: 50 }, clip: { axis: "z", at: 4 } }
 ```
 
-Omission inherits the selected preset. A present group merges its partial
-fields and enables the group unless `enabled: false` is explicit. Thus
-`{mode: "solid", floor: {color: "#ffffff"}}` adds a floor under neutral CAD
-lighting. Disabling lighting retains neutral CAD lights and the small authored
-material reflection hemisphere from `inspectEnvironment.js`; it does not make
-the model black. Disabling background restores the natural workbench canvas.
-Disabling floor, grid, axes or edges removes that effect. Disabling surfaces
-restores authored, lit surfaces at full view opacity; `surfaces.style: "off"`
-explicitly removes visible surfaces. Camera disable restores orthographic/50mm.
+Preview's photographic look (Render) is no mode: it is asked for on its own, by the
+viewer's Preview and a snapshot's `preview`, over the same display. Its own settings
+(`PreviewSettings`: `parts`, `lighting`, `background`, `floor`) are the viewer's,
+kept beside the display, never in it (`normalizePreviewSettings`,
+`resolvePreviewSettings`, `previewSettingsChanged`); a snapshot draws Preview at its
+defaults. `readViewSettings` and `readPreviewSettings` read a stored record setting
+by setting, leaving out what this build cannot read, without rewriting it.
 
-`resolveViewSettings(display, {appearance, lightingQuality})` expands all groups. Solid defaults
-to shaded original colors, visible edges, neutral lighting, grid and axes.
-Render defaults to perspective, no edges, photographic lighting, opaque
-background and the translucent floor; the other presets are orthographic.
-X-ray uses 0.22 surface opacity with all edges. Hidden line uses depth-only
-surfaces with visible edges. Wireframe turns surfaces off and draws all edges.
-Every group remains independently editable in every preset. Surface styles are
-`shaded`, `flat`, `hidden` (depth only) and `off`; color modes are `original`,
-`single` and `by-part`, with `color` and an optional `colors` palette.
+`resolveViewSettings` returns the established renderer groups. Solid is shaded with
+the model's visible CAD edges where the view offers them (`edges`); Shaded is the same
+surfaces without; Parts is Solid with the by-part palette. X-ray uses 0.22 surface
+opacity and all edges; Hidden line uses depth-only surfaces and visible edges; Wireframe
+has no fill and all edges, both lighter on a dark backdrop. With `preview: true` it
+resolves Render whatever the mode: perspective, no edges, no grid and the photographic
+studio, from `previewSettings`. The modes use the shared camera, orthographic by default.
+The grid is the same measuring grid in every mode (`viewGridDefaults`). The view's
+capabilities are explicit injected lists (`viewFeaturesForKind`): a STEP every mode, any
+other 3D file Solid, and Parts where it has several parts (`scenePartCount`); a saved mode
+a view does not offer resolves as Solid without rewriting storage. Surface opacity
+multiplies authored opacity; colours remain presentation settings, never model material
+edits.
 
-`viewSettingsAreCustom()` compares effective settings with the selected preset.
-`resetViewSettings()` clears all View overrides, including `clip`/`exploded`,
-keeping only the selected mode. Preset selection separately preserves the tools.
-Tools never make a preset Custom. Appearance inherits
-until explicitly supplied. Surface opacity multiplies authored source opacity;
-color modes change presentation without mutating authored materials.
+Clip keeps coordinates below its plane by default (`invert: false`); Reverse (in Clip's axis dropdown)
+keeps coordinates above it. `clip.at` is the plane's coordinate on its axis in millimetres;
+omitting it cuts through the middle of the authored bounds. A disabled clip cuts nothing.
+`clip.partColors` defaults to true. Caps use each part's normal base material color,
+without selection/hover tints or opacity; false uses uniform amber (`0xe9a451`).
+Caps stay opaque even for transparent parts, and outer materials are unchanged.
+Each intersected part has a winding pair and an opaque fill, so holes remain empty;
+the fill (as wide as the model on the plane) writes the stencil back to 0 wherever it
+covers, so no part needs a stencil clear of the whole buffer after it. Cap geometry/materials are owned by Clip; stencil
+geometry is borrowed from the display meshes. Generic scene looks preserve
+`mesh.userData.cadBaseColor` before highlight ink; STEP records use `baseColor`
+and normal effect colors. A mesh with several materials uses its first material
+as its cap color; texture and vertex-color variation are not sampled.
 
-Clip keeps coordinates below its plane by default (`invert: false`); Flip keeps
-coordinates above it. Its offset remains measured from the bounds minimum to
-maximum regardless of Flip. The neutral boundary is therefore offset 1 normally,
-or offset 0 when flipped. Interactive viewers and snapshots share this policy;
-orbiting the camera never changes the clipped half. Clip coordinates use original
-model bounds in both snapshot and interactive paths; posing or exploding the
-model cannot silently change the plane represented by a slider/input value. A
-snapshot cuts and caps with the viewer's own sync (`syncRuntimeStepClipPlane`,
-its plane measured against `restBounds`) on a renderer with local clipping on.
-
-`resolveViewSceneSettings({display, camera, appearance, quality})` is the public
-Viewer/snapshot scene-policy boundary. Its `view` is the full grouped state;
+`resolveViewSceneSettings({display, preview, previewSettings, camera, appearance, quality})` is the public
+Viewer/snapshot scene-policy boundary (`preview`: Render over the display, as above). Its `view` is the full grouped state;
 `display` is the historical internal draw policy, including `surfaces` and
 edge color/visibility. `camera` combines the top-level pose with the grouped
 lens. Public top-level and per-output cameras contain pose/framing only;
@@ -116,21 +111,30 @@ internal compatibility resolver for older low-level consumers.
 
 Background opacity follows the ordinary alpha convention: 0 is transparent and
 1 is opaque. Fractional alpha is carried by the renderer clear color with
-`scene.background = null`, so viewer checkerboards and PNG captures agree.
-The floor is independent of background alpha. Render's stands at the model's
-lowest point (`placement: "lowest"`, `RENDER_FLOOR_PLACEMENT`, the Render recipe's
-backdrop default too), following the current model minimum without moving geometry
-or lighting; `placement: "origin"` keeps it at authored Z=0, and a floor turned on
-in another preset starts there. Its double-sided plane uses one transparency pass,
+`scene.background = null`, so viewer checkerboards and PNG captures agree. Over that
+clear the studio draws its backdrop (`studioBackdrop.js`), first of everything and
+writing no depth: the background color as a seamless sweep, lifted toward white
+behind the middle of the frame, shaded toward the corners and, by how far the view
+ray looks up, above the horizon (`PHOTOGRAPHIC_STUDIO_BACKDROP`; the shade is a larger
+share of a dark color than of a light one). It writes the clear's alpha, premultiplied
+as three's clear is, so a half-transparent background keeps its gradient; at alpha 0 it
+is not drawn, and a caller that renders with `scene.background` taken away and a clear
+alpha of 0 (a thumbnail) gets nothing of it. The floor's mirrored draw leaves it out.
+The floor is independent of background alpha. Render's stands at authored
+Z=0 (`placement: "origin"`, `RENDER_FLOOR_PLACEMENT`, the Render recipe's backdrop
+default too); `placement: "lowest"` follows the current model minimum without moving
+geometry or lighting. Its double-sided plane uses one transparency pass,
 keeping geometry below the origin visible. Depth fitting includes the actual floor elevation;
 orthographic views can use a signed near plane when the floor crosses the eye.
 
 Lighting quality is `preview` or `final`, mapping to standard/high scene policy.
 The viewer passes `lightingQuality: "preview"`; the CLI baseline is `final`.
-That environment default also feeds Custom comparison and does not pin a saved
-override. An explicit `lighting.quality` wins in either context.
+That environment default also feeds Preview's default comparison and does not pin a saved
+override. An explicit Preview `lighting.quality` wins in the viewer; a snapshot's `preview`
+is always `final`.
 Final uses the bounded L3 mesh rung, a 0.25px viewport target, 4096px spotlight
-shadows, a 512px procedural environment and 2x snapshot capture. Technical
+shadows, a 512px procedural environment and 2x snapshot capture, and a still view
+in the viewer converges over 64 samples of the studio's frame (Preview: 32). Technical
 `quality.tessellation` and `output.renderScale` remain explicit overrides.
 PNG output retains requested dimensions by resampling the full drawing buffer.
 
@@ -157,9 +161,60 @@ share a calibrated zero-EV lighting budget. Khronos PBR Neutral tone mapping is
 fixed; `toneMappingExposure` is `2 ** exposure`. Light and dark differ only in
 default backdrop color.
 
+#### The studio's frame
+
+Render's lighting is drawn through the studio's frame (`studioFrame.js`), which
+`applyPhotographicStudio` keeps as `state.frame` while its lighting is on, and the viewer
+and the snapshot both draw the scene through. Three draws the scene as before, but into an
+XR-flagged target of the frame's (`isXRRenderTarget`), which three draws exactly as the
+canvas, tone mapping and colour space included, so no material compiles a second program;
+its depth is kept. Small full-screen passes then add:
+
+- **Ambient occlusion.** Ground-truth AO (GTAO, after XeGTAO) from that depth alone, at half
+  the drawing buffer's resolution: the horizon either side of each pixel along three screen
+  directions, four steps each, within a radius of 0.1 of the model's rest radius (never more
+  than a fifth of the view's height). Every sample is read at a full-resolution pixel's
+  centre; a depth read from one pixel and placed at another turned sloped faces into
+  staircases of false horizons. A depth-aware blur smooths it, and the composite upsamples it
+  by depth, so it never bleeds across a silhouette, and darkens the scene's colour by it in
+  linear light (`power` 2). The floor writes no depth, so it keeps its own contact shadow;
+  the background is never darkened. This is what reads as a photograph rather than a
+  render: the seam between a cover and its housing, the space between stacked plates, a
+  bolt head on its plate, the inside of a bore.
+- **Convergence.** A still view is the average of `samples` samples, each blended into a
+  half-float accumulation at `1/(n+1)` and presented with a level of dither. Every sample but
+  the first moves the camera a fraction of a pixel (Halton 2, 3), so edges and fine
+  highlights are anti-aliased; turns the occlusion's directions (interleaved gradient noise
+  per sample), so it converges smooth; and moves the key light to a point of its softbox's
+  face (`sampleKey`: R2 over the key card's face, `PHOTOGRAPHIC_STUDIO_SOFT_SHADOW.spread`
+  of it, scaled by Size), so the key's shadows become a softbox's: crisp where a part meets
+  what it shades and soft away from it, on the model and, through the floor shadow's
+  composite, on the floor. A shadow pass that only moved the key holds the floor shadow's
+  heights (`holdHeights`) and re-composites its key shadow alone.
+
+The frame's caller says whether a frame is `still`: nothing but, perhaps, the camera changed
+since the last. A still frame is the next sample unless the camera has moved the model by
+more than `STUDIO_FRAME_DRIFT_PIXELS` (0.25) on screen since the picture's first sample, so the
+tail of a damped orbit still converges; anything else (a camera that moved, a pose, a
+routine's frame, a setting, a resize) starts again from the first sample, which is a whole
+picture of its own: the key at rest, the occlusion denoised in space. `render` answers whether
+samples are still owed (`refining`); the caller asks for the next frame while they are, and
+for none once the picture has converged. A moving view therefore pays for one draw and the
+small passes a frame; the samples only while it rests.
+
+Measured at 3024 × 1964 on an M1 Max over 0.6 M and 3 M triangles: a moving frame
+3.1 → 4.5 ms and 5.0 → 6.6 ms, a sample 5.2 and 7.8 ms, all 32 samples back to back 155
+and 240 ms (in the viewer, a sample a display frame: about half a second). Memory is the scene target (8-bit colour and depth-stencil, multisampled as
+the canvas is: four samples, two on a canvas of pixel ratio 2 or more), its resolve, a
+half-float accumulation and two half-resolution occlusion targets: about 200 MB at that
+size, released with the studio. Software rendering has no frame: three's single draw, as
+before, whose key casts no shadow to soften.
+
 `applyPhotographicStudio(THREE, runtime, configuration, options)` owns the
 synchronous light, ground and renderer state and updates those objects in place.
-`disposePhotographicStudio(runtime)` releases only those objects. The caller
+`disposePhotographicStudio(runtime)` releases only those objects, the studio's frame
+included (`applyPhotographicStudio`'s `frame`: false for none, or its `samples` and
+`multisample`). The caller
 separately owns the PMREM returned by
 `createEnvironmentResource(renderer, configuration, {size})` — synchronous GPU
 work, returned directly rather than as a promise — assigns its
@@ -171,10 +226,14 @@ exposes `readPixels()` for transferring its half-float PMREM from worker WebGL.
 The interactive UI prepares and caches these maps off the main thread; snapshot
 rendering can keep the synchronous caller-owned path.
 
-The ground uses `PHOTOGRAPHIC_STUDIO_STAGE_RADIUS_MULTIPLIER` for its full
-square width. Camera fitting uses the same constant as far-plane padding, which
-keeps the finite two-triangle ground outside practical product views. Near-plane
-fitting includes the visible floor as well as the model.
+The floor has no edge (`PHOTOGRAPHIC_STUDIO_FLOOR_FADE`): from 1.6 times the model's
+reach (the larger of its rest radius and its footprint's half-diagonal) it fades out
+to its inscribed circle at 6 times it, where the two-triangle plane ends, so a low or
+wide view shows no horizon line and no corner, only the backdrop. The fade is applied
+to the floor's alpha after its reflection is laid over it, so the reflection fades with
+it; it is squared, so its tail is long even foreshortened at a grazing angle. Camera
+fitting keeps `PHOTOGRAPHIC_STUDIO_STAGE_RADIUS_MULTIPLIER` as far-plane padding, far past
+that rim. Near-plane fitting includes the visible floor as well as the model.
 
 The physical floor is mostly self-lit backdrop color and receives no shadow
 map; its shadow is a contact layer drawn over it (`studioContactShadow.js`):
@@ -322,9 +381,8 @@ Accepted input fields:
   key and the sidecar section.
 - `stepParameterUrl` or `resolved.stepParameterUrl`: model sidecar
   (`.step.json`) URL, whose `kinematics` section is compiled here.
-- `quality.tessellation`: explicit STEP tolerances in every preset. When
-  omitted, enabled `display.lighting.quality` selects the bounded preview/final
-  mesh rung.
+- `quality.tessellation`: explicit STEP tolerances in every mode. When
+  omitted, `preview: true` selects the bounded final mesh rung.
 
 STEP-only options are rejected for non-STEP sources. The old shared `params`
 field is rejected, and so is the retired `stepParameters` spelling; use
@@ -459,16 +517,24 @@ texture (32 B per drawn segment, cached on the component) and a per-set
 instance texture (128 B per occurrence: matrix, colour, opacity, visibility,
 highlight).
 
+**Every mode draws the same edges, Wireframe included.** Wireframe is the CAD
+edges through the model with no fill, never the tessellation's triangles: a
+switch to it reuses the segment textures (or, for a baked mesh without segments,
+the one cached edge geometry per component, keyed by no mode) that Solid, X-ray
+and Hidden line draw, so it builds nothing per triangle. It once built three's
+`WireframeGeometry` over every triangle on the main thread: 10 s and +1 GB on a
+437 MB STEP, for a picture that read as a solid blob.
+
 `cadInk.js` fixes one dark model-edge palette and nominal widths per class:
 feature 1, tangent 0.65, seam 0.8, and degenerate 0 (hidden). Public
 `display.edges` exposes enabled, visible/all visibility and color; widths stay
 renderer-owned and the default color preserves the restrained class palette. Grid settings keep
-`enabled` plus optional `color` and `opacity`; omission follows the appearance
-palette, while an explicit color applies to both cell and origin lines. Viewer
-and snapshots share the same grid spacing:
-five cells across the default model framing, with 112 divisions spanning the
-floor so orbiting and panning do not expose an abrupt grid edge.
-Grid and Axes share the appearance's default guide color.
+`enabled` plus optional `color`, `opacity` and `density`; omission follows the
+appearance's graph-paper ink (`GRID_LINE_DEFAULTS` in `stageGrid.js`), while an
+explicit color applies to every minor and major line but never the red X and
+green Y axes. Viewer and snapshots draw the same grid (`createGridMesh`): its
+step, majors and long distance fade are in `packages/ui/docs/render-mode.md`.
+The Axes line is the blue Z axis.
 Appearance updates preserve model lighting, materials, geometry,
 segment textures and occurrence slots; only the canvas and guides adapt.
 An edge color edit keeps them too: `model.update` recolors the live edge draws
@@ -506,7 +572,7 @@ positions or normals acquire writable attributes before deforming them;
 material refreshes leave component data unchanged. This keeps large assemblies
 from duplicating these buffers for display. Assemblies keep geometry in their
 component buffers; they allocate no combined copy of all positions, normals and
-indices. Rendering and section views visit the placed components directly, and
+indices. Rendering visits the placed components directly, and
 the Viewer accepts that component geometry.
 
 ### `common/renderModel.js`
@@ -574,11 +640,11 @@ import {
 
 `renderJobContext(meshData, job)` resolves the shared scene contract plus
 snapshot-owned output policy: display, camera, quality, scene scale, outputs,
-STEP topology edge visibility, and warnings. Studio scene quality comes from enabled
-`display.lighting.quality`; `job.quality` contains technical tessellation only. A
-family scene passes `{ bounds }` for `meshData`; its job's kind resolves the view
-features, and anything but a STEP gets the viewer's `EDGELESS_VIEW_FEATURES` (no edges,
-clip or explode).
+STEP topology edge visibility, and warnings. Studio scene quality is Preview's final
+when the job asks for `preview`; `job.quality` contains technical tessellation only. A
+family scene passes `{ bounds, partCount, explodeParts }` for `meshData`; its job's kind
+resolves the view features (`viewFeaturesForKind`): anything but a STEP has no edges,
+Parts only with several parts, and Explode only for a GLB of several.
 
 `modelOptionsForRenderJob(context, job)` converts that policy into
 `buildModel()` settings.
@@ -604,6 +670,10 @@ widths. It returns a headless viewport:
 ```
 
 This `renderModel` is intentionally separate from `common/renderModel.js`.
+Render is drawn through the studio's frame, every sample of it at once
+(`renderStill`: `PHOTOGRAPHIC_STUDIO_FRAME.stillSamples`, 32, re-rendering shadows only for a
+sample that moved the key), with no MSAA of its own: the snapshot supersamples at its render
+scale. A video's frame and a software renderer draw one sample (`snapshotStudioSamples`).
 It uses snapshot sizing, studio environment, the shared stage floor/glow/shadow,
 model-scaled lights with a fitted shadow frustum, canonical camera projection,
 and deterministic renderer settings. Automatic perspective cameras fit the
@@ -618,7 +688,6 @@ that rest box.
 `captureModel(viewport, { job })` returns data only:
 
 - `mode: "view"`: PNG data URLs in `outputs`.
-- `mode: "section"`: PNG data URLs or SVG text in `outputs`.
 - `mode: "list"`: part list and bounds. A CAD model lists its composed part
   occurrences; a family scene lists what it drew, one row per mesh, in its scene
   graph's order (a robot's scene attaches a link's meshes before the joints it

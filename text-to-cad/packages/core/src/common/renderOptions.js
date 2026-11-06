@@ -1,5 +1,5 @@
 import { resolveCadGridSettings } from "./cadInk.js";
-import { buildGridConfig } from "../lib/viewer/stageGrid.js";
+import { buildGridConfig, createGridMesh, GRID_AXIS_COLORS } from "../lib/viewer/stageGrid.js";
 import * as THREE from "three";
 import {
   RENDER_CAMERA_PRESETS,
@@ -12,7 +12,6 @@ import {
 import {
   DEFAULT_FILL_LIGHT_SETTINGS,
   DEFAULT_FLOOR_AXIS_SETTINGS,
-  DEFAULT_FLOOR_GRID_SETTINGS,
   DEFAULT_RIM_LIGHT_SETTINGS,
   FLOOR_AXIS_RADIUS_MULTIPLE,
   THEME_FLOOR_MODES
@@ -359,30 +358,13 @@ export function addFloor(scene, bounds, themeSettings, sceneScale, settingsBySca
   const minZ = followModel ? Math.min(0, boundsMinZ) : 0;
   let gridBounds = null;
   if (gridEnabled) {
-    // The grid's density is the viewer's too (`updateGridHelper`): the Grid preset is twice as fine.
-    const gridConfig = buildGridConfig(radius, sceneScale, { grid: gridSettings });
+    // The viewer's grid, for the same settings (`updateGridHelper`): the same object, step and fade.
+    const gridConfig = { ...buildGridConfig(radius, sceneScale, { grid: gridSettings }), ...gridSettings };
     gridBounds = {
       min: [-gridConfig.size / 2, -gridConfig.size / 2, 0],
       max: [gridConfig.size / 2, gridConfig.size / 2, 0]
     };
-    const grid = new THREE.GridHelper(
-      gridConfig.size,
-      gridConfig.divisions,
-      gridSettings.centerColor,
-      gridSettings.cellColor
-    );
-    const materials = Array.isArray(grid.material) ? grid.material : [grid.material];
-    for (const material of materials) {
-      material.transparent = true;
-      material.opacity = clamp(
-        toFiniteNumber(gridSettings.opacity, DEFAULT_FLOOR_GRID_SETTINGS.opacity),
-        0,
-        1
-      );
-      material.depthWrite = false;
-      material.toneMapped = false;
-    }
-    grid.rotation.x = Math.PI / 2;
+    const grid = createGridMesh(THREE, gridConfig);
     grid.position.set(0, 0, 0);
     scene.add(grid);
   }
@@ -396,9 +378,7 @@ export function addFloor(scene, bounds, themeSettings, sceneScale, settingsBySca
         new THREE.Vector3(0, 0, axisLength)
       ]),
       new THREE.LineBasicMaterial({
-        color: axisSettings.color
-          || gridSettings.centerColor
-          || DEFAULT_FLOOR_GRID_SETTINGS.centerColor,
+        color: axisSettings.color || GRID_AXIS_COLORS.light.z,
         transparent: true,
         opacity: clamp(toFiniteNumber(axisSettings.opacity, DEFAULT_FLOOR_AXIS_SETTINGS.opacity), 0, 1),
         depthWrite: false,
@@ -811,7 +791,9 @@ export function drawBurnedInLabel(context, label, width, height, {
   context.restore();
 }
 
-export function rendererDataUrlWithOptionalLabel(renderer, label, job, outputSize = {}) {
+// `overlay(context, width, height)`: what is drawn over the picture in output pixels, before its
+// label (a job's measurements, `renderMeshScene.js`).
+export function rendererDataUrlWithOptionalLabel(renderer, label, job, outputSize = {}, overlay = null) {
   const source = renderer.domElement;
   // `setPixelRatio` deliberately makes the WebGL drawing buffer larger than
   // the requested output for supersampling. The snapshot contract, however,
@@ -820,7 +802,7 @@ export function rendererDataUrlWithOptionalLabel(renderer, label, job, outputSiz
   const width = Math.max(1, Math.floor(toFiniteNumber(outputSize.width, toFiniteNumber(source.width, 1))));
   const height = Math.max(1, Math.floor(toFiniteNumber(outputSize.height, toFiniteNumber(source.height, 1))));
   const needsResample = source.width !== width || source.height !== height;
-  if (!needsResample && !shouldBurnInViewLabels(job)) {
+  if (!needsResample && !shouldBurnInViewLabels(job) && !overlay) {
     return dataUrlFromRenderer(renderer);
   }
   const canvas = document.createElement("canvas");
@@ -835,6 +817,7 @@ export function rendererDataUrlWithOptionalLabel(renderer, label, job, outputSiz
     context.imageSmoothingQuality = "high";
   }
   context.drawImage(source, 0, 0, source.width, source.height, 0, 0, width, height);
+  overlay?.(context, width, height);
   if (shouldBurnInViewLabels(job)) {
     drawBurnedInLabel(context, label, width, height);
   }

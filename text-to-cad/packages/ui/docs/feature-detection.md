@@ -30,7 +30,7 @@ Changing expansion updates the queue without restarting an active component that
 is still requested. Switching between occurrences of that same component also
 keeps its work. Removing the last requested occurrence cancels both pending
 surface loading and worker work; queued components that are no longer requested
-are skipped. Taking the Features tree off screen (choosing another tool, or entering
+are skipped. Taking the model tree off screen (choosing another tool, or entering
 preview), changing geometry or resource scope, and
 unmounting cancel the entire inspector's pending work. Cancelled jobs cannot
 publish late results or populate the completed cache.

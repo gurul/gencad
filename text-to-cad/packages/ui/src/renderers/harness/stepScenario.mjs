@@ -221,7 +221,7 @@ export function stepCatalogEntry({ view, sidecar, assembly, file }) {
     // never fetches the sidecar. The scanner only supplies it when the sidecar
     // declares the current schema AND a `documentHash` equal to the digest of
     // the STEP's bytes; a fixture failing either gate silently has no Position
-    // tab and no Animate tool.
+    // section and no Animation section.
     sourceSidecar: sidecar,
     poseUrl: `/${file}.json`,
     animationHash: 'fixture-animation',
@@ -269,6 +269,11 @@ function harnessBundle() {
  *   tessellation cache that already holds every component (`warmTessellationCache`); without it
  *   the cache is cold, and every probe and read of it is a 404.
  */
+function unbuiltEntry(listed) {
+  return { file: listed.file, kind: 'part', url: '/__cad/store?file=unbuilt-0f1e2d3c4b5a69788796a5b4', hash: '',
+    documentHash: createHash('sha256').update(`unbuilt:${listed.documentHash}`).digest('hex'), bytes: 0 };
+}
+
 export async function serveStepHarness(t, { onRequest, progressive = false, singlePart = false, warmCache = false } = {}) {
   const loaded = await loadStepFixture();
   const fixture = progressive ? stageProgressiveFixture(loaded) : singlePart ? stageSinglePartFixture(loaded) : loaded;
@@ -284,6 +289,7 @@ export async function serveStepHarness(t, { onRequest, progressive = false, sing
   const hold = name => { gates[name] = new Promise(resolve => { opened[name] = resolve; }); };
   for (const name of ['a', 'b']) hold(name);
   let declaring = true;
+  let failing = false;
   let server, browser;
   const pages = new Set();
   t.after(async () => {
@@ -309,9 +315,9 @@ export async function serveStepHarness(t, { onRequest, progressive = false, sing
     if (url.pathname === '/harness.js') { response.setHeader('Content-Type', 'text/javascript'); response.end(bundle); return; }
     if (url.pathname === '/styles.css') { response.setHeader('Content-Type', 'text/css'); response.end(css); return; }
     if (url.pathname === '/harness.css') { response.setHeader('Content-Type', 'text/css'); response.end(bundledCss); return; }
-    if (url.pathname.endsWith('/__cad/catalog')) { json(response, { entries: [listed] }); return; }
+    if (url.pathname.endsWith('/__cad/catalog')) { json(response, { entries: [failing ? unbuiltEntry(listed) : listed] }); return; }
     if (url.pathname.endsWith('/__cad/server')) { json(response, { backend: 'cadgen' }); return; }
-    if (url.pathname.endsWith('/__cad/artifact')) { json(response, { state: 'compiled' }); return; }
+    if (url.pathname.endsWith('/__cad/artifact')) { json(response, failing ? { state: 'failed', reason: 'build_failed', error: 'failed to read STEP file: the CAD kernel could not parse it' } : { state: 'compiled' }); return; }
     if (url.pathname.endsWith('/__cad/surfaces')) {
       const body = await readBody(request);
       const shown = views.get(body.tree) || fixture;
@@ -391,7 +397,7 @@ export async function serveStepHarness(t, { onRequest, progressive = false, sing
     page.on('pageerror', error => errors.push(error.message));
     // No Worker: the surf tessellator falls back to the main thread, which is
     // what `renderAssetClient` does for a host without one.
-    await page.addInitScript(() => { window.Worker = undefined; window.__cadPreviewChromeIdleMs = 5000; });
+    await page.addInitScript(() => { window.Worker = undefined; });
     if (record) await page.addInitScript(stored => { window.__cadTabRecord = stored; }, record);
     // A script of the test's own that must run before the app does (a render counter on
     // React's devtools hook, say).
@@ -407,7 +413,8 @@ export async function serveStepHarness(t, { onRequest, progressive = false, sing
         return state?.revision === wanted && state.loading === false;
       }, revision);
     };
-    return { page, errors, pane: page.getByTestId('one'), update };
+    const fail = async () => { failing = true; await page.evaluate(() => window.cadHarness.a.client.refresh()); };
+    return { page, errors, pane: page.getByTestId('one'), update, fail };
   };
   /**
    * The file saved again (`reviseFixture`): the catalog lists the new revision from now on, and a
@@ -428,6 +435,7 @@ export async function serveStepHarness(t, { onRequest, progressive = false, sing
     pages.clear();
     current = fixture;
     listed = entry;
+    failing = false;
   };
   return { open, closePages, requests, fixture, entry, revise, port: () => server.address().port, release: gate => opened[gate]?.(), hold,
     declare: on => { declaring = on !== false; } };

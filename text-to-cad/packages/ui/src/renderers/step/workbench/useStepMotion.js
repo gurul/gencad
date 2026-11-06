@@ -3,7 +3,6 @@ import * as THREE from "three";
 import {
   animationClipList,
   animationRenderFrame,
-  buildDefaultAnimationState,
   findAnimationClip
 } from "@text-to-cad/core/common/animationClock.js";
 import {
@@ -16,7 +15,7 @@ import { entryPoseUrl } from "@text-to-cad/core/lib/entryAssets.js";
 import { tolerantAnimationClip } from "../components/workbench/hooks/packageProgressiveLoad.js";
 import { useAnimationClockStore } from "./animationClockStore.js";
 import { cadPathForEntry, fileKey as fileKeyOf } from "./entryPaths.js";
-import { restoreMotionAnimation, restoreMotionParameters } from "./motionRestore.js";
+import { restingAnimationState, restoreMotionAnimation, restoreMotionParameters } from "./motionRestore.js";
 import { buildParameterValuesCopyText, parseParameterValuesPasteText } from "./parameterControls.js";
 import { resolveStepModuleLoad, stepPoseLogic } from "./stepModuleLoad.js";
 import { stepModuleRequiresTopology } from "./topologyCapabilities.js";
@@ -49,16 +48,17 @@ export function stepMotionSources(entry) {
  *
  * In: the entry on screen, the model it moves (a partial progressive model plays tolerantly and
  * is not validated), and the stored view to restore the pose from as the sidecar compiles.
- * Out: what the Position panel and the playbar read and call, what the viewport draws a frame
+ * Out: what the Position and Animation sections read and call, what the viewport draws a frame
  * from (`animationRuntime`), and `restore`, which the file's view calls once before the
  * first paint. A routine is never restored: every open starts at rest, and the speed and
- * loop it plays with are the tab's (the playbar's Playback settings, the shell's).
+ * loop it plays with are the file's (the Animation section's Playback settings, the shell's).
  *
  * @param {{ entry: object, fileKey: string, resources: object, meshData: object | null, meshPartial: boolean,
  *   readStored: () => { pose: object | null }, clipboard: object,
- *   reportError: (message: string) => void }} options
+ *   reportError: (message: string) => void,
+ *   host?: { onUse(motion: "position" | "animation"): void } }} options
  */
-export function useStepMotion({ entry, fileKey, resources, meshData, meshPartial, readStored, clipboard, reportError }) {
+export function useStepMotion({ entry, fileKey, resources, meshData, meshPartial, readStored, clipboard, reportError, host = null }) {
   const animationClock = useAnimationClockStore();
   const { resetAnimationClock, setAnimationClock } = animationClock;
   const readStoredRef = useRef(readStored);
@@ -85,7 +85,7 @@ export function useStepMotion({ entry, fileKey, resources, meshData, meshPartial
     error: "",
     clips: null
   });
-  const [animationState, setAnimationState] = useState(buildDefaultAnimationState);
+  const [animationState, setAnimationState] = useState(restingAnimationState);
   const stepModuleParameterValuesRef = useRef(stepModuleParameterValues);
   const animationStateRef = useRef(animationState);
   const motionRevisionRef = useRef(0);
@@ -211,17 +211,23 @@ export function useStepMotion({ entry, fileKey, resources, meshData, meshPartial
   // they were neither stops nor rewinds one that is playing, and only a changed routine is
   // compiled again, from rest. The source and the file's name are read when the key changes.
   const animationSourceRef = useRef({ sourceAnimation, entry });
+  const releaseAnimationRef = useRef(null);
   animationSourceRef.current = { sourceAnimation, entry };
   useEffect(() => {
     const { sourceAnimation, entry } = animationSourceRef.current;
     let cancelled = false;
     const controller = new AbortController();
     const resetAnimation = () => {
-      const nextState = buildDefaultAnimationState();
+      const nextState = restingAnimationState();
       animationStateRef.current = nextState;
       setAnimationState(nextState);
       resetAnimationClock();
     };
+    // The same file's routines read again, because a rebuild changed or removed them: the model
+    // goes to rest, and the routine chosen keeps its place, with its speed
+    // and loop, for the new ones to restore against.
+    const reloading = animationLoadState.file === fileKey && animationLoadState.status === "ready";
+    if (reloading) releaseAnimationRef.current?.();
 
     if (!animationKey || !sourceAnimation) {
       setAnimationLoadState({ url: "", status: "idle", error: "", clips: null });
@@ -310,7 +316,7 @@ export function useStepMotion({ entry, fileKey, resources, meshData, meshPartial
   const commands = useStepMotionControls({
     selectedStepModuleDefinition: definition, selectedAnimationClips: clips, selectedActiveAnimationClip: activeClip,
     animationState, animationStateRef, setAnimationState, stepModuleParameterValuesRef,
-    setStepModuleParameterValues, setAppliedStepPoseName, motionRevisionRef
+    setStepModuleParameterValues, setAppliedStepPoseName, motionRevisionRef, clock: animationClock, host
   });
 
   // Embedded animation clips are checked against the compiled tree once it is
@@ -331,6 +337,7 @@ export function useStepMotion({ entry, fileKey, resources, meshData, meshPartial
       .join("\n");
   }, [clips, meshData, meshPartial]);
   const animationError = animationLoadError || validationError;
+  releaseAnimationRef.current = commands.releaseAnimation;
 
   // Copy and Paste of the Position values, as text a person can keep and paste back.
   const { applyStepModuleParameterValues } = commands;
@@ -372,18 +379,39 @@ export function useStepMotion({ entry, fileKey, resources, meshData, meshPartial
     }
   };
 
-  // What the Position panel and the playbar read and call.
+  // What the Position and Animation sections read and call.
+  const { positionControls, animationControls } = motionSectionControls({
+    status, error, definition, parameterValues: stepModuleParameterValues, appliedPoseName, animationRuntime,
+    animationStatus, animationError, clipList, animationState, commands, clock: animationClock,
+    onCopyParams: copyParameters, onPasteParams: pasteParameters
+  });
+
+  return {
+    definition, clips, loading, topologyRequired: stepModuleRequiresTopology(definition), parameterValues: stepModuleParameterValues,
+    animationState, animationStateRef, animationRuntime, animationError, positionControls, animationControls,
+    onParameterChange: commands.handleStepModuleParameterChange, onPlayToggle: commands.handleAnimationPlayToggle,
+    releaseAnimation: commands.releaseAnimation,
+    resetMotion: commands.resetMotion, resetPosition: commands.resetPosition, restore
+  };
+}
+
+/**
+ * What the Position and Animation sections read and call, over one motion's state and commands:
+ * the tools view's (`useStepMotion`) or Preview's (`useStepPreviewMotion`).
+ */
+export function motionSectionControls({ status, error, definition, parameterValues, appliedPoseName, animationRuntime,
+  animationStatus, animationError, clipList, animationState, commands, clock, onCopyParams = null, onPasteParams = null }) {
   const positionControls = {
     status, error, definition,
-    parameterValues: stepModuleParameterValues,
+    parameterValues,
     onParameterChange: commands.handleStepModuleParameterChange,
     onResetParameters: commands.handleResetStepModuleParameters,
     onApplyPose: commands.handleApplyPose,
     activePose: animationState.enabled !== false ? "" : appliedPoseName,
     positionActive: !animationRuntime,
     onResetMotion: commands.resetMotion,
-    onCopyParams: copyParameters,
-    onPasteParams: pasteParameters
+    onCopyParams,
+    onPasteParams
   };
   const animationControls = {
     status: animationStatus,
@@ -401,17 +429,11 @@ export function useStepMotion({ entry, fileKey, resources, meshData, meshPartial
     onScrub: commands.handleAnimationScrub,
     onSpeedChange: commands.handleAnimationSpeedChange,
     onLoopToggle: commands.handleAnimationLoopToggle,
+    onRelease: commands.releaseAnimation,
     resetModel: commands.resetMotion,
-    // The kit's playbar reads its time from the runtime it is handed, not from a context: the
-    // old STEP-only bar did, which is why this object never carried one. It is the same clock
-    // the pose pass writes per frame, so the scrubber re-renders and nothing else does.
-    clock: animationClock
+    // The kit's scrubber reads its time from the runtime it is handed, not from a context. It is the
+    // same clock the pose pass writes per frame, so the scrubber re-renders and nothing else does.
+    clock
   };
-
-  return {
-    definition, loading, topologyRequired: stepModuleRequiresTopology(definition), parameterValues: stepModuleParameterValues,
-    animationState, animationStateRef, animationRuntime, animationError, positionControls, animationControls,
-    onParameterChange: commands.handleStepModuleParameterChange, onPlayToggle: commands.handleAnimationPlayToggle,
-    releaseAnimation: commands.releaseAnimation, restore
-  };
+  return { positionControls, animationControls };
 }

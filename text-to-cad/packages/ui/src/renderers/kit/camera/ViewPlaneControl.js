@@ -16,6 +16,9 @@ const FACE_LABELS = Object.freeze({ z: "Top", zNeg: "Bottom", yNeg: "Front", y: 
 const AXIS_COLORS = Object.freeze({ x: "rgb(239, 83, 80)", y: "rgb(76, 175, 80)", z: "rgb(66, 133, 244)" });
 const DEFAULT_VIEW_PLANE_SIZE = "7rem";
 const HOME_CORNER_ID = "iso+-+";
+// What a hover changes eases in, briefly; what it lights is one plain, lighter shade.
+const HOVER_TRANSITION = Object.freeze({ transition: "fill 120ms ease-out" });
+const HOVER_FILL = "color-mix(in oklch, var(--background) 55%, var(--foreground))";
 // SVG units: the cube's half-size on screen, and where its centre sits.
 const SCALE = 21;
 const CENTER = 50;
@@ -100,6 +103,31 @@ function roundedInsetFace(points) {
     const after = lerp(point, inset[(index + 1) % 4], 0.2);
     return `${index ? "L" : "M"}${before} Q${point.join(" ")} ${after}`;
   }).join(" ") + " Z";
+}
+
+// What a hovered edge or corner lights, ON the cube, as a CAD view cube does: an edge, a band along
+// it across both faces that meet there; a corner, a square on each of its three faces. Each patch is
+// `HOVER_BAND` of its face's width deep (faces span -1..1), drawn where its face is in view.
+const HOVER_BAND = 0.36;
+function hoverPatches(orientation, direction) {
+  const axes = [0, 1, 2].filter(axis => direction[axis] !== 0);
+  const inward = value => value * (1 - HOVER_BAND);
+  return axes.flatMap(normal => {
+    const facing = toView(orientation, [0, 1, 2].map(axis => (axis === normal ? direction[axis] : 0)))[2];
+    if (facing <= 0.02) return [];
+    const others = [0, 1, 2].filter(axis => axis !== normal);
+    // On this face, each other axis runs from the edge or corner inward when it is part of it,
+    // and across the whole face when it is not (an edge's length).
+    const spans = others.map(axis => direction[axis] !== 0 ? [direction[axis], inward(direction[axis])] : [-1, 1]);
+    const quad = [[0, 0], [1, 0], [1, 1], [0, 1]].map(([i, j]) => {
+      const point = [0, 0, 0];
+      point[normal] = direction[normal];
+      point[others[0]] = spans[0][i];
+      point[others[1]] = spans[1][j];
+      return toScreen(toView(orientation, point));
+    });
+    return [quad.map(point => point.join(",")).join(" ")];
+  });
 }
 
 function activateOnKey(event, activate) {
@@ -194,6 +222,9 @@ function ViewPlaneControl({
     return { axis, x, y, lx: inBox(x + direction[0] * 7), ly: inBox(y + direction[1] * 7), visible };
   });
 
+  const hoveredPick = VIEW_CUBE_EDGES.find(edge => edge.id === hoveredId) || VIEW_CUBE_CORNERS.find(corner => corner.id === hoveredId);
+  const hoveredPatches = hoveredPick ? hoverPatches(orientation, hoveredPick.direction) : [];
+
   const sizeStyle = compact ? undefined : {
     width: normalizeCssLength(viewPlaneSize, DEFAULT_VIEW_PLANE_SIZE),
     height: normalizeCssLength(viewPlaneSize, DEFAULT_VIEW_PLANE_SIZE)
@@ -255,7 +286,8 @@ function ViewPlaneControl({
   return (
     <div
       className="pointer-events-none absolute z-30 flex flex-col items-center gap-0"
-      style={{ ...(viewPlaneOffsetLeft != null ? { left: `${viewPlaneOffsetLeft}px` } : { right: `${viewPlaneOffsetRight}px` }),
+      style={{ ...(viewPlaneOffsetLeft != null ? { left: `${viewPlaneOffsetLeft}px` } : {
+        left: "var(--cad-viewport-corner-left, auto)", right: `var(--cad-viewport-corner-right, ${viewPlaneOffsetRight}px)` }),
         ...(viewPlaneOffsetTop != null ? { top: viewPlaneOffsetTop } : { bottom }) }}
     >
       {viewPlaneHeader ? (
@@ -274,17 +306,21 @@ function ViewPlaneControl({
             const hovered = hoveredId === face.id;
             // Faces turned away from the camera are shaded darker, so the cube reads as solid.
             const shade = Math.round(94 + face.facing * 5);
-            const fill = active || hovered
-              ? `color-mix(in oklch, var(--background) ${active ? 80 : 88}%, var(--foreground))`
-              : `color-mix(in oklch, var(--background) ${shade}%, var(--foreground))`;
+            // Hovered, a face lights plainly (the patch colour an edge or corner lights with), its
+            // label at full strength; the view on screen a little less.
+            const fill = hovered
+              ? HOVER_FILL
+              : active
+                ? "color-mix(in oklch, var(--background) 82%, var(--foreground))"
+                : `color-mix(in oklch, var(--background) ${shade}%, var(--foreground))`;
             return (
               <g key={face.id} {...pickProps(face.id, face.title, () => activateViewPlaneFace?.(face.id))}>
                 <polygon points={face.points.map((point) => point.join(",")).join(" ")}
                   fill="color-mix(in oklch, var(--background) 90%, var(--foreground))" stroke="var(--background)" strokeWidth="0.6" strokeLinejoin="round" />
-                <path d={roundedInsetFace(face.points)} fill={fill} pointerEvents="none" />
+                <path d={roundedInsetFace(face.points)} fill={fill} pointerEvents="none" style={HOVER_TRANSITION} />
                 {face.facing > 0.25 ? (
                   <text x="0" y="0" transform={face.labelTransform} textAnchor="middle" dominantBaseline="central"
-                    fontSize="0.43" fontWeight="500" fill="color-mix(in oklch, var(--foreground) 90%, transparent)"
+                    fontSize="0.43" fontWeight={hovered || active ? 600 : 500} fill={hovered || active ? "var(--foreground)" : "color-mix(in oklch, var(--foreground) 90%, transparent)"}
                     opacity={Math.min(1, face.facing * 1.6)} pointerEvents="none" aria-hidden="true">
                     {face.label}
                   </text>
@@ -292,23 +328,28 @@ function ViewPlaneControl({
               </g>
             );
           })}
-          {edges.map((edge) => (
-            <g key={edge.id} {...pickProps(edge.id, edge.title, () => activateViewPlaneFace?.(edge.id))}>
-              <line x1={edge.ends[0][0]} y1={edge.ends[0][1]} x2={edge.ends[1][0]} y2={edge.ends[1][1]}
-                stroke="transparent" strokeWidth="8" />
-
-            </g>
-          ))}
+          {/* The hovered edge's or corner's patches, on the faces, under the pickers. */}
+          {hoveredPatches.map((points, index) => <polygon key={index} points={points} fill={HOVER_FILL}
+            stroke="var(--background)" strokeWidth="0.6" strokeLinejoin="round" pointerEvents="none" data-view-cube-hover="" />)}
+          {edges.map((edge) => {
+            // An edge is a view too: hovered (or the view on screen) it shows as a bar along the
+            // cube's edge, where nothing marked it before.
+            return (
+              <g key={edge.id} {...pickProps(edge.id, edge.title, () => activateViewPlaneFace?.(edge.id))}>
+                <line x1={edge.ends[0][0]} y1={edge.ends[0][1]} x2={edge.ends[1][0]} y2={edge.ends[1][1]}
+                  stroke="transparent" strokeWidth="8" />
+              </g>
+            );
+          })}
           {corners.map((corner) => {
             // Every corner is an isometric view and shows a dot; the right-front-top one, the
             // usual isometric view, is darker so it is the one to aim for.
             const home = corner.id === HOME_CORNER_ID;
-            const lit = activeViewPlaneFace === corner.id || hoveredId === corner.id;
-            const tone = lit ? 100 : home ? 55 : 25;
+            const tone = home ? 55 : 25;
             return (
               <g key={corner.id} {...pickProps(corner.id, corner.title, () => activateViewPlaneFace?.(corner.id))}>
                 <circle cx={corner.x} cy={corner.y} r="6" fill="transparent" />
-                <circle cx={corner.x} cy={corner.y} r={lit ? 3 : home ? 2.4 : 1.8} pointerEvents="none"
+                <circle cx={corner.x} cy={corner.y} r={home ? 2.4 : 1.8} pointerEvents="none"
                   fill={`color-mix(in oklch, var(--foreground) ${tone}%, var(--background))`}
                   stroke="var(--background)" strokeWidth="0.8" />
               </g>

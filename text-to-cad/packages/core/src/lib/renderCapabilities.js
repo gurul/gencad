@@ -19,6 +19,9 @@ import { RENDER_FORMAT, normalizeFormat } from "./fileFormats.js";
 // - Capabilities are DATA. No behaviour, no imports beyond the format enum.
 // - Format-specific *content* (STEP's tree, DXF's bends) stays format-specific — the
 //   flags below decide WHICH panels mount, not what is in them.
+// - What a 3D file's tools and view offer (Measure, Clip, Explode, the display modes) is
+//   not here: each renderer offers its tools, and `viewFeaturesForKind`
+//   (`common/viewSettings.js`) is the one rule of what a file's view offers.
 
 // How parameters reach the viewer. One consumer surface over the possible stores.
 export const PARAMETER_SOURCE = Object.freeze({
@@ -74,11 +77,6 @@ const MESH_CAPABILITIES = Object.freeze({
   iconKind: ENTRY_ICON_KIND.STL_MESH,
   parts: false,
   topology: false,
-  // Measure is a STEP tool: it snaps to B-rep topology. A mesh has only triangle corners.
-  measure: false,
-  exploded: false,
-  displayModes: false,
-  clip: false,
   params: null,
   animations: false,
   artifactManaged: false,
@@ -87,18 +85,9 @@ const MESH_CAPABILITIES = Object.freeze({
 const ROBOT_CAPABILITIES = Object.freeze({
   assetKind: ASSET_KIND.ROBOT,
   iconKind: ENTRY_ICON_KIND.ROBOT,
-  // No selection. A URDF is a link tree, so links CAN be made pickable — that was tried and
-  // removed: selecting one gives you nothing to do with it. There is no copyable reference
-  // for a link the way there is for a STEP face or occurrence, so the whole affordance was
-  // a selection highlight and no payload. On every non-STEP format the select TOOL stays
-  // visible and inert: it is the default mode, and in it the left button orbits and the
-  // right button pans, which is all a robot needs.
+  // Its links are picked by its own renderer, not through a STEP's part table.
   parts: false,
   topology: false,
-  measure: false,
-  exploded: false,
-  displayModes: false,
-  clip: false,
   params: null,
   animations: false,
   artifactManaged: false,
@@ -110,10 +99,6 @@ const DEFAULT_CAPABILITIES = Object.freeze({
   tools: VIEWPORT_TOOLS,
   parts: false,
   topology: false,
-  measure: false,
-  exploded: false,
-  displayModes: false,
-  clip: false,
   params: null,
   animations: false,
   // Formats whose VIEWPORT CONTENT comes from a generated package, so the viewer checks
@@ -131,10 +116,6 @@ export const RENDER_CAPABILITIES = Object.freeze({
     iconKind: ENTRY_ICON_KIND.STEP,
     parts: true,
     topology: true,
-    measure: true,
-    exploded: true,
-    displayModes: true,
-    clip: true,
     params: PARAMETER_SOURCE.SIDECAR,
     animations: true,
     artifactManaged: true,
@@ -178,7 +159,7 @@ const FORMAT_ALIASES = Object.freeze({
 //
 // Deliberately NOT normalizeRenderFormat(), which resolves anything unknown to STEP. That
 // is the right default when picking a loader, and exactly wrong here — it would hand an
-// unrecognised entry STEP's full capability set (parts, topology, clip, artifact-managed
+// unrecognised entry STEP's full capability set (parts, topology, artifact-managed
 // gating) and fail open on every one of them.
 export function renderCapabilities(renderFormat) {
   const normalized = normalizeFormat(renderFormat);

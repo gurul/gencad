@@ -9,7 +9,7 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
         "cadgen step inspect has been removed. Use a Python script with "
         "'from cadgen import read_scene' and 'from cadgen.geometry import "
         "closest_points, overlap_volume, topology_errors'. "
-        "Resolve geometry with scene.resolve(ref).shape(); choose checks and thresholds in Python.\n"
+        "Resolve geometry with (selection,) = scene.resolve(ref) and selection.shape(); choose checks and thresholds in Python.\n"
     )
     return 2
 

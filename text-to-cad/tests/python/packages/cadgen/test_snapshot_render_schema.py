@@ -15,9 +15,7 @@ add_repo_path("packages/cadgen/src")
 from cadgen.snapshot_core import (  # noqa: E402
     MIN_RENDER_TESSELLATION,
     DISPLAY_APPEARANCES,
-    DISPLAY_GROUP_KEYS,
     DISPLAY_MODES,
-    RENDER_QUALITY_IDS,
     SUPPORTED_OUTPUT_SETTINGS_KEYS,
     SUPPORTED_QUALITY_KEYS,
     SnapshotError,
@@ -37,93 +35,86 @@ def normalize(**settings: object) -> dict[str, object]:
 
 
 class RenderDisplaySchemaTest(unittest.TestCase):
-    def test_presets_and_appearance_are_closed(self):
-        self.assertEqual({"solid", "render", "xray", "hidden-line", "wireframe", "grid"}, set(DISPLAY_MODES))
+    def test_modes_and_appearance_are_closed(self):
+        # Preview's look is no display mode: it is its own request (`preview`). Grid is a switch.
+        self.assertEqual({"solid", "shaded", "parts", "xray", "hidden-line", "wireframe"}, set(DISPLAY_MODES))
         self.assertEqual({"light", "dark"}, set(DISPLAY_APPEARANCES))
-        self.assertEqual({"preview", "final"}, set(RENDER_QUALITY_IDS))
         for mode in DISPLAY_MODES:
             self.assertEqual({"mode": mode}, load_display_option(mode, cwd=Path(".")))
-        for invalid in ("shaded", "transparent", "hidden_edges", "unshaded", None, True, [], {}):
+        for invalid in ("render", "preview", "grid", "Grid", "transparent", "hidden_edges", "unshaded", None, True, [], {}):
             with self.subTest(mode=invalid), self.assertRaises(SnapshotError):
                 load_display_option({"mode": invalid}, cwd=Path("."))
         for invalid in ("system", "LIGHT", None, False, [], {}):
             with self.subTest(appearance=invalid), self.assertRaises(SnapshotError):
                 load_display_option({"appearance": invalid}, cwd=Path("."))
+        for invalid in (None, 1, "on", {"enabled": True}):
+            with self.subTest(grid=invalid), self.assertRaises(SnapshotError):
+                load_display_option({"grid": invalid}, cwd=Path("."))
 
-    def test_preset_names_do_not_depend_on_existing_output_directories(self):
+    def test_mode_names_do_not_depend_on_existing_output_directories(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "render").mkdir()
-            self.assertEqual({"mode": "render"}, load_display_option("render", cwd=root))
+            (root / "wireframe").mkdir()
+            self.assertEqual({"mode": "wireframe"}, load_display_option("wireframe", cwd=root))
 
-    def test_groups_are_strict_sparse_overrides_in_every_mode(self):
+    def test_a_display_is_a_mode_the_grid_and_what_modes_share_and_stays_sparse(self):
         display = {
-            "mode": "solid", "appearance": "dark",
+            "mode": "parts", "grid": True, "appearance": "dark",
             "camera": {"projection": "perspective", "focalLength": 85},
-            "surfaces": {"style": "flat", "colorMode": "by-part", "colors": ["#abc"], "opacity": 0.5},
-            "edges": {"visibility": "all", "color": "#123456"},
-            "lighting": {"quality": "preview", "exposure": -1.25, "rotation": 180, "size": 0.25, "fill": 1},
-            "background": {"color": "#abc", "opacity": 0.4},
-            "floor": {"enabled": False, "placement": "origin", "opacity": 0.6, "finish": "glossy"},
-            "grid": {"density": 2}, "axes": {"enabled": False},
-            "clip": {"enabled": True, "axis": "z", "offsets": {"z": 0.5}},
+            "clip": {"enabled": True, "axis": "z", "at": 0.5},
             "exploded": {"enabled": True, "amount": 0.5},
         }
         self.assertEqual(display, load_display_option(display, cwd=Path(".")))
-        for name in DISPLAY_GROUP_KEYS:
-            self.assertEqual({name: {}}, load_display_option({name: {}}, cwd=Path(".")))
-            for invalid in (None, True, [], "off", {"typo": True}, {"enabled": 1}):
-                with self.subTest(group=name, invalid=invalid), self.assertRaises(SnapshotError):
-                    load_display_option({name: invalid}, cwd=Path("."))
+        with tempfile.TemporaryDirectory() as tmp:
+            import json
+            root = Path(tmp)
+            (root / "display.json").write_text(json.dumps(display), encoding="utf-8")
+            self.assertEqual(display, load_display_option("display.json", cwd=root))
 
-    def test_group_numbers_and_values_are_strict(self):
-        invalid = (
-            {"lighting": {"exposure": True}}, {"lighting": {"exposure": "0"}},
-            {"lighting": {"exposure": -5.01}}, {"lighting": {"rotation": float("inf")}},
-            {"lighting": {"rotation": -180.01}}, {"lighting": {"size": 0.24}},
-            {"lighting": {"size": 3.01}}, {"lighting": {"fill": -0.01}},
-            {"lighting": {"fill": 1.01}}, {"lighting": {"quality": "high"}},
-            {"background": {"color": "white"}}, {"background": {"opacity": True}},
-            {"background": {"opacity": -0.1}}, {"background": {"opacity": 1.1}},
-            {"floor": {"placement": "auto"}}, {"floor": {"color": "blue"}},
-            {"floor": {"finish": "shiny"}}, {"floor": {"finish": True}},
-            {"camera": {"focalLength": 19.9}}, {"camera": {"focalLength": 200.1}},
-            {"camera": {"projection": "ortho"}}, {"surfaces": {"style": "smooth"}},
-            {"surfaces": {"colorMode": "by_part"}}, {"surfaces": {"colors": []}},
-            {"surfaces": {"colors": ["white"]}}, {"edges": {"visibility": "hidden"}},
-            {"grid": {"density": 0.24}}, {"grid": {"density": 4.01}}, {"grid": {"density": "2"}},
-        )
-        for display in invalid:
+    def test_group_values_are_strict(self):
+        for display in ({"camera": {"focalLength": 19.9}}, {"camera": {"focalLength": 200.1}},
+                        {"camera": {"projection": "ortho"}}, {"exploded": {"amount": 1.01}}, {"clip": {"axis": "w"}}):
             with self.subTest(display=display), self.assertRaises(SnapshotError):
                 load_display_option(display, cwd=Path("."))
 
-    def test_old_nested_surfaces_are_rejected(self):
-        for key in ("render", "guides", "partColor"):
+    def test_per_mode_settings_and_older_groups_are_rejected(self):
+        # A mode is drawn at its own defaults: the per-mode tree (and Preview's settings in it) is no
+        # display setting, and neither is any group a mode used to hold.
+        for key in ("modes", "render", "preview", "guides", "partColor", "surfaces", "edges", "lighting",
+                    "background", "floor", "axes", "parts", "flat", "opacity"):
             with self.subTest(key=key), self.assertRaises(SnapshotError):
                 load_display_option({key: {}}, cwd=Path("."))
 
     def test_default_job_is_light_solid_without_overriding_groups(self):
         self.assertEqual({"mode": "solid", "appearance": "light"}, normalize()["display"])
-        self.assertEqual({"mode": "render", "appearance": "light"}, normalize(display={"mode": "render"})["display"])
-        self.assertEqual({"mode": "solid", "appearance": "dark", "background": {"opacity": 0.3}},
-                         normalize(display={"appearance": "dark", "background": {"opacity": 0.3}})["display"])
+        # Preview's look is drawn over the same display: the page's own flag, never a display mode.
+        previewed = normalize(preview=True)
+        self.assertEqual(({"mode": "solid", "appearance": "light"}, True), (previewed["display"], previewed["preview"]))
+        self.assertNotIn("preview", normalize(preview=False))
+        self.assertNotIn("preview", normalize())
+        self.assertEqual({"mode": "xray", "appearance": "dark", "grid": True},
+                         normalize(display={"mode": "xray", "appearance": "dark", "grid": True})["display"])
+        with self.assertRaises(SnapshotError):
+            normalize(preview="yes")
 
     def test_animation_and_output_capture_controls_remain_composable(self):
         job = normalize(
-            camera={"preset": "front"}, display={"mode": "render"},
+            camera={"preset": "front"}, preview=True,
             animation={"clip": "spin", "time": 0.5},
             output={"sizeProfile": "diagnostic", "viewLabels": True},
         )
         self.assertEqual(job["camera"], {"preset": "front"})
-        self.assertEqual(job["display"]["mode"], "render")
+        self.assertEqual((job["display"]["mode"], job["preview"]), ("solid", True))
         self.assertEqual(job["animation"], {"clip": "spin", "time": 0.5})
         self.assertEqual(job["output"], {"sizeProfile": "diagnostic", "viewLabels": True})
 
-    def test_public_api_has_one_display_surface_and_no_render_parameter(self):
+    def test_public_api_has_a_display_surface_and_grid_and_preview_beside_it(self):
         from cadgen import step
         signature = inspect.signature(step.snapshot)
         self.assertIn("display", signature.parameters)
         self.assertIn("camera", signature.parameters)
+        self.assertIs(signature.parameters["grid"].default, False)
+        self.assertIs(signature.parameters["preview"].default, False)
         self.assertNotIn("render", signature.parameters)
 
     def test_output_and_quality_are_closed(self):

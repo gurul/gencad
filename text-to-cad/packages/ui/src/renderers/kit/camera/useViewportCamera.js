@@ -1,46 +1,38 @@
-import { useCallback, useLayoutEffect, useRef } from "react";
-import { applyPerspectiveSnapshot, cancelCameraTransition, captureRuntimeViewportFitScale, readPerspectiveSnapshot, readScopedPerspectiveSnapshot, recenterRuntimeTarget, setRuntimeZoomPercent, syncRuntimeViewportFraming, transitionCameraToViewPreset, zoomRuntimeToBounds } from "./runtimeCamera.js";
+import { useCallback, useRef } from "react";
+import { applyPerspectiveSnapshot, cancelCameraTransition, readScopedPerspectiveSnapshot, recenterRuntimeTarget, setRuntimeZoomPercent, transitionCameraToViewPreset, zoomRuntimeToBounds } from "./runtimeCamera.js";
 import { runtimeModelKeyMatches } from "@text-to-cad/core/lib/viewer/modelRuntime.js";
 import { requestSceneFrame } from "../viewport/sceneFrames.js";
 import { perspectiveSnapshotEqual, perspectiveSnapshotMatchesScene, resolvePerspectiveSnapshot } from "@text-to-cad/core/lib/perspective.js";
-import { DEFAULT_VIEW_DIRECTION, VIEW_CUBE_DRAG_RAD_PER_PX, VIEW_PLANE_FACE_BY_ID, WORLD_UP, applyOrbitDelta, clearKeyboardOrbitState, readViewPlaneOrientation, runtimeFramingBounds } from "./viewportCameraKit.js";
+import { VIEW_CUBE_DRAG_RAD_PER_PX, VIEW_PLANE_FACE_BY_ID, applyOrbitDelta, readViewPlaneOrientation, runtimeFramingBounds } from "./viewportCameraKit.js";
 
 /**
  * The camera of a mounted viewport, as React sees it: the perspective a session
- * stores (emitted when it really changed, never while a presentation camera is
- * showing), the initial/stored view, the preview camera swap and its exact
- * restore, the reset, and the view cube's face presets. The refs and setters are
+ * stores (emitted when it really changed; a viewport that keeps no camera, Preview's,
+ * only says it moved), the initial/stored view, the reset, and the view cube's face presets. The refs and setters are
  * the mounting component's; this hook owns the behaviour between them and the
  * runtime (`runtimeCamera.js`).
  *
  * `modelBounds` is the authored `{ min, max }` a reset frames; `coordinateSystemFor`
  * names the coordinate system a stored camera belongs to, for a scale mode;
- * `cameraMovedRef.current()` is told when a presentation camera moved.
+ * `cameraMovedRef.current()` is told when the camera of a viewport that keeps none moved.
  */
 export function useViewportCamera({
   coordinateSystemFor,
   activeViewPlaneFaceRef,
-  previewCameraRef,
   lastEmittedPerspectiveRef,
   cameraMovedRef,
   modelBounds,
-  modelKey,
   modelKeyRef,
   modelTransformRef,
   perspectiveChangeRef,
   perspectivePropRef,
   perspectiveRef,
-  previewMode,
-  previewModeRef,
-  previewOrbit = true,
-  previewOrbitSpeed,
   runWithoutPerspectiveEvents,
   runtimeRef,
   sceneScaleModeRef,
   setActiveViewPlaneFace,
   setViewPlaneOrientation,
-  suppressPerspectiveEventsRef,
-  viewerReadyTick
+  suppressPerspectiveEventsRef
 }) {
   const emitPerspectiveChange = (runtime = runtimeRef.current) => {
     const currentModelKey = modelKeyRef.current;
@@ -55,8 +47,8 @@ export function useViewportCamera({
     if (!nextPerspective) {
       return;
     }
-    if (previewModeRef.current || previewCameraRef.current) {
-      // LOD still follows the presentation camera, but session persistence does not.
+    if (!perspectiveChangeRef.current) {
+      // A view that keeps no camera (Preview's): only what samples the camera hears it moved.
       cameraMovedRef.current?.();
       return;
     }
@@ -76,7 +68,6 @@ export function useViewportCamera({
     if (nextOrientation) setViewPlaneOrientation(nextOrientation);
   };
   const applyInitialPerspective = useCallback((runtime = runtimeRef.current) => {
-    if (previewModeRef.current) return false;
     const nextPerspective = resolvePerspectiveSnapshot(
       perspectiveRef ? perspectiveRef.current : undefined,
       perspectivePropRef.current
@@ -93,61 +84,6 @@ export function useViewportCamera({
     }
     return runWithoutPerspectiveEvents(() => applyPerspectiveSnapshot(runtime, nextPerspective, { scheduleIdle: false }));
   }, [perspectiveRef]);
-  const syncPreviewCamera = (runtime = runtimeRef.current) => {
-    if (!runtimeModelKeyMatches(runtime, modelKeyRef.current) || !runtimeFramingBounds(runtime)) return;
-    let saved = previewCameraRef.current;
-    if (saved && saved.modelKey !== modelKeyRef.current) {
-      previewCameraRef.current = null;
-      saved = null;
-    }
-    const entering = previewModeRef.current;
-    if (entering ? saved?.runtime === runtime : !saved) return;
-    const controls = runtime.controls;
-    // Drain pending OrbitControls damping before either snapshot is installed;
-    // otherwise the next frame applies the outgoing camera's remaining drag.
-    runWithoutPerspectiveEvents(() => {
-      cancelCameraTransition(runtime, { scheduleIdle: false });
-      clearKeyboardOrbitState(runtime.keyboardOrbitState);
-      controls.autoRotate = false;
-      controls.enableDamping = false;
-      if (entering && !saved) {
-        saved = { modelKey: modelKeyRef.current, runtime,
-          camera: readPerspectiveSnapshot(runtime),
-          interactiveFraming: runtime.interactiveFraming,
-          viewportFitScale: runtime.viewportFitScale,
-          userMovedCamera: runtime.userMovedCamera };
-        previewCameraRef.current = saved;
-      }
-      controls.update();
-      if (entering) {
-        saved.runtime = runtime;
-        runtime.userMovedCamera = false;
-        zoomRuntimeToBounds(runtime, runtimeFramingBounds(runtime), sceneScaleModeRef.current, {
-          animate: false, modelOffset: modelTransformRef.current.offset,
-          viewDirection: DEFAULT_VIEW_DIRECTION, viewUp: WORLD_UP,
-        });
-      } else {
-        applyPerspectiveSnapshot(runtime, saved.camera, { scheduleIdle: false });
-        runtime.interactiveFraming = saved.interactiveFraming;
-        runtime.viewportFitScale = saved.viewportFitScale;
-        runtime.userMovedCamera = saved.userMovedCamera;
-        syncRuntimeViewportFraming(runtime);
-        previewCameraRef.current = null;
-      }
-      controls.enableDamping = true;
-      // Preview orbits only if the file's Orbit says so: a preview entered with the orbit
-      // off holds its fresh fit to the frame, not a frame later.
-      controls.autoRotate = entering && previewOrbit && previewOrbitSpeed > 0;
-      captureRuntimeViewportFitScale(runtime);
-      syncViewPlaneOrientation(runtime);
-      requestSceneFrame(runtime, false);
-    });
-  };
-  useLayoutEffect(() => {
-    previewModeRef.current = previewMode;
-    syncPreviewCamera();
-    // Entry/exit must precede ResizeObserver and the next presented frame.
-  }, [previewMode, modelKey, viewerReadyTick]);
   // The authored bounds a reset frames, read at the moment of the reset: it is a
   // fresh object every render, but the imperative reset callback must stay stable.
   const modelBoundsRef = useRef(modelBounds);
@@ -233,7 +169,6 @@ export function useViewportCamera({
     applyInitialPerspective,
     emitPerspectiveChange,
     resetZoomAndPan,
-    syncPreviewCamera,
     syncViewPlaneOrientation
   };
 }

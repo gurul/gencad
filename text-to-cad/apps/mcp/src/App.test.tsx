@@ -1,9 +1,13 @@
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { CadViewerProps } from '@text-to-cad/ui/cad-viewer';
+import { version } from '../package.json';
 import App from './App';
 import type { HostContext } from './host/bridge';
 import type { Launch } from './host/server';
+
+// The page as a checkout builds it: its Vite config names the build (vite.config.mjs, build.test.ts).
+vi.hoisted(() => { Object.assign(globalThis, { __TEXT_TO_CAD_BUILD__: 'b80844940' }); });
 
 // The shared CAD viewer, reduced to what this page hands it: what it draws for each prompt
 // destination and each page is its own suite's (packages/ui); what this page hands it is this one's.
@@ -39,11 +43,8 @@ function host(initial: HostContext, hostCapabilities: Record<string, unknown> = 
     onHostContext(listener: (next: HostContext) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     change(next: HostContext) { context = { ...context, ...next }; for (const listener of [...listeners]) listener(context); },
   };
-  let kept = { quickEdit: true };
   const answers: Record<string, Answer> = {
     '/__cad/analytics': body => ({ sharing: Boolean(body?.share), policy: POLICY }),
-    // The person's features as the server keeps them.
-    '/__cad/features': body => (kept = { ...kept, ...body }),
     '/__cad/version': () => ({ notice: null }),
     '/__cad/recents': () => ({ recents: [] }),
     '/__cad/reveal': () => null,
@@ -77,12 +78,32 @@ it('a tab host gets the page it always had, down to its bottom: the home, with n
   expect(typeof viewer.props!.library!.pick).toBe('function');
   expect(container.querySelector('[aria-label="Full size"]')).toBeNull();
   expect(sized(bridge.notify)).toEqual([]);
-  // The host's composer floats over the page's bottom: no strip is kept for it, preview's playbar
-  // sits on the composer's line, and lists scroll clear of it.
+  // The host's composer floats over the page's bottom: no strip is kept for it, and lists scroll
+  // clear of it.
   const frame = container.firstElementChild as HTMLElement;
   expect([frame.style.paddingTop, frame.style.paddingBottom]).toEqual(['4px', '0px']);
-  expect(frame.style.getPropertyValue('--cad-viewport-bottom-center')).toBe('40px');
   expect(frame.style.getPropertyValue('--cad-host-bottom-inset')).toBe('72px');
+  // The sidebar's chat button floats bottom-right: the cube uses bottom-left.
+  expect(frame.style.getPropertyValue('--cad-viewport-corner-left')).toBe('2px');
+  expect(frame.style.getPropertyValue('--cad-viewport-corner-right')).toBe('auto');
+  expect(frame.style.getPropertyValue('--cad-viewport-corner-bottom')).toBe('');
+});
+
+it.each(['tab', 'file'] as const)('a %s view keeps the cube left of the floating composer', surface => {
+  const { bridge, server } = host({ displayMode: 'fullscreen' });
+  const { container } = render(<App bridge={bridge as any} server={server as any} launch={{ ...home, surface }} />);
+  const frame = container.firstElementChild as HTMLElement;
+  expect(frame.style.getPropertyValue('--cad-viewport-corner-left')).toBe('2px');
+  expect(frame.style.getPropertyValue('--cad-viewport-corner-right')).toBe('auto');
+  expect(frame.style.getPropertyValue('--cad-viewport-corner-bottom')).toBe('');
+});
+
+it.each(['inline', 'fullscreen'] as const)('an inline host in %s mode keeps the default cube corner', displayMode => {
+  const { bridge, server } = host({ displayMode });
+  const { container } = render(<App bridge={bridge as any} server={server as any} launch={home} presentation="inline" />);
+  const frame = container.firstElementChild as HTMLElement;
+  expect(frame.style.getPropertyValue('--cad-viewport-corner-left')).toBe('');
+  expect(frame.style.getPropertyValue('--cad-viewport-corner-right')).toBe('');
 });
 
 it('a model opened from the home is shown in place, joins the library with its picture, and leads back home; the navbar\'s links and file menu go through the host', async () => {
@@ -102,6 +123,9 @@ it('a model opened from the home is shown in place, joins the library with its p
   expect(bridge.request).toHaveBeenCalledWith('ui/open-link', { url: 'https://github.com/earthtojake/text-to-cad' });
   // Feedback and Report Issue open a new issue on the project's tracker, the same way.
   expect(viewer.props!.host.links!.issues).toBe('https://github.com/earthtojake/text-to-cad/issues/new');
+  // The app menu names the build: a custom one's version is its release's and its id.
+  expect([viewer.props!.host.links!.version, viewer.props!.host.links!.release])
+    .toEqual([`${version}-dev.b80844940`, `https://github.com/earthtojake/text-to-cad/releases/tag/v${version}`]);
   const { perform, platform } = viewer.props!.host.fileActions!;
   expect([platform, Object.keys(perform!).sort()]).toEqual(['darwin', ['copy-path', 'reveal']]);
   await act(async () => perform!.reveal!({ path: '/work/parts/a.step', kind: 'file' }));
@@ -168,15 +192,14 @@ it('an inline host gets the whole viewer in a card of a height it is told, with 
   expect(bridge.request).toHaveBeenCalledWith('ui/request-display-mode', { mode: 'fullscreen' });
   act(() => bridge.change({ displayMode: 'fullscreen', safeAreaInsets: { bottom: 72 } }));
   expect(container.querySelector('[aria-label="Full size"]')).toBeNull();
-  // Full size, the host's composer lies across the bottom: the view keeps clear of it, and its
-  // playbar keeps its own line.
+  // Full size, the host's composer lies across the bottom: the view keeps clear of it.
   expect((container.firstElementChild as HTMLElement).style.paddingBottom).toBe('72px');
-  expect((container.firstElementChild as HTMLElement).style.getPropertyValue('--cad-viewport-bottom-center')).toBe('');
+  expect((container.firstElementChild as HTMLElement).style.getPropertyValue('--cad-host-bottom-inset')).toBe('');
   // Full size keeps what was on the card: the same view, not a new one.
   expect(viewer.mounts).toBe(1);
 });
 
-it("a view keeps its own history of files, as a browser's tab does: the agent's shows and the person's moves, Back and Forward over them, a move after a Back dropping what was ahead, the home no step", async () => {
+it("a view keeps its own history of files, as a browser's tab does: the agent's shows and the person's moves, Back and Forward over them, a move after a Back dropping what was ahead, the home a step like a file", async () => {
   const { bridge, server } = host({ displayMode: 'fullscreen' });
   // The agent's shows reach the view on its sync, one reply at a time.
   const replies: ((reply: { events: unknown[] }) => void)[] = [];
@@ -198,25 +221,34 @@ it("a view keeps its own history of files, as a browser's tab does: the agent's 
   expect(at()).toEqual(['/work/a.step', false, true]);
   act(() => viewer.props!.history!.forward());
   expect(at()).toEqual(['/work/b.step', true, true]);
-  // The home is no step, a bigger way to pick a recent file: going there leaves the history where
-  // it stands, and the file picked there follows the one the view left, dropping what was ahead (c).
+  // The home is a step like a file: going there drops what was ahead (c), Back from it returns to
+  // the file the view left, and Forward goes home again.
   act(() => viewer.props!.onShow(''));
-  expect(at()).toEqual(['', true, true]);
+  expect(at()).toEqual(['', true, false]);
+  act(() => viewer.props!.history!.back());
+  expect(at()).toEqual(['/work/b.step', true, true]);
+  act(() => viewer.props!.history!.forward());
+  expect(at()).toEqual(['', true, false]);
   act(() => viewer.props!.onShow('/work/d.step'));
   expect(at()).toEqual(['/work/d.step', true, false]);
   act(() => viewer.props!.history!.back());
-  expect(at()).toEqual(['/work/b.step', true, true]);
-  // Picking, on the home, the file the view left adds nothing; nor does a show of what is on screen.
-  act(() => viewer.props!.onShow(''));
-  act(() => viewer.props!.onShow('/work/b.step'));
-  expect(at()).toEqual(['/work/b.step', true, true]);
-  await agentShows('/work/b.step', 2);
-  expect(at()).toEqual(['/work/b.step', true, true]);
+  expect(at()).toEqual(['', true, true]);
+  // A show of what is on screen adds nothing, the agent's included.
+  act(() => viewer.props!.history!.forward());
+  act(() => viewer.props!.onShow('/work/d.step'));
+  await agentShows('/work/d.step', 2);
+  expect(at()).toEqual(['/work/d.step', true, false]);
   cleanup();
-  // A view opened on the home: its first file is its first step, with nothing behind it.
+  // A view opened on the home: the home is its first step, so Back from the first file returns
+  // there, and Forward to the file.
   render(<App bridge={bridge as any} server={server as any} launch={{ protocol: 5, page: 'home', model: null, surface: 'tab', pick: false }} />);
+  expect(at()).toEqual(['', false, false]);
   act(() => viewer.props!.onShow('/work/a.step'));
-  expect(at()).toEqual(['/work/a.step', false, false]);
+  expect(at()).toEqual(['/work/a.step', true, false]);
+  act(() => viewer.props!.history!.back());
+  expect(at()).toEqual(['', false, true]);
+  act(() => viewer.props!.history!.forward());
+  expect(at()).toEqual(['/work/a.step', true, false]);
   cleanup();
   // A file handler shows its file alone, with no home to go to: no Back or Forward.
   render(<App bridge={bridge as any} server={server as any} launch={{ protocol: 5, page: 'viewer', model: '/work/a.step', surface: 'file' }} />);
@@ -237,8 +269,8 @@ it('a Quick Edit queues into a tab host\'s composer always, into an inline host\
   const reach = (presentation: 'tabs' | 'inline', capabilities: Record<string, unknown>) => {
     const { bridge, server } = host({ displayMode: presentation === 'tabs' ? 'fullscreen' : 'inline' }, capabilities);
     render(<App bridge={bridge as any} server={server as any} presentation={presentation} launch={model} />);
-    const { promptContext, attachments } = viewer.props!.host;
-    const reached = [promptContext.getSnapshot().kind, typeof promptContext.send === 'function' ? 'send' : '', Boolean(attachments)];
+    const { promptContext, promptFiles } = viewer.props!.host;
+    const reached = [promptContext.getSnapshot().kind, typeof promptContext.send === 'function' ? 'send' : '', Boolean(promptFiles)];
     cleanup();
     return reached;
   };
@@ -266,8 +298,7 @@ it('nothing asks about usage stats: the app menu shows the answer, and its toggl
   expect(queryByRole('dialog')).toBeNull();
   expect(viewer.props!.notice).toBeFalsy();
   expect(server.asked('/__cad/analytics')).toEqual([null]);
-  expect(viewer.props!.appSettings).toEqual([expect.objectContaining({ id: 'analytics', checked: false }),
-    expect.objectContaining({ id: 'quickEdit', checked: true })]);
+  expect(viewer.props!.appSettings).toEqual([expect.objectContaining({ id: 'analytics', checked: false })]);
   await act(async () => viewer.props!.appSettings![0].onCheckedChange(true));
   expect(server.asked('/__cad/analytics').at(-1)).toEqual({ share: true });
   expect(viewer.props!.appSettings![0].checked).toBe(true);
@@ -297,28 +328,7 @@ it('an answer is never undone by a read sent just before it, and a choice the en
   fixed.server.answers['/__cad/analytics'] = () => ({ sharing: false, reason: 'environment', policy: POLICY });
   render(<App bridge={fixed.bridge as any} server={fixed.server as any} launch={home} />);
   await act(async () => {});
-  expect(viewer.props!.appSettings![0]).toEqual(expect.objectContaining({ disabled: true, label: 'Share usage stats (set by your environment)' }));
-});
-
-it("the app menu's features: Quick edit is read from the server, turned off there for every view, and handed to the viewer", async () => {
-  const { bridge, server } = host({ displayMode: 'fullscreen' });
-  render(<App bridge={bridge as any} server={server as any} launch={home} />);
-  await act(async () => {});
-  expect(server.asked('/__cad/features')).toEqual([null]);
-  expect(viewer.props!.features).toEqual({ quickEdit: true });
-  // Settings: Analytics, then Features.
-  expect(viewer.props!.appSettings!.map(setting => [setting.label, setting.checked]))
-    .toEqual([['Share usage stats', false], ['Quick edit', true]]);
-  await act(async () => viewer.props!.appSettings!.find(setting => setting.id === 'quickEdit')!.onCheckedChange(false));
-  expect(server.asked('/__cad/features').at(-1)).toEqual({ quickEdit: false });
-  expect(viewer.props!.features).toEqual({ quickEdit: false });
-  cleanup();
-  // Another view of the person's opens with it off: the server kept it.
-  const again = host({ displayMode: 'fullscreen' });
-  again.server.answers['/__cad/features'] = () => ({ quickEdit: false });
-  render(<App bridge={again.bridge as any} server={again.server as any} launch={home} />);
-  await act(async () => {});
-  expect(viewer.props!.features).toEqual({ quickEdit: false });
+  expect(viewer.props!.appSettings![0]).toEqual(expect.objectContaining({ disabled: true, label: 'Telemetry (set by your environment)' }));
 });
 
 it('a newer release is the blue update button: its card sends the prompt to the chat where the host takes messages, copies it elsewhere, the full instructions a link away', async () => {

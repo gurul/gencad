@@ -31,6 +31,18 @@ the last release disposes shared GPU/BVH state.
   transfers the still-owned scene with an explicit cleanup error for retry.
 - Disposable resource admission never changes exact geometry or persistent
   cache identity.
+- A scene's sibling (`createSibling()` of `lib/render/glbScene.js`,
+  `lib/render/meshScene.js`, `lib/urdf/robotScene.js`) draws over the source's
+  geometry through `lib/render/sharedGeometry.js`: `shareGeometry` gives it the
+  source's index and attribute objects, so one renderer drawing both scenes uploads
+  each buffer once, and copies only what the sibling rewrites for itself (a robot's
+  vertex colours). `releaseGeometry` lets go of the shared attributes before
+  disposing, so only what the sibling owns is freed. The source stays the owner and
+  is disposed after its siblings. A second STEP scene filled from the same published
+  mesh shares component geometry through the owner counts above.
+- `createCadWebGlRenderer` (`common/webglRenderer.js`) takes the `canvas` it draws
+  on (an `OffscreenCanvas`), so one renderer, and one upload of each resource, can
+  serve several views; disposing it and losing its context are its caller's.
 
 ## 2. The demand boundary
 

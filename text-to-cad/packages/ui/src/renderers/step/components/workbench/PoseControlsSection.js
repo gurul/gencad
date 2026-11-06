@@ -96,7 +96,7 @@ export function poseValuesForPreset(definition, poseName) {
 }
 
 // Resolve the selected authored pose from the shared position runtime.
-export function posePresetSelection(runtime) {
+function posePresetSelection(runtime) {
   const definition = runtime?.definition;
   const poseNames = poseNamesFromDefinition(definition);
   const pickedPose = String(runtime?.activePose || "");
@@ -139,7 +139,8 @@ export default function PoseControlsSection({ runtime = null }) {
 
       {definition ? (
         <>
-          {poseNames.length ? (
+          {/* Default is always the first choice where there is a joint to move: the way back. */}
+          {poseNames.length || parameters.length ? (
             <KinematicsPoseRow
               poses={poseNames.map((poseName) => ({ value: poseName, label: poseName }))}
               activeValue={activePose}

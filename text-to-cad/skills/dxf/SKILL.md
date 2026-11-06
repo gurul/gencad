@@ -15,8 +15,8 @@ repository link is only for provenance and release review.
 Run cadgen through [uv](https://docs.astral.sh/uv/), so this skill's commands share
 one installation, and its warm build daemon, with the CAD app's server:
 
-- `cadgen` below means `uvx --no-config --managed-python --python 3.13 --from cadgen==0.7.21 cadgen`
-- `python` below means `uvx --no-config --managed-python --python 3.13 --from cadgen==0.7.21 python`
+- `cadgen` below means `uvx --no-config --managed-python --python 3.13 --from cadgen==0.7.24 cadgen`
+- `python` below means `uvx --no-config --managed-python --python 3.13 --from cadgen==0.7.24 python`
 
 The first run downloads that installation and the first snapshot its headless
 browser; later runs reuse both.
@@ -273,13 +273,19 @@ don't-care case and gets a generated timestamped name inside it, printed on the
 
 Grammar: `cadgen dxf snapshot TARGET [OUT] [flags]`. Flags: `--appearance
 light|dark`, `--size-profile`, `--width`/`--height`, `--job`, `--debug`,
-`--json`. That is the whole surface: a drawing is not a scene, so there is no
-camera to pose, no display settings to configure, no render mode, no parts to
-list, no section to cut and no view to label — `--camera`, `--display`,
-`--mode` and `--view-labels` are not flags this command has. A `--job` file that
-carries any of them (or `scale`, an output `label`/`viewLabel`, or
-`output.padding`/`viewLabels`/`tightFrame`) is refused by name before anything
-is rendered; a job's `output.renderScale` and `output.transparent` still apply.
+`--json`. A drawing has no 3D scene settings: `--camera`, `--display`,
+`--mode` and `--view-labels` are not CLI flags. A job can frame a window of the
+drawing with a plan-view `camera`
+(`{"target": [x, y, 0], "position": [x, y, d], "up": [0, 1, 0],
+"orthographicHalfHeight": h}`) and draw an `annotation` and `measurements` over it,
+in drawing coordinates: a Quick Edit prompt's views file is such a job, and
+`cadgen dxf snapshot --job <it>` renders the views the person saw again.
+Other camera poses, per-output cameras, scene display settings, `scale`, list mode,
+output `label`/`viewLabel`, and `output.padding`/`viewLabels`/`tightFrame` are refused.
+A job's `output.renderScale` and `output.transparent` still apply.
+Quick Edit supplies this packet inline as JSON or by a `.snapshot.json` path; save
+inline JSON to a temporary file before using `--job`. Inspect supplied annotations
+before editing. Without annotations, the captured view is optional context.
 
 No CLI inspects an existing `.dxf`. For entity/layer checks read it with `ezdxf`
 directly (it arrives with build123d), and `validate_dxf_file` for the drawing checks;
@@ -321,7 +327,13 @@ validation don't replace this.
   file return `url?file=<its URL-encoded absolute path>`. If it fails to launch, say so.
 
 The viewer renders saved DXF files as read-only 2D drawings; it never runs
-generation scripts. Drag to pan, wheel/pinch to zoom, double-click to fit.
+generation scripts. Drag to pan, wheel/pinch to zoom, double-click to fit. Its
+Select, Annotate and Measure feed Quick Edit, whose prompt names what the person
+picked as references into the drawing by entity HANDLE: `panel.dxf#h2F` is the
+modelspace entity whose handle is `2F` (`doc.entitydb["2F"]` in ezdxf); anything a
+block reference draws is named by its INSERT, and a dimension is one entity. The
+prompt's chip reads it as the entity's type and layer ("Circle on CUT"). Measurements
+are in the unit `$INSUNITS` declares ("units" when it declares none).
 
 ## Validation
 

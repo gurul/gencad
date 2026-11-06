@@ -77,9 +77,9 @@ class TheTemplateBuilds(unittest.TestCase):
         self.run_in_project("-c", """
 from cadgen import read_scene
 scene = read_scene("STEP/assembly.step")
-plate = scene.resolve("#plate").shape().bounding_box()
+plate = scene.resolve("#plate")[0].shape().bounding_box()
 for label in ("#standoff_left", "#standoff_right"):
-    post = scene.resolve(label).shape().bounding_box()
+    post = scene.resolve(label)[0].shape().bounding_box()
     assert abs(post.min.Z - plate.max.Z) < 1e-6, (label, post.min.Z, plate.max.Z)
 """)
 

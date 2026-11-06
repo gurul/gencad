@@ -1,8 +1,7 @@
 import { TooltipHint } from "@text-to-cad/ui/primitives/tooltip";
 import { Children, useEffect, useId, useRef, useState } from "react";
-import { Minus, Plus } from "lucide-react";
 import { cn } from "@text-to-cad/ui/utils";
-import { Button } from "@text-to-cad/ui/primitives/button";
+import { Checkbox } from "@text-to-cad/ui/primitives/checkbox";
 import { ColorPicker } from "@text-to-cad/ui/primitives/color-picker";
 import {
   Select,
@@ -44,95 +43,52 @@ export const FILE_SHEET_VALUE_BADGE_INPUT_CLASSES = [
 ].join(" ");
 export const FILE_SHEET_COMPACT_BUTTON_CLASSES = "h-7 px-2 text-tiny text-muted-foreground hover:text-foreground";
 export const FILE_SHEET_COMPACT_INPUT_CLASSES = "!h-7 px-2 text-tiny !text-foreground";
-export const FILE_SHEET_PRECISION_SLIDER_CLASSES = [
-  "h-4",
-  "[&_[data-slot=slider-track]]:h-px",
-  "[&_[data-slot=slider-track]]:rounded-full",
-  "[&_[data-slot=slider-track]]:bg-border",
-  "[&_[data-slot=slider-range]]:bg-primary",
-  "[&_[data-slot=slider-thumb]]:h-2.5",
-  "[&_[data-slot=slider-thumb]]:w-1.5",
-  "[&_[data-slot=slider-thumb]]:rounded-full",
-  "[&_[data-slot=slider-thumb]]:border-primary",
-  "[&_[data-slot=slider-thumb]]:bg-background",
-  "[&_[data-slot=slider-thumb]]:shadow-none",
-  "[&_[data-slot=slider-thumb]]:ring-0",
-  "[&_[data-slot=slider-thumb]]:hover:border-primary/85",
-  "[&_[data-slot=slider-thumb]]:hover:ring-1",
-  "[&_[data-slot=slider-thumb]]:hover:ring-ring/25",
-  "[&_[data-slot=slider-thumb]]:focus-visible:ring-2",
-  "[&_[data-slot=slider-thumb]]:focus-visible:ring-ring/30"
-].join(" ");
+// A joint's slider: in its row's 16px band, with no fill — a joint's zero is mostly mid-range, so a
+// bar from the left end up to the thumb would mean nothing.
+export const FILE_SHEET_PRECISION_SLIDER_CLASSES = "h-4 [&_[data-slot=slider-range]]:hidden";
 
-// A properties-panel section that is always visible: no disclosure affordance
-// or hover treatment. Use for primary controls such as Mode and Projection.
-/** A section heading: 28px, regular 12px, never a control (`docs/settings-ui.md`). */
-export const FILE_SHEET_SECTION_HEADING_CLASSES = "flex min-h-7 items-center px-2 py-1 text-xs font-normal leading-4 text-foreground";
+/** A section heading: 24px, regular 11px, never a disclosure (`docs/settings-ui.md`). */
+export const FILE_SHEET_SECTION_HEADING_CLASSES = "flex h-6 min-w-0 items-center gap-2 px-2 text-tiny font-normal leading-4 text-foreground";
 
 /**
- * One settings section: a heading and its rows, under a top border when another section
- * precedes it. `onOpenChange` makes the heading a disclosure: a Display feature gate
- * (`gated`: open IS enabled, and a shut gate mounts nothing) or a fold. `onReveal` is what a
- * press on an open section's title does (scroll the section into view).
+ * One settings section: a heading and its rows, a rule above it when another section precedes
+ * it. A section a feature switches on and off (`enabled`, `onEnabledChange`) ends its heading in
+ * that feature's checkbox, at the right, the title naming it; while it is off the section is its
+ * heading alone.
  */
-export function FileSheetSettingsSection({ title, children, open = true, onOpenChange,
-  gated = false, onReveal, headingAction = null, sectionId }) {
+export function FileSheetSettingsSection({ title, children, enabled, onEnabledChange, sectionId }) {
   const titleId = useId();
-  const contentId = useId();
-  const collapsible = typeof onOpenChange === "function";
-  return <section aria-labelledby={titleId} data-settings-section={sectionId} className="[&+section]:border-t border-border">
-    <div data-settings-section-heading="" className="relative h-7 shrink-0">
-      {collapsible ? <FileSheetToggleHeading title={title} open={open} onOpenChange={onOpenChange}
-        headingId={titleId} contentId={contentId} onTitleClick={onReveal}
-        verbs={gated ? ["Enable", "Disable"] : ["Expand", "Collapse"]} />
-        : <h2>{onReveal ? <button id={titleId} type="button" onClick={onReveal}
-          className={`${FILE_SHEET_SECTION_HEADING_CLASSES} w-full text-left`}>{title}</button>
-          : <span id={titleId} className={FILE_SHEET_SECTION_HEADING_CLASSES}>{title}</span>}</h2>}
-      {headingAction && <div className="absolute right-1 top-0 flex h-7 items-center gap-0.5">{headingAction}</div>}
-    </div>
-    <div id={contentId} hidden={!open} data-settings-section-body="" className="space-y-1 pb-2">{!gated || open ? children : null}</div>
+  const switchable = typeof onEnabledChange === "function";
+  const open = !switchable || enabled === true;
+  return <section aria-labelledby={titleId} data-settings-section={sectionId}
+    className="[&+section]:mt-1 [&+section]:border-t [&+section]:pt-1 border-border">
+    <h2 className="m-0">
+      {switchable ? <label className={cn(FILE_SHEET_SECTION_HEADING_CLASSES, "cursor-pointer justify-between")}>
+        <span id={titleId} className="truncate">{title}</span>
+        <Checkbox aria-labelledby={titleId} checked={open} onCheckedChange={checked => onEnabledChange(checked === true)} />
+      </label> : <span id={titleId} className={FILE_SHEET_SECTION_HEADING_CLASSES}>{title}</span>}
+    </h2>
+    {children == null || !open ? null : <div data-settings-section-body="" className="space-y-1 pb-1">{children}</div>}
   </section>;
 }
 
-// Expanded IS enabled. Only explicit activation changes settings: hover, focus,
-// scrolling and another section moving under the pointer must never write state.
 /**
- * The heading row of a section that opens and shuts: its title — shown muted, and a button
- * that opens it, while it is shut — and a trailing plus when shut and minus when open.
- * `verbs` name the two acts
- * for the button's label: `["Enable", "Disable"]` for a Display gate, `["Expand",
- * "Collapse"]` for a section a person folds away.
+ * A setting's row: its label in a fixed column and its control filling the rest, 24px, so the
+ * controls of a form start on one line. The label may be the section-local short name ("Opacity"
+ * under Grid); the control keeps the full accessible name.
  */
-function FileSheetToggleHeading({ title, open, onOpenChange, headingId, contentId, verbs, onTitleClick }) {
-  const show = () => { onOpenChange(true); onTitleClick?.(); };
-  const act = `${open ? verbs[1] : verbs[0]} ${title}`;
-  return (
-    <div className={cn("flex min-h-7 items-center", !open && "hover:bg-accent")}>
-      <h2 className="min-w-0 flex-1">
-        {open && onTitleClick ? <button id={headingId} type="button" aria-expanded={true} aria-controls={contentId}
-          onClick={onTitleClick}
-          className="flex min-h-7 w-full items-center px-2 py-1 text-left text-xs font-normal leading-4 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/45">{title}</button>
-          : open ? <span id={headingId} className="flex min-h-7 items-center px-2 py-1 text-xs font-normal leading-4 text-foreground">{title}</span> : <button id={headingId} type="button" aria-expanded={false} aria-controls={contentId}
-          onClick={show}
-          className="flex min-h-7 w-full items-center px-2 py-1 text-left text-xs font-normal leading-4 text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/45">
-          {title}
-        </button>}
-      </h2>
-      <Button type="button" variant="ghost" size="icon-xs" aria-label={act}
-        aria-expanded={open} aria-controls={contentId}
-        onClick={open ? () => onOpenChange(false) : show}
-        className="mr-1 size-6 shrink-0 text-muted-foreground hover:text-foreground">
-        {open ? <Minus className="size-3.5" strokeWidth={1.5} aria-hidden="true" /> : <Plus className="size-3.5" strokeWidth={1.5} aria-hidden="true" />}
-      </Button>
-    </div>
-  );
+export function FileSheetSettingRow({ label, children, disabled = false, className }) {
+  return <div className={cn("grid h-6 min-w-0 grid-cols-[4rem_minmax(0,1fr)] items-center gap-2 px-2", className)}>
+    <TooltipHint content={label} overflowOnly><span className={cn(FILE_SHEET_FIELD_LABEL_CLASSES, disabled && "opacity-50")}>{label}</span></TooltipHint>
+    <div className="flex min-w-0 items-center gap-1">{children}</div>
+  </div>;
 }
 
 export function FileSheetCheckboxRow({ label, checked, onCheckedChange, className, disabled = false }) {
   return (
-    <label className={cn("flex min-h-6 items-center gap-2 px-2 text-tiny text-muted-foreground", disabled ? "cursor-default opacity-60" : "cursor-pointer", className)}>
-      <input type="checkbox" checked={checked} disabled={disabled} onChange={event => onCheckedChange(event.target.checked)} className="size-3.5 shrink-0 accent-primary" />
-      <span>{label}</span>
+    <label className={cn("flex h-6 items-center gap-2 px-2 text-tiny text-foreground", disabled ? "cursor-default opacity-50" : "cursor-pointer", className)}>
+      <Checkbox aria-label={label} checked={checked} disabled={disabled} onCheckedChange={next => onCheckedChange(next === true)} />
+      <span className="truncate">{label}</span>
     </label>
   );
 }
@@ -379,10 +335,9 @@ export function FileSheetSliderField({ label, value, onValueCommit, valueInputPr
   return <FileSheetControlRow>
     <div className="grid min-h-7 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5" data-position-control="">
       <div className="min-w-0">
-        {label != null ? <TooltipHint content={labelTitle || label} overflowOnly><span className={cn(FILE_SHEET_FIELD_LABEL_CLASSES, "leading-3")}>{label}</span></TooltipHint> : null}
-        {/* Tight under its label: the slider's own box is taller than its track, so it is pulled up
-            until its thumb's top meets the label's foot. */}
-        <div className="-mt-0.5 min-w-0">{children}</div>
+        {label != null ? <TooltipHint content={labelTitle || label} overflowOnly><span data-file-sheet-field-label="" className={cn(FILE_SHEET_FIELD_LABEL_CLASSES, "leading-3")}>{label}</span></TooltipHint> : null}
+        {/* Under its label, its thumb clear of the label's foot. */}
+        <div className="mt-1 min-w-0">{children}</div>
       </div>
       {onValueCommit ? <FileSheetValueInput value={value} onValueCommit={onValueCommit} {...valueInputProps}
         className={cn("h-6 px-1.5", valueInputWidth(value), valueInputProps?.className)} /> : null}

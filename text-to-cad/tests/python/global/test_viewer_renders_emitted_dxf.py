@@ -85,7 +85,7 @@ class ViewerRendersEmittedDxfTest(unittest.TestCase):
         payload = _payload_for_emitted_drawing()
         self.assertTrue(payload["primitives"], "the emitted drawing flattened to nothing at all")
         self.assertIsNotNone(payload["bounds"], "a drawing with geometry must have bounds to fit")
-        drawn = {str(layer["name"]): int(layer["count"]) for layer in payload["layers"]}
+        drawn = {str(layer["name"]): int(layer["entities"]) for layer in payload["layers"]}
         for layer in EXPECTED_LAYERS:
             with self.subTest(layer=layer):
                 self.assertIn(
@@ -93,7 +93,7 @@ class ViewerRendersEmittedDxfTest(unittest.TestCase):
                     drawn,
                     f"nothing on layer {layer!r} reached the drawing payload, so the Viewer "
                     "and `cadgen dxf snapshot` would both draw that geometry as nothing. "
-                    f"Layers with primitives: {sorted(drawn)}",
+                    f"Layers drawn on: {sorted(drawn)}",
                 )
                 self.assertGreater(drawn[layer], 0)
 

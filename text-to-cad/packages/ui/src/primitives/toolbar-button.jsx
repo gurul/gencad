@@ -4,7 +4,7 @@ import { TooltipHint } from "@text-to-cad/ui/primitives/tooltip";
 import { cn } from "@text-to-cad/ui/utils";
 
 // The icon button every floating toolbar is made of: the CAD interaction tools,
-// the drawing tools under them, and the standalone drawing editor's toolbar.
+// the annotation tools under them.
 export const TOOLBAR_ICON_BUTTON_CLASS = "size-6 rounded-sm text-sidebar-foreground/70 shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-ring/45 data-[variant=secondary]:bg-sidebar-accent data-[variant=secondary]:text-sidebar-accent-foreground data-[variant=secondary]:hover:bg-sidebar-accent";
 
 const ToolbarTooltipVisibility = createContext(true);
@@ -16,8 +16,9 @@ export function ToolbarTooltipScope({ enabled = true, children }) {
 
 /**
  * `tooltip={false}` leaves the accessible name and shows nothing on hover: for a
- * toolbar over a canvas, where a tooltip would cover what is being pointed at.
- * @param {{ label: string, active?: boolean, tooltip?: boolean, tooltipSide?: "top" | "right" | "bottom" | "left", className?: string,
+ * toolbar over a canvas, where a tooltip would cover what is being pointed at. A string is the
+ * tooltip's text where it is shorter than the accessible name (Display's "Display").
+ * @param {{ label: string, active?: boolean, tooltip?: boolean | string, tooltipSide?: "top" | "right" | "bottom" | "left", className?: string,
  *   children?: import("react").ReactNode } & import("react").ButtonHTMLAttributes<HTMLButtonElement>} props
  */
 export function ToolbarButton({
@@ -44,5 +45,5 @@ export function ToolbarButton({
     </Button>
   );
   if (!tooltip) return button;
-  return <TooltipHint content={label} disabled={!tipEnabled} side={tooltipSide}>{button}</TooltipHint>;
+  return <TooltipHint content={typeof tooltip === "string" ? tooltip : label} disabled={!tipEnabled} side={tooltipSide}>{button}</TooltipHint>;
 }

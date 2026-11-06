@@ -35,7 +35,7 @@ function assertInk(set, [feature, tangent], message) {
     assert.ok(Math.abs(elements[index * 4 + channel] - value) < 1e-6, `${message}: class ${index} is not ${hex}`)));
 }
 
-test("an edge colour edit recolours the live CAD edges without a rebuild, and Reset puts the default ink back", () => {
+test("a line drawing turned dark recolours the live CAD edges without a rebuild, and light puts the default ink back", () => {
   const meshData = stepPackage();
   let frames = 0;
   const runtime = {
@@ -46,10 +46,12 @@ test("an edge colour edit recolours the live CAD edges without a rebuild, and Re
   const ref = current => ({ current });
   const refs = {
     partVisualStateRef: ref(null), clipSettingsRef: ref(null), staticSceneResetRef: ref({ invalidate() {}, complete() {} }),
-    meshSourceAdoptionRef: ref(null), viewerAlertChangeRef: ref(null), sceneUpdateAlertRef: ref(null), lodCameraChangeRef: ref(null)
+    viewerAlertChangeRef: ref(null), sceneUpdateAlertRef: ref(null),
+    meshSourceAdoptionRef: ref(null), lodCameraChangeRef: ref(null)
   };
   // The Display panel's store, and the policy and scene sync that StepSceneLayers wires from what it resolves.
-  const store = createViewSettingsStore({}, { appearance: "light", lightingQuality: "preview" });
+  // Wireframe: its edges are its own ink, light on a dark backdrop.
+  const store = createViewSettingsStore({ mode: "wireframe" }, { appearance: "light", lightingQuality: "preview" });
   const view = renderHook(({ scene }) => {
     const policy = useStepViewPolicy({ meshData, themeSettings: scene.theme, displaySettings: scene.display,
       renderMode: scene.render.enabled, renderConfiguration: scene.render.configuration });
@@ -70,15 +72,15 @@ test("an edge colour edit recolours the live CAD edges without a rebuild, and Re
   assertInk(set, ["#253443", "#667788"], "the default ink");
 
   frames = 0;
-  view.update({ scene: store.patch({ edges: { color: "#ff0000" } }).scene });
+  view.update({ scene: store.configure({ appearance: "dark" }).scene });
   assert.equal(stepScene.displayRecords[0], record, "the record on screen is kept: nothing was rebuilt");
   assert.equal(record.edgeInstance.set, set, "and so is its instanced edge draw");
-  assertInk(set, ["#ff0000", "#ff0000"], "the edited colour");
+  assertInk(set, ["#c9d3de", "#c9d3de"], "the line drawing's light ink");
   assert.ok(frames > 0, "a frame is asked for");
 
-  view.update({ scene: store.reset().scene });
+  view.update({ scene: store.configure({ appearance: "light" }).scene });
   assert.equal(stepScene.displayRecords[0], record);
-  assertInk(set, ["#253443", "#667788"], "Reset's default ink");
+  assertInk(set, ["#253443", "#667788"], "the default ink, in the light");
   view.unmount();
   stepScene.dispose();
 });

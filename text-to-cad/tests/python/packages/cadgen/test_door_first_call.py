@@ -91,7 +91,7 @@ print(json.dumps({
     "leaves": len(leaves),
     "leaf_refs": [o.ref for o in leaves],
     "faces": sum(len(list(o.entities("face"))) for o in leaves),
-    "refs": [scene.resolve(ref).ref for ref in sys.argv[2:]],
+    "refs": [scene.resolve(ref)[0].ref for ref in sys.argv[2:]],
 }))
 """
         return _run("-c", code, path, *refs, cwd=self.root, cache=self.cache)

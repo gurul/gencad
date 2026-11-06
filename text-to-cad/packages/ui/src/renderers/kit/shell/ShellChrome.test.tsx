@@ -1,16 +1,28 @@
-import React, { forwardRef } from 'react';
+import React, { forwardRef, useEffect, useImperativeHandle } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-// The shell's chrome — the strip, the tool stack, the view's actions, Display's dropdown and preview —
+// The shell's chrome — the strip, the tool stack, the file sidebar, the view's actions, Display's dropdown and preview —
 // under the smallest renderer that mounts it (`renderers/shell-harness`), with the WebGL viewport
 // replaced by an empty box: nothing asserted here is drawn by it. What the viewport is handed is
-// recorded, so a test can read what the shell asked of it.
+// recorded, so a test can read what the shell asked of it, and a view update it is handed is
+// acknowledged at once, as the real one does once it holds the frame.
+// The editor's viewport and, while it is open, Preview's (`PreviewView.jsx`, a viewport of its own).
 const viewportProps: { current: any } = { current: null };
+const previewProps: { current: any } = { current: null };
+// What the viewport's handle answers, where a test gives it one (Preview's picture, `pictureProgress`).
+const viewportHandle: { current: any } = { current: null };
 vi.mock('../../../../dist/renderers/kit/shell/ShellViewport.js', () => ({
-  default: forwardRef(function MockViewport(props: any, _ref) {
-    viewportProps.current = props;
+  default: forwardRef(function MockViewport(props: any, ref) {
+    const record = props.preview ? previewProps : viewportProps;
+    record.current = props;
+    useEffect(() => () => { if (props.preview) previewProps.current = null; }, []);
+    useImperativeHandle(ref, () => viewportHandle.current, []);
+    const update = props.viewUpdate;
+    useEffect(() => { if (update?.revision) update.binding.complete(update.revision); }, [update?.revision, update?.binding]);
+    // Its first frame drawn, as the real one reports it.
+    useEffect(() => { props.onPresentationChange?.({ file: props.modelKey, key: props.presentationKey, preparing: false }); }, [props.presentationKey]);
     return <div data-mock-viewport=""><canvas />{typeof props.children === 'function'
       ? props.children({ runtimeRef: { current: null }, hostRef: { current: null }, mountRef: { current: null }, viewerReadyTick: 0, commitScene: () => true })
       : null}</div>;
@@ -20,15 +32,16 @@ import HarnessRenderer from '../../../../dist/renderers/shell-harness/HarnessRen
 import { createHarnessRenderer } from '../../../../dist/renderers/shell-harness/index.js';
 import { FileViewer } from '../../../../dist/file-viewer/index.js';
 import { viewerLinks } from '../../../../dist/file-viewer/navigation/links.js';
-import { ViewerHostContext } from '../../../../dist/host/context.js';
+import { ViewerElementContext, ViewerHostContext } from '../../../../dist/host/context.js';
 import { testHost } from '../../../../dist/host/testing/host.js';
 import { ViewerMobileContext } from '../../../../dist/file-viewer/responsive.js';
-import { TOOL_PANEL_REFERENCE_HEIGHT, TOOL_PANEL_WIDTH } from '../../../../dist/renderers/kit/tools/toolStackLayout.js';
-import { FLOATING_CHROME_SURFACE_CLASS, FLOATING_SURFACE_CLASS } from '../../../../dist/lib/floatingSurface.js';
-import { PerspectiveProjectionIcon } from '../../../../dist/renderers/kit/camera/ProjectionModeIcons.js';
+import { TOOL_PANEL_WIDTH } from '../../../../dist/renderers/kit/tools/toolStackLayout.js';
+import { FILE_SIDEBAR_SURFACE_CLASS, FLOATING_CHROME_SURFACE_CLASS, FLOATING_SURFACE_CLASS } from '../../../../dist/lib/floatingSurface.js';
+import { SolidModeIcon } from '../../../../dist/renderers/kit/view-settings/DisplayModeOptions.js';
 
-// jsdom lays nothing out, so the few sizes the stack reads are given: a viewer 1280 × 800 whose
-// stack column (under the strip) is 600px tall, and each panel as big as its own style says.
+// jsdom lays nothing out, so the few sizes the chrome reads are given: a viewer 1280 × 800 whose
+// stack column (under the strip) and the sidebar panel's room (under its tiles) are each 600px
+// tall, and each panel and the sidebar's as big as its own style says.
 const VIEWER = { width: 1280, height: 800 }, STACK_HEIGHT = 600;
 const restores: (() => void)[] = [];
 function override(target: object, key: string, descriptor: PropertyDescriptor) {
@@ -39,45 +52,54 @@ function override(target: object, key: string, descriptor: PropertyDescriptor) {
 beforeEach(() => {
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal('matchMedia', (query: string) => ({ matches: false, media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }));
-  override(HTMLElement.prototype, 'clientHeight', { get(this: HTMLElement) { return this.hasAttribute('data-cad-tool-stack') ? STACK_HEIGHT : 0; } });
+  override(HTMLElement.prototype, 'clientHeight', { get(this: HTMLElement) { return this.hasAttribute('data-cad-tool-stack') || this.matches('[data-file-sidebar-room] > :not([data-file-sidebar-tools])') ? STACK_HEIGHT : 0; } });
   const rect = Element.prototype.getBoundingClientRect;
   override(Element.prototype, 'getBoundingClientRect', { value(this: HTMLElement) {
     if (this.hasAttribute('data-cad-scene-backdrop')) return DOMRect.fromRect({ x: 0, y: 0, ...VIEWER });
-    if (this.matches('section[data-tool-panel]')) return DOMRect.fromRect({ x: 8, y: 48, width: parseFloat(this.style.width) || 0, height: parseFloat(this.style.maxHeight) || 100 });
+    if (this.matches('section[data-tool-panel], aside[data-cad-file-sidebar]')) return DOMRect.fromRect({ x: 8, y: 48, width: parseFloat(this.style.width) || 0, height: parseFloat(this.style.maxHeight) || 100 });
     return rect.call(this);
   } });
   for (const name of ['setPointerCapture', 'releasePointerCapture']) override(Element.prototype, name, { value() {} });
   override(Element.prototype, 'hasPointerCapture', { value: () => true });
+  override(Element.prototype, 'scrollIntoView', { value() {} });
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); while (restores.length) restores.pop()!(); viewportProps.current = null; });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); while (restores.length) restores.pop()!(); viewportProps.current = null; previewProps.current = null; viewportHandle.current = null; });
+// Preview is up: its own view mounted over the editor's, which draws nothing under it.
+const inPreview = () => previewProps.current !== null && viewportProps.current.suspended === true;
 
 /** The tab's settings as a host hands them over, counting every write. */
 function tabSettings(initial: object = {}) {
-  let settings: any = { toolStack: { panels: {}, collapsed: {}, closed: {} }, ...initial };
+  let settings: any = { toolStack: { panels: {}, collapsed: {} }, ...initial };
   const listeners = new Set<() => void>();
   const store = { writes: 0, getSnapshot: () => settings, subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
     update(patch: object) { store.writes += 1; settings = { ...settings, ...patch }; listeners.forEach(listener => listener()); } };
   return store;
 }
 type Settings = ReturnType<typeof tabSettings>;
-// The navbar FileViewer hands a renderer: the box at its right end the view's controls go in.
-function navbarSlot() {
-  const slot = document.createElement('div');
-  slot.setAttribute('data-test-navbar', '');
-  document.body.append(slot);
-  return slot;
-}
-afterEach(() => document.querySelectorAll('[data-test-navbar]').forEach(slot => slot.remove()));
-function frame({ name = 'panel.harness', preferences = tabSettings(), state = undefined as unknown, mobile = false, onStateChange = (_: unknown) => {}, onFullscreenChange = vi.fn(), appearance = { colorScheme: 'light' } as object, notice = null as React.ReactNode, features = undefined as object | undefined } = {}) {
-  const props = { source: { id: 'one' }, file: { path: `/models/${name}`, name, kind: 'file' }, document: null, notice, features,
-    navbarSlot: navbarSlot(), onFullscreenChange, onReady() {}, onOpenFile() {}, appearance, state, onStateChange, reload() {}, data: { services: { preferences } } };
-  const element = () => <ViewerHostContext.Provider value={testHost()}><ViewerMobileContext.Provider value={mobile}>
-    <HarnessRenderer {...(props as any)} /></ViewerMobileContext.Provider></ViewerHostContext.Provider>;
+function frame({ name = 'panel.harness', preferences = tabSettings(), state = undefined as unknown, mobile = false, onStateChange = (_: unknown) => {}, appearance = { colorScheme: 'light' } as object, notice = null as React.ReactNode, viewer = false } = {}) {
+  const props = { source: { id: 'one' }, file: { path: `/models/${name}`, name, kind: 'file' }, document: null, notice,
+    onReady() {}, onOpenFile() {}, appearance, state, onStateChange, reload() {}, data: { services: { preferences } } };
+  // `viewer`: inside a viewer's element, as FileViewer draws it, where the viewer's keys are its own.
+  const element = () => {
+    const shell = <ViewerHostContext.Provider value={testHost()}><ViewerMobileContext.Provider value={mobile}>
+      <HarnessRenderer {...(props as any)} /></ViewerMobileContext.Provider></ViewerHostContext.Provider>;
+    if (!viewer) return shell;
+    const ref = { current: null as HTMLDivElement | null };
+    return <ViewerElementContext.Provider value={ref}><div ref={node => { ref.current = node; }}>{shell}</div></ViewerElementContext.Provider>;
+  };
   const view = render(element());
   return { ...view, preferences, remount: () => { view.unmount(); return render(element()); } };
 }
 const panel = (label: string) => document.querySelector<HTMLElement>(`section[data-tool-panel][aria-label="${label}"]`);
 const shown = () => [...document.querySelectorAll<HTMLElement>('[data-cad-tool-stack] section[data-tool-panel]')].filter(node => !node.hidden).map(node => node.getAttribute('aria-label'));
+// The file sidebar's sections, mounted, top to bottom; its panel; and its tiles, each a section's.
+const sections = () => [...document.querySelectorAll<HTMLElement>('[data-cad-file-sidebar] section[data-tool-panel]')].filter(node => !node.closest('[hidden]')).map(node => node.getAttribute('aria-label'));
+const bar = () => document.querySelector<HTMLElement>('aside[data-cad-file-sidebar]')!;
+const isOpen = () => bar().hasAttribute('data-open');
+const tiles = () => within(screen.getByRole('group', { name: 'File sidebar' })).getAllByRole('button');
+const tileNames = () => tiles().map(button => button.getAttribute('aria-label'));
+const pressedTiles = () => tiles().filter(button => button.getAttribute('aria-pressed') === 'true').map(button => button.getAttribute('aria-label'));
+const tile = (name: string) => within(screen.getByRole('group', { name: 'File sidebar' })).getByRole('button', { name, exact: true });
 const handles = (label: string) => [...panel(label)!.querySelectorAll('[role=separator]')].map(handle => handle.getAttribute('aria-label'));
 const width = (label: string) => parseFloat(panel(label)!.style.width);
 const layout = (preferences: Settings) => preferences.getSnapshot().toolStack;
@@ -88,199 +110,168 @@ function drag(handle: Element, [dx, dy]: [number, number], { release = true } = 
   if (release) fireEvent.pointerUp(handle, { pointerId: 1, clientX: 100 + dx, clientY: 100 + dy });
 }
 
-it('the chrome is inset from the viewer, every panel opens one width, the tree at half the stack and the Reference shorter, and nothing is stored until a person sizes one', () => {
+it("the strip is at the top centre with the stack under it, the file sidebar's tiles at the top-left: no section open until a tile is pressed, its panel a tool panel's width, capped at the room under the tiles, and nothing is stored until a person sizes it", () => {
   const { preferences } = frame();
-  // The strip and the stack under it, 8px in from the viewer's top and left, stopping 8px above the
-  // cube in the bottom-left corner (itself 8px off the bottom).
-  expect(document.querySelector<HTMLElement>('[data-cad-tool-groups]')!.style).toMatchObject({ top: '8px', left: '8px', bottom: 'calc(16px + 6rem)' });
-  expect(shown()).toEqual(['Harness tree', 'Harness reference']);
+  // The strip and the stack under it, 8px down from the viewer's top, centred, stopping 8px above
+  // the cube's line (the cube itself 8px off the bottom); the sidebar's room 8px in from the top
+  // and left, down the viewer's full height to 8px off its bottom.
+  expect(document.querySelector<HTMLElement>('[data-cad-tool-groups]')!.style).toMatchObject({ top: '8px', left: '8px', right: '8px', bottom: 'calc(16px + 6rem)' });
+  expect(document.querySelector<HTMLElement>('[data-file-sidebar-room]')!.style).toMatchObject({ top: '8px', left: '8px', bottom: '8px' });
+  // A tile per section; none open as the file opens, the panel away and out of reach.
+  expect([tileNames(), sections(), shown()]).toEqual([['Harness tree', 'Reference'], ['Harness tree', 'Harness reference'], []]);
+  expect([isOpen(), bar().hasAttribute('inert')]).toEqual([false, true]);
+  fireEvent.click(tile('Harness tree'));
+  expect([isOpen(), bar().hasAttribute('inert'), pressedTiles()]).toEqual([true, false, ['Harness tree']]);
   expect(TOOL_PANEL_WIDTH).toBe(164);
-  expect([width('Harness tree'), width('Harness reference')]).toEqual([TOOL_PANEL_WIDTH, TOOL_PANEL_WIDTH]);
-  expect(panel('Harness tree')!.style.maxHeight).toBe(`${STACK_HEIGHT / 2}px`);
-  expect(TOOL_PANEL_REFERENCE_HEIGHT).toBe(144);
-  expect(panel('Harness reference')!.style.maxHeight).toBe(`${TOOL_PANEL_REFERENCE_HEIGHT}px`);
-  expect(layout(preferences)).toEqual({ panels: {}, collapsed: {}, closed: {} });
-  // Two kinds of panel: the tree and the Reference are each the person's to size, by one grip in
-  // their bottom-right corner (Quick Edit's, drawn inside the panel); a kept effect is fixed, at the
-  // one width, with none.
-  fireEvent.click(tool('Keep'));
-  expect(shown()).toEqual(['Harness tree', 'Harness reference', 'Kept controls']);
-  expect([handles('Harness tree'), handles('Harness reference'), handles('Kept controls')])
-    .toEqual([['Resize harness tree'], ['Resize harness reference'], []]);
+  expect([bar().style.width, bar().style.maxHeight]).toEqual([`${TOOL_PANEL_WIDTH}px`, `${STACK_HEIGHT}px`]);
+  // A section is the panel's width and its content's height: no width, cap, scroller or grip of its own.
   for (const label of ['Harness tree', 'Harness reference']) {
-    const grip = panel(label)!.querySelector<HTMLElement>('[role=separator]')!;
-    expect([grip.getAttribute('data-resize-grip'), grip.parentElement]).toEqual(['bottom-right', panel(label)]);
-    expect(grip.className).toMatch(/\babsolute bottom-0\b.*\bright-0 cursor-nwse-resize\b/);
-    expect(grip.querySelector('svg path')!.getAttribute('d')).toBe('M7 2L2 7M7 5L5 7');
+    expect([panel(label)!.style.width, panel(label)!.style.maxHeight], label).toEqual(['', '']);
+    expect(panel(label)!.querySelector('[data-radix-scroll-area-viewport]'), label).toBeNull();
+    expect(handles(label), label).toEqual([]);
   }
-  expect(width('Kept controls')).toBe(TOOL_PANEL_WIDTH);
-  expect(tool('Keep').getAttribute('aria-pressed')).toBe('true');
-  expect(preferences.writes).toBe(0);
-});
-
-it("each resizable panel is sized by its corner alone, apart from every other: width and cap in one write when the pointer lets go, the keyboard by 16px and Home and End to the bounds, and a remount opens at what was left", () => {
-  const { preferences, remount } = frame();
+  // The panel scrolls, as one, and is the person's to size by one grip in its bottom-right corner
+  // (Quick Edit's, drawn inside it).
+  expect(bar().querySelector('[data-file-sidebar-scroller]')).not.toBeNull();
+  const grip = screen.getByRole('separator', { name: 'Resize file sidebar' });
+  expect([grip.getAttribute('data-resize-grip'), grip.parentElement]).toEqual(['bottom-right', bar()]);
+  expect(grip.className).toMatch(/\babsolute bottom-0\b.*\bright-0 cursor-nwse-resize\b/);
+  // A kept effect is the stack's: fixed, at the one width, with no grip.
   fireEvent.click(tool('Keep'));
-  const treeCorner = screen.getByRole('separator', { name: 'Resize harness tree' });
-  drag(treeCorner, [100, -100], { release: false });
-  // Mid-drag: the tree follows the corner, and nothing else moves; nothing is written yet.
-  expect([width('Harness tree'), panel('Harness tree')!.style.maxHeight]).toEqual([TOOL_PANEL_WIDTH + 100, `${STACK_HEIGHT / 2 - 100}px`]);
-  expect(treeCorner.hasAttribute('data-dragging')).toBe(true);
-  expect([width('Harness reference'), width('Kept controls')]).toEqual([TOOL_PANEL_WIDTH, TOOL_PANEL_WIDTH]);
+  expect(shown()).toEqual(['Kept controls']);
+  expect([width('Kept controls'), handles('Kept controls')]).toEqual([TOOL_PANEL_WIDTH, []]);
+  expect(tool('Keep').getAttribute('aria-pressed')).toBe('true');
+  expect([preferences.writes, layout(preferences)]).toEqual([0, { panels: {}, collapsed: {} }]);
+});
+
+it("each section's panel is sized by its corner, on its own: width and cap in one write when the pointer lets go, the keyboard by 16px and Home and End to the bounds, and a remount opens at what was left", () => {
+  const { preferences, remount } = frame();
+  fireEvent.click(tile('Harness tree'));
+  const corner = screen.getByRole('separator', { name: 'Resize file sidebar' });
+  drag(corner, [100, -100], { release: false });
+  // Mid-drag: the panel follows the corner; nothing is written yet.
+  expect([bar().style.width, bar().style.maxHeight]).toEqual([`${TOOL_PANEL_WIDTH + 100}px`, `${STACK_HEIGHT - 100}px`]);
+  expect(corner.hasAttribute('data-dragging')).toBe(true);
   expect(preferences.writes).toBe(0);
-  fireEvent.pointerUp(treeCorner, { pointerId: 1, clientX: 200, clientY: 0 });
+  fireEvent.pointerUp(corner, { pointerId: 1, clientX: 200, clientY: 0 });
   expect(preferences.writes).toBe(1);
-  expect(layout(preferences).panels).toEqual({ tree: { width: TOOL_PANEL_WIDTH + 100, height: STACK_HEIGHT / 2 - 100 } });
-  // The Reference, by its own corner: its size, and the tree's as it was.
-  drag(screen.getByRole('separator', { name: 'Resize harness reference' }), [40, -60]);
-  expect(preferences.writes).toBe(2);
-  expect(layout(preferences).panels).toEqual({ tree: { width: TOOL_PANEL_WIDTH + 100, height: STACK_HEIGHT / 2 - 100 },
-    reference: { width: TOOL_PANEL_WIDTH + 40, height: TOOL_PANEL_REFERENCE_HEIGHT - 60 } });
-  expect([width('Harness tree'), width('Harness reference'), panel('Harness reference')!.style.maxHeight])
-    .toEqual([TOOL_PANEL_WIDTH + 100, TOOL_PANEL_WIDTH + 40, `${TOOL_PANEL_REFERENCE_HEIGHT - 60}px`]);
+  expect(layout(preferences).panels).toEqual({ 'sidebar:tree': { width: TOOL_PANEL_WIDTH + 100, height: STACK_HEIGHT - 100 } });
+  expect([bar().style.width, bar().style.maxHeight]).toEqual([`${TOOL_PANEL_WIDTH + 100}px`, `${STACK_HEIGHT - 100}px`]);
   // From the keyboard, one axis a key: Left/Right the width, Up/Down the cap; Home and End both, to their bounds.
-  fireEvent.keyDown(treeCorner, { key: 'ArrowLeft' });
-  fireEvent.keyDown(treeCorner, { key: 'ArrowDown' });
-  expect(layout(preferences).panels.tree).toEqual({ width: TOOL_PANEL_WIDTH + 84, height: STACK_HEIGHT / 2 - 84 });
-  fireEvent.keyDown(treeCorner, { key: 'Home' });
-  expect(layout(preferences).panels.tree).toEqual({ width: TOOL_PANEL_WIDTH, height: 64 });
-  fireEvent.keyDown(treeCorner, { key: 'End' });
-  expect(layout(preferences).panels.tree).toEqual({ width: VIEWER.width / 2, height: STACK_HEIGHT });
-  expect(layout(preferences).panels.reference).toEqual({ width: TOOL_PANEL_WIDTH + 40, height: TOOL_PANEL_REFERENCE_HEIGHT - 60 });
+  fireEvent.keyDown(corner, { key: 'ArrowLeft' });
+  fireEvent.keyDown(corner, { key: 'ArrowDown' });
+  expect(layout(preferences).panels['sidebar:tree']).toEqual({ width: TOOL_PANEL_WIDTH + 84, height: STACK_HEIGHT - 84 });
+  fireEvent.keyDown(corner, { key: 'Home' });
+  // Narrower than a tool panel, down to room for a heading's name and its buttons.
+  expect(layout(preferences).panels['sidebar:tree']).toEqual({ width: 120, height: 64 });
+  fireEvent.keyDown(corner, { key: 'End' });
+  expect(layout(preferences).panels['sidebar:tree']).toEqual({ width: VIEWER.width / 2, height: STACK_HEIGHT });
+  // Another section's panel has a size of its own: the default, until it is sized.
+  fireEvent.click(tile('Reference'));
+  expect([bar().style.width, bar().style.maxHeight]).toEqual([`${TOOL_PANEL_WIDTH}px`, `${STACK_HEIGHT}px`]);
   remount();
-  expect([width('Harness tree'), panel('Harness tree')!.style.maxHeight]).toEqual([VIEWER.width / 2, `${STACK_HEIGHT}px`]);
-  expect([width('Harness reference'), panel('Harness reference')!.style.maxHeight]).toEqual([TOOL_PANEL_WIDTH + 40, `${TOOL_PANEL_REFERENCE_HEIGHT - 60}px`]);
+  fireEvent.click(tile('Harness tree'));
+  expect([bar().style.width, bar().style.maxHeight]).toEqual([`${VIEWER.width / 2}px`, `${STACK_HEIGHT}px`]);
+  // Reset puts it back.
+  act(() => preferences.update({ toolStack: { panels: {}, collapsed: {} } }));
+  expect([bar().style.width, bar().style.maxHeight]).toEqual([`${TOOL_PANEL_WIDTH}px`, `${STACK_HEIGHT}px`]);
+});
 
-  // Position, by its corner too: its width and height in one write, the others as they were.
-  preferences.update({ toolStack: { panels: {}, collapsed: {}, closed: {} } });
+it("the sidebar's tiles are there whatever the tool, a tool's own section coming and going with it; one section is open at a time, another tile taking its place, and its X or a second press of its tile closes it, its content kept", () => {
+  const { preferences } = frame();
+  expect(tool('Select').getAttribute('aria-pressed')).toBe('true');
+  fireEvent.click(tool('Annotate'));
+  expect(tileNames()).toEqual(['Harness tree', 'Reference']);
   fireEvent.click(tool('Pose'));
-  expect(handles('Harness position')).toEqual(['Resize harness position']);
-  const writes = preferences.writes;
-  drag(screen.getByRole('separator', { name: 'Resize harness position' }), [60, -50]);
-  expect(preferences.writes).toBe(writes + 1);
-  expect(layout(preferences).panels).toEqual({ position: { width: TOOL_PANEL_WIDTH + 60, height: STACK_HEIGHT / 2 - 50 } });
-  expect([width('Harness tree'), panel('Harness tree')!.style.maxHeight]).toEqual([TOOL_PANEL_WIDTH, `${STACK_HEIGHT / 2}px`]);
-  // Reset puts every size back.
-  act(() => preferences.update({ toolStack: { panels: {}, collapsed: {}, closed: {} } }));
-  expect([width('Harness tree'), width('Harness reference'), width('Harness position'), panel('Harness tree')!.style.maxHeight])
-    .toEqual([TOOL_PANEL_WIDTH, TOOL_PANEL_WIDTH, TOOL_PANEL_WIDTH, `${STACK_HEIGHT / 2}px`]);
+  expect(tileNames()).toEqual(['Harness tree', 'Reference', 'Position']);
+  const closed = () => ['Harness tree', 'Harness reference', 'Harness position'].filter(label => panel(label)!.hasAttribute('data-sidebar-closed'));
+  fireEvent.click(tile('Reference'));
+  expect([pressedTiles(), closed()]).toEqual([['Reference'], ['Harness tree', 'Harness position']]);
+  // Its head is its name and its X: nothing folds.
+  const head = panel('Harness reference')!.querySelector<HTMLElement>('[data-sidebar-head]')!;
+  expect([within(head).getByRole('heading').textContent, within(head).getAllByRole('button').map(button => button.getAttribute('aria-label'))])
+    .toEqual(['Reference', ['Close reference']]);
+  expect(panel('Harness reference')!.querySelector('[aria-expanded]')).toBeNull();
+  fireEvent.click(tile('Position'));
+  expect([pressedTiles(), closed()]).toEqual([['Position'], ['Harness tree', 'Harness reference']]);
+  // A closed section stays mounted: the tree's search is as it was left.
+  fireEvent.click(tile('Harness tree'));
+  fireEvent.change(screen.getByRole('textbox', { name: 'Filter tree' }), { target: { value: 'Row 1' } });
+  fireEvent.click(tile('Reference'));
+  fireEvent.click(tile('Harness tree'));
+  expect((screen.getByRole('textbox', { name: 'Filter tree' }) as HTMLInputElement).value).toBe('Row 1');
+  // A second press of its tile closes it, and so does its X: the panel slides away.
+  fireEvent.click(tile('Harness tree'));
+  expect([pressedTiles(), isOpen()]).toEqual([[], false]);
+  fireEvent.click(tile('Reference'));
+  fireEvent.click(within(panel('Harness reference')!).getByRole('button', { name: 'Close reference' }));
+  expect([pressedTiles(), isOpen()]).toEqual([[], false]);
+  // Pose put down: its section, and its tile, go with it.
+  fireEvent.click(tool('Pose'));
+  expect([tileNames(), preferences.writes]).toEqual([['Harness tree', 'Reference'], 0]);
 });
 
-it("the tree's X closes it, kept mounted, and marks Select; Select pressed while it is the tool opens it again, and from another tool only takes Select up; closed is kept across a remount", () => {
-  const { preferences, remount } = frame();
-  const tree = panel('Harness tree')!;
-  const mark = () => tool('Select').querySelector('[data-tool-panel-closed]');
-  // An X at the filter row's end, and no chevron: the tree does not fold.
-  expect(within(tree).queryByRole('button', { name: /^(?:Collapse|Expand) harness tree$/ })).toBeNull();
-  expect(tool('Select').getAttribute('aria-pressed')).toBe('true');
-  expect(mark()).toBeNull();
-  fireEvent.click(within(tree).getByRole('button', { name: 'Close harness tree' }));
-  expect(shown()).toEqual(['Harness reference']);
-  expect([tree.hidden, tree.hasAttribute('data-closed')]).toEqual([true, true]);
-  expect(within(tree).getByText('Row 1')).toBeTruthy();
-  expect([preferences.writes, layout(preferences).closed]).toEqual([1, { tree: true }]);
-  // Select carries the corner mark, and says what it marks; no other tool does.
-  expect(mark()).not.toBeNull();
-  expect(tool('Select').getAttribute('aria-description')).toBe('Harness tree closed');
-  expect([tool('Draw'), tool('Keep'), tool('Pose')].map(button => button.querySelector('[data-tool-panel-closed]'))).toEqual([null, null, null]);
-  // From another tool, Select is only taken up: the tree stays closed, the mark with it.
-  fireEvent.click(tool('Draw'));
-  expect(tool('Draw').getAttribute('aria-pressed')).toBe('true');
-  fireEvent.click(tool('Select'));
-  expect([tool('Select').getAttribute('aria-pressed'), tool('Draw').getAttribute('aria-pressed')]).toEqual(['true', 'false']);
-  expect(shown()).toEqual(['Harness reference']);
-  expect(mark()).not.toBeNull();
-  // Closed is the person's, across a remount.
-  remount();
-  expect(shown()).toEqual(['Harness reference']);
-  expect(mark()).not.toBeNull();
-  // Pressed while it is the tool, Select opens the tree as it was, and the mark goes: opening is
-  // the person's choice too, kept as made.
-  fireEvent.click(tool('Select'));
-  expect(shown()).toEqual(['Harness tree', 'Harness reference']);
-  expect([mark(), tool('Select').getAttribute('aria-description')]).toEqual([null, null]);
-  expect(layout(preferences).closed).toEqual({ tree: false });
-  expect(tool('Select').getAttribute('aria-pressed')).toBe('true');
-  // Pressed again with the tree open, it changes nothing.
-  const writes = preferences.writes;
-  fireEvent.click(tool('Select'));
-  expect([shown(), preferences.writes]).toEqual([['Harness tree', 'Harness reference'], writes]);
+it("on a phone the file sidebar is one tile at the top-left, on the strip's line, the strip kept clear of it; it opens the panel on the section last open (the first, at first), headed by a tab per section and one X; Annotate's controls are its chevron's menu", () => {
+  frame({ mobile: true });
+  const strip = screen.getByRole('group', { name: 'Interaction tools' });
+  const toggle = screen.getByRole('button', { name: 'Sidebar' });
+  // The sidebar's tile reserves its width and an 8px gap; the controls centre within that
+  // room, with their viewport-centering offset verified in the real-browser layout test.
+  expect([strip.contains(toggle), toggle.hasAttribute('data-file-sidebar-toggle'), document.querySelectorAll('[data-file-sidebar-tools] button').length])
+    .toEqual([false, true, 1]);
+  const column = document.querySelector<HTMLElement>('[data-cad-tool-groups]')!;
+  expect(column.style).toMatchObject({ left: '62px', right: '8px' });
+  expect(column.className).toMatch(/\bitems-center\b/);
+  // Its room runs from the top-left corner to the view's bottom inset, clear of Quick Edit's peek.
+  expect(document.querySelector<HTMLElement>('[data-file-sidebar-room]')!.style).toMatchObject({ top: '8px', left: '8px', bottom: 'calc(var(--cad-quick-edit-peek, 0px) + 8px)' });
+  const tabs = () => [...document.querySelectorAll<HTMLElement>('[data-file-sidebar-tab]')].map(tab => [tab.getAttribute('aria-label'), tab.getAttribute('data-state')]);
+  const shownSection = () => ['Harness tree', 'Harness reference'].filter(label => !panel(label)!.hasAttribute('data-sidebar-closed'));
+  expect(isOpen()).toBe(false);
+  fireEvent.click(toggle);
+  expect([isOpen(), toggle.getAttribute('aria-pressed'), tabs(), shownSection()]).toEqual([true, 'true', [['Harness tree', 'on'], ['Reference', 'off']], ['Harness tree']]);
+  // A phone's panel, its own width and no grip; the one X is the tab row's, none in a section's head.
+  expect([bar().style.width, bar().querySelector('[data-file-sidebar-corner]')]).toEqual(['288px', null]);
+  expect([...document.querySelectorAll('[data-file-sidebar-close]')].map(button => [button.getAttribute('aria-label'), Boolean(button.closest('[data-file-sidebar-tabs]'))]))
+    .toEqual([['Close sidebar', true]]);
+  fireEvent.click(document.querySelector('[data-file-sidebar-tab="reference"]')!);
+  expect([tabs(), shownSection()]).toEqual([[['Harness tree', 'off'], ['Reference', 'on']], ['Harness reference']]);
+  // Closed by its X, it opens again on the section last open; the tile closes it too.
+  fireEvent.click(screen.getByRole('button', { name: 'Close sidebar' }));
+  expect([isOpen(), toggle.getAttribute('aria-pressed')]).toEqual([false, 'false']);
+  fireEvent.click(toggle);
+  expect([isOpen(), shownSection()]).toEqual([true, ['Harness reference']]);
+  fireEvent.click(toggle);
+  expect(isOpen()).toBe(false);
+  fireEvent.click(tool('Annotate'));
+  expect(tool('Annotate').getAttribute('aria-pressed')).toBe('true');
+  expect([screen.queryByRole('toolbar', { name: 'Annotation controls' }), Boolean(screen.getByRole('button', { name: 'Annotation settings' }))]).toEqual([null, true]);
 });
 
-it('a heading panel folds to its heading by its chevron, its content kept mounted and its grip gone; which panels are folded is kept across a remount', () => {
-  const { preferences, remount } = frame();
-  const reference = panel('Harness reference')!;
-  const fold = within(reference).getByRole('button', { name: 'Collapse harness reference' });
-  expect([fold.getAttribute('aria-expanded'), fold.querySelector('[data-chevron]')!.getAttribute('data-chevron')]).toEqual(['true', 'up']);
-  fireEvent.click(fold);
-  const unfold = within(reference).getByRole('button', { name: 'Expand harness reference' });
-  expect([unfold.getAttribute('aria-expanded'), unfold.querySelector('[data-chevron]')!.getAttribute('data-chevron')]).toEqual(['false', 'down']);
-  expect(reference.hasAttribute('data-collapsed')).toBe(true);
-  expect(within(reference).getByText('Fact 1')).toBeTruthy();
-  expect(reference.querySelector('[data-tool-panel-body]')!.closest('[hidden]')).not.toBeNull();
-  expect(layout(preferences).collapsed).toEqual({ reference: true });
-  // Folded, there is no height to set: no grip.
-  expect(handles('Harness reference')).toEqual([]);
-  remount();
-  expect(within(panel('Harness reference')!).getByRole('button', { name: 'Expand harness reference' })).toBeTruthy();
-  fireEvent.click(within(panel('Harness reference')!).getByRole('button', { name: 'Expand harness reference' }));
-  expect(layout(preferences).collapsed).toEqual({});
-  expect(handles('Harness reference')).toEqual(['Resize harness reference']);
-});
-
-it("on a phone the tree starts closed, with Select marked and nothing stored; opened, its cap is the whole column", () => {
-  const { preferences } = frame({ mobile: true });
-  expect(shown()).toEqual(['Harness reference']);
-  expect(tool('Select').querySelector('[data-tool-panel-closed]')).not.toBeNull();
-  expect(layout(preferences)).toEqual({ panels: {}, collapsed: {}, closed: {} });
-  fireEvent.click(tool('Select'));
-  expect(shown()).toEqual(['Harness tree', 'Harness reference']);
-  expect(tool('Select').querySelector('[data-tool-panel-closed]')).toBeNull();
-  expect(panel('Harness tree')!.style.maxHeight).toBe(`${STACK_HEIGHT}px`);
-  expect(layout(preferences).closed).toEqual({ tree: false });
-  fireEvent.click(within(panel('Harness tree')!).getByRole('button', { name: 'Close harness tree' }));
-  expect([shown(), layout(preferences).closed]).toEqual([['Harness reference'], { tree: true }]);
-});
-
-it("a single part's tree starts closed, Select marked, and an assembly's open; once a person closes or opens it, their choice holds in every file", () => {
-  const preferences = tabSettings();
-  const mark = () => tool('Select').querySelector('[data-tool-panel-closed]');
-  // `panel-part.harness` is a single part's, `panel.harness` an assembly's.
-  const part = frame({ name: 'panel-part.harness', preferences });
-  expect([shown(), Boolean(mark())]).toEqual([['Harness reference'], true]);
-  part.unmount();
-  const assembly = frame({ name: 'panel.harness', preferences });
-  expect([shown(), Boolean(mark())]).toEqual([['Harness tree', 'Harness reference'], false]);
-  expect(preferences.writes).toBe(0);
-  // Closed in the assembly: closed in a part, and in the next assembly too.
-  fireEvent.click(within(panel('Harness tree')!).getByRole('button', { name: 'Close harness tree' }));
-  expect(layout(preferences).closed).toEqual({ tree: true });
-  assembly.unmount();
-  const closedPart = frame({ name: 'panel-part.harness', preferences });
-  expect([shown(), Boolean(mark())]).toEqual([['Harness reference'], true]);
-  // Opened in a part: open in the next part, and in an assembly.
-  fireEvent.click(tool('Select'));
-  expect(layout(preferences).closed).toEqual({ tree: false });
-  closedPart.unmount();
-  const openedPart = frame({ name: 'panel-part.harness', preferences });
-  expect([shown(), Boolean(mark())]).toEqual([['Harness tree', 'Harness reference'], false]);
-  openedPart.unmount();
-  frame({ name: 'panel.harness', preferences });
-  expect([shown(), Boolean(mark())]).toEqual([['Harness tree', 'Harness reference'], false]);
-});
-
-const displayPopover = () => document.querySelector<HTMLElement>('[data-display-popover]');
-// The view's controls, in the navbar's box for them.
-const barButtons = () => [...document.querySelector('[data-test-navbar]')?.querySelectorAll('button') ?? []].map(button => button.getAttribute('aria-label'));
-// Preview's own, at the view's top-right.
-const cornerButtons = () => [...document.querySelector('[data-preview-corner]')?.querySelectorAll('button') ?? []].map(button => button.getAttribute('aria-label'));
-const strip = () => [...screen.getByRole('group', { name: 'Interaction tools' }).querySelectorAll('button')].map(button => button.getAttribute('aria-label'));
+// Display: the current mode's tile and its menu, the modes and the Grid switch.
+const displayButton = (root: HTMLElement = document.body) => within(root).getByRole('button', { name: /^Display mode: / });
+const displayLit = (root?: HTMLElement) => displayButton(root).getAttribute('aria-expanded') === 'true';
+const displayMenu = () => document.querySelector<HTMLElement>('[role=menu][aria-label="Display"]');
+// Projection: its own tile, before Display's, and its menu of the two projections.
+const projectionButton = () => screen.getByRole('button', { name: /^Projection: / });
+const projectionMenu = () => document.querySelector<HTMLElement>('[role=dialog][aria-label="Projection"]');
+async function openDisplay(user: ReturnType<typeof userEvent.setup>, root?: HTMLElement) {
+  await user.click(displayButton(root));
+  await waitFor(() => expect(displayMenu()).not.toBeNull());
+}
+// A control by its name, whatever it says it is set to ("Projection: Orthographic" is Projection).
+const named = (button: Element) => button.getAttribute('aria-label')!.split(':')[0];
+// The view's controls: the strip's last, after its tools and a rule.
+const barButtons = () => [...document.querySelector('[role=group][aria-label="Interaction tools"] [data-view-controls]')?.querySelectorAll('button') ?? []].map(named);
+// Preview's own, in the view's top-right corner.
+const cornerButtons = () => [...document.querySelector('[data-preview-corner]')?.querySelectorAll('button') ?? []].map(named);
+// The strip's tools, before the view's controls.
+const strip = () => [...screen.getByRole('group', { name: 'Interaction tools' }).querySelectorAll('button')].filter(button => !button.closest('[data-view-controls]')).map(button => button.getAttribute('aria-label'));
 
 it('while the model loads the viewer shows none of its own chrome, and all of it returns with the model', () => {
   frame();
   const stage = (name: string) => act(() => { fireEvent.click(document.querySelector(`[data-harness-stage="${name}"]`)!); });
   expect(screen.getByRole('group', { name: 'Interaction tools' })).toBeTruthy();
-  expect(barButtons()).toEqual(['Display', 'Preview']);
+  expect(barButtons()).toEqual(['Projection', 'Display mode', 'Preview']);
   stage('finding');
   expect(screen.queryByRole('group', { name: 'Interaction tools' })).toBeNull();
   expect(document.querySelector('[data-cad-tool-stack]')).toBeNull();
@@ -288,36 +279,36 @@ it('while the model loads the viewer shows none of its own chrome, and all of it
   expect(viewportProps.current.isLoading).toBe(true);
   stage('idle');
   expect(screen.getByRole('group', { name: 'Interaction tools' })).toBeTruthy();
-  expect(barButtons()).toEqual(['Display', 'Preview']);
-  // With nothing to work on yet, the strip is idle together, and so are Display and Preview.
+  expect(barButtons()).toEqual(['Projection', 'Display mode', 'Preview']);
+  // With nothing to work on yet, the strip is idle together, and so are Projection, Display and Preview.
   stage('unready');
-  expect(strip()).toEqual(['Select', 'Draw', 'Keep', 'Pose']);
-  const idle = (name: string) => (['Display', 'Preview'].includes(name) ? screen.getByRole('button', { name }) : tool(name)).hasAttribute('disabled');
-  expect(['Select', 'Draw', 'Display', 'Preview'].map(idle)).toEqual([true, true, true, true]);
+  expect(strip()).toEqual(['Select', 'Annotate', 'Keep', 'Pose']);
+  const idle = (name: string) => (name === 'Display' ? displayButton() : name === 'Projection' ? projectionButton()
+    : name === 'Preview' ? screen.getByRole('button', { name }) : tool(name)).hasAttribute('disabled');
+  expect(['Select', 'Annotate', 'Projection', 'Display', 'Preview'].map(idle)).toEqual([true, true, true, true, true]);
   stage('idle');
-  expect(['Select', 'Draw', 'Display', 'Preview'].map(idle)).toEqual([false, false, false, false]);
+  expect(['Select', 'Annotate', 'Projection', 'Display', 'Preview'].map(idle)).toEqual([false, false, false, false, false]);
 });
 
 it("Display and Preview are a 3D view's, as its renderer declares: a view that does not declare it has neither, not disabled ones, and a request for Preview leaves it as it is", () => {
-  const onFullscreenChange = vi.fn();
-  // Preview asked for from outside the navbar, as a link or a host request would.
+  // Preview asked for from outside the strip, as a link or a host request would.
   const ask = () => act(() => { fireEvent.click(document.querySelector('[data-harness-ask-preview]')!); });
-  // A 3D view (the harness's, declared `previewable`): Display and Preview in the navbar, and a request enters Preview.
-  frame({ onFullscreenChange });
-  expect(barButtons()).toEqual(['Display', 'Preview']);
+  // A 3D view (the harness's, declared `previewable`): Projection, Display and Preview end the strip, and a request enters it.
+  frame();
+  expect(barButtons()).toEqual(['Projection', 'Display mode', 'Preview']);
   ask();
-  expect([viewportProps.current.previewMode, onFullscreenChange.mock.calls]).toEqual([true, [[true]]]);
+  expect(inPreview()).toBe(true);
   cleanup();
-  onFullscreenChange.mockClear();
-  // A view whose renderer does not declare it (`flat.harness`, a 2D view's stand-in): nothing in the
-  // navbar, and the same request leaves the normal view on screen, its tools up.
-  frame({ name: 'flat.harness', onFullscreenChange });
+  // A view whose renderer does not declare it (`flat.harness`, a 2D view's stand-in): neither on the
+  // strip, no rule, and the same request leaves the normal view on screen, its tools up.
+  frame({ name: 'flat.harness' });
   expect(barButtons()).toEqual([]);
-  for (const name of ['Display', 'Preview']) expect(screen.queryByRole('button', { name })).toBeNull();
+  for (const name of [/^Projection: /, /^Display mode: /, 'Preview']) expect(screen.queryByRole('button', { name })).toBeNull();
+  expect(document.querySelector('[data-strip-rule]')).toBeNull();
   ask();
-  expect([viewportProps.current.previewMode, onFullscreenChange.mock.calls]).toEqual([false, []]);
+  expect(inPreview()).toBe(false);
   expect(document.querySelector('[data-preview-chrome]')!.hasAttribute('inert')).toBe(false);
-  expect(strip()).toEqual(['Draw']);
+  expect(strip()).toEqual(['Annotate']);
 });
 
 it('a load the model did not survive leaves only the card saying so, and a failed update it survives keeps the chrome', () => {
@@ -332,13 +323,13 @@ it('a load the model did not survive leaves only the card saying so, and a faile
   expect(viewportProps.current.viewCube).toBe(false);
   stage('failed');
   expect(screen.getByRole('group', { name: 'Interaction tools' })).toBeTruthy();
-  expect(barButtons()).toEqual(['Display', 'Preview']);
+  expect(barButtons()).toEqual(['Projection', 'Display mode', 'Preview']);
   expect(viewportProps.current.viewCube).toBe(true);
 });
 
 it("a dismissed alert's own icon, at the navbar's right, brings its card back; it goes with the card's return, and when the alert clears", async () => {
-  // The harness under the real FileViewer, whose navbar's right holds nothing of its own: only the
-  // view's controls, last, in the box the navbar keeps for them.
+  // The harness under the real FileViewer, whose navbar's right holds nothing of its own but a
+  // dismissed alert's icon: the view's controls (Projection, Display and Preview) end the strip.
   const host = testHost({ links: viewerLinks({ version: '0.7.5' }), environment: { colorScheme: 'light', platform: 'darwin' },
     files: { id: 'one', stat: async (path: string) => ({ path, name: path.split('/').pop()!, kind: 'file', extension: 'harness', size: 1 }) } });
   render(<FileViewer file="/models/one.harness" host={host as any} renderers={[createHarnessRenderer({ preferences: tabSettings() })]}
@@ -347,13 +338,13 @@ it("a dismissed alert's own icon, at the navbar's right, brings its card back; i
   const right = () => [...document.querySelector('[data-viewer-navbar] > div')!.querySelectorAll('a, button')].map(node => node.getAttribute('aria-label'));
   const card = () => screen.queryByRole('alert');
   const stage = (name: string) => act(() => { fireEvent.click(document.querySelector(`[data-harness-stage="${name}"]`)!); });
-  const view = ['Display', 'Preview'];
-  expect(right()).toEqual(view);
-  expect([...document.querySelector('[data-viewer-navbar] [data-view-controls]')!.querySelectorAll('button')].map(node => node.getAttribute('aria-label'))).toEqual(view);
+  const view: string[] = [];
+  expect([right(), barButtons()]).toEqual([view, ['Projection', 'Display mode', 'Preview']]);
+  expect(document.querySelectorAll('[data-viewer-navbar] [data-view-controls] button')).toHaveLength(0);
   stage('failed');
   expect(card()!.textContent).toContain('Harness update failed');
   expect(right()).toEqual(view, 'the card is up: no icon');
-  // Put away: the card's own icon, in the error's colour, named after the alert, at the right, before the view's controls.
+  // Put away: the card's own icon, in the error's colour, named after the alert, at the navbar's right.
   fireEvent.click(within(card()!).getByRole('button', { name: 'Dismiss' }));
   expect(card()).toBeNull();
   expect(right()).toEqual(['Harness update failed', ...view]);
@@ -375,11 +366,9 @@ it("a dismissed alert's own icon, at the navbar's right, brings its card back; i
 
 it("the host's notice waits for the model, then takes the top-right with Quick Edit stacked under it", () => {
   const notice = <div role="dialog" aria-label="A notice" />;
-  const corner = () => [...document.querySelector('[data-viewport-top-right]')?.children ?? []]
+  const corner = () => [...document.querySelector('[data-viewport-top-right-content]')?.children ?? []]
     .map(child => child.hasAttribute('data-viewport-notice') ? 'notice' : child.hasAttribute('data-quick-edit') ? 'Quick Edit' : child.tagName);
   const stage = (name: string) => act(() => { fireEvent.click(document.querySelector(`[data-harness-stage="${name}"]`)!); });
-  // On a narrow view the column starts below the tool strip's row, so the strip stays in reach.
-  const clearsStrip = () => document.querySelector('[data-viewport-top-right]')!.className.includes('@max-md/cad-viewport:top-');
   frame({ notice });
   stage('finding');
   expect(screen.queryByRole('dialog', { name: 'A notice' })).toBeNull();
@@ -387,30 +376,10 @@ it("the host's notice waits for the model, then takes the top-right with Quick E
   expect(screen.queryByRole('dialog', { name: 'A notice' })).toBeNull();
   stage('idle');
   expect(corner()).toEqual(['notice', 'Quick Edit']);
-  expect(clearsStrip()).toBe(true);
   cleanup();
   // Shown small, the view has no Quick Edit and no strip, and the notice still asks.
   frame({ notice, appearance: { colorScheme: 'light', compact: true } });
   expect(corner()).toEqual(['notice']);
-  expect(clearsStrip()).toBe(false);
-});
-
-it("Quick edit turned off in Settings takes Quick Edit away: nothing a pick or a sketch could open, and the host's notice alone at the top-right", () => {
-  const notice = <div role="dialog" aria-label="A notice" />;
-  const corner = () => [...document.querySelector('[data-viewport-top-right]')?.children ?? []]
-    .map(child => child.hasAttribute('data-viewport-notice') ? 'notice' : child.hasAttribute('data-quick-edit') ? 'Quick Edit' : child.tagName);
-  // On, as it starts and as a host that says nothing leaves it: Quick Edit waits under the notice.
-  frame({ notice, features: { quickEdit: true } });
-  expect(corner()).toEqual(['notice', 'Quick Edit']);
-  cleanup();
-  // Off: no Quick Edit at all, whatever is picked or drawn; the tools are as they were.
-  frame({ notice, features: { quickEdit: false } });
-  expect(corner()).toEqual(['notice']);
-  expect(document.querySelector('[data-quick-edit]')).toBeNull();
-  expect(strip()).toEqual(['Select', 'Draw', 'Keep', 'Pose']);
-  cleanup();
-  frame({ features: { quickEdit: false } });
-  expect(document.querySelector('[data-viewport-top-right]')).toBeNull();
 });
 
 it('a host showing the view small gets the model alone: no tools, no view actions, no Quick Edit, no cube', () => {
@@ -422,205 +391,237 @@ it('a host showing the view small gets the model alone: no tools, no view action
   expect(viewportProps.current.viewCube).toBe(false);
 });
 
-it("Display is the dropdown at the navbar's right end, before Preview, the perspective box: opened over Draw it leaves Draw in hand with its panel, and the stack as it was", async () => {
-  const user = userEvent.setup();
+it("Projection, Display and Preview end the strip; Render is no mode of Display's, Projection a menu of its own, and Display's Grid leaves Annotate and kept tools in place", async () => {
+  const user = userEvent.setup({ skipHover: true });
   const { remount } = frame();
-  // The view's controls in the navbar, Display then Preview; nothing of Display on the strip.
-  expect(barButtons()).toEqual(['Display', 'Preview']);
-  expect(strip()).toEqual(['Select', 'Draw', 'Keep', 'Pose']);
-  const display = screen.getByRole('button', { name: 'Display' });
-  // Its icon is the perspective box, the drawing the Projection menu shows for Perspective.
-  const box = render(<PerspectiveProjectionIcon />).container.querySelector('svg')!;
-  expect(display.querySelector('svg')!.innerHTML).toBe(box.innerHTML);
-  await user.click(tool('Keep'));
-  await user.click(tool('Draw'));
-  expect(tool('Draw').getAttribute('aria-pressed')).toBe('true');
-  // Draw's panel leads the stack, and has nothing to fold.
-  const stack = shown();
-  expect(stack).toEqual(['Drawing controls', 'Harness tree', 'Harness reference', 'Kept controls']);
-  expect(within(panel('Drawing controls')!).queryByRole('button', { name: /^(?:Collapse|Expand) / })).toBeNull();
-  await user.click(display);
-  expect(displayPopover()!.getAttribute('aria-label')).toBe('Display settings');
-  expect(display.getAttribute('aria-pressed')).toBe('true');
-  // Nothing joins the stack, and the tool in hand, its panel and the kept effect stay.
-  expect(shown()).toEqual(stack);
-  expect([tool('Draw').getAttribute('aria-pressed'), tool('Keep').getAttribute('aria-pressed')]).toEqual(['true', 'true']);
-  expect(viewportProps.current.drawingEnabled).toBe(true);
-  // Nothing about it is a panel of the stack: its first row is the Display section's heading,
-  // Reset then the X, and it holds the file's view alone, none of the host's settings.
-  expect(displayPopover()!.closest('[data-tool-panel]')).toBeNull();
-  const heading = displayPopover()!.querySelector('[data-settings-section="display"] [data-settings-section-heading]')!;
-  expect([...heading.querySelectorAll('button[aria-label]')].map(button => button.getAttribute('aria-label'))).toEqual(['Reset', 'Close display settings']);
-  expect([...displayPopover()!.querySelectorAll('[data-settings-section]')].map(section => section.getAttribute('data-settings-section')))
-    .toEqual(['display', 'surfaces', 'grid-axes', 'lighting', 'background', 'floor']);
-  // Its X puts it away, and so does its button; Draw is still the tool.
-  await user.click(within(displayPopover()!).getByRole('button', { name: 'Close display settings' }));
-  expect(displayPopover()).toBeNull();
-  expect(display.getAttribute('aria-pressed')).toBe('false');
-  await user.click(display);
-  await user.click(display);
-  expect(displayPopover()).toBeNull();
-  // Escape puts it away and leaves the stack's panels and the tool alone.
-  await user.click(display);
+  expect([strip(), barButtons()]).toEqual([['Select', 'Annotate', 'Keep', 'Pose'], ['Projection', 'Display mode', 'Preview']]);
+  // After the strip's rule.
+  expect(document.querySelector('[data-cad-toolbar] [data-strip-rule] + [data-view-controls]')).not.toBeNull();
+  const solid = render(<SolidModeIcon />).container.querySelector('svg')!;
+  expect(displayButton().querySelector('svg')!.innerHTML).toEqual(solid.innerHTML);
+  await openDisplay(user);
+  // The modes the view offers (an edgeless one: Solid), then Grid: Render is Preview's, and the projection is Projection's.
+  expect(within(displayMenu()!).getAllByRole('menuitemradio').map(item => [item.textContent, item.getAttribute('aria-checked')]))
+    .toEqual([['Solid', 'true']]);
+  expect(within(displayMenu()!).getAllByRole('menuitemcheckbox').map(item => [item.textContent, item.getAttribute('aria-checked')]))
+    .toEqual([['Grid', 'false']]);
+  expect(within(displayMenu()!).queryByRole('menuitemradio', { name: 'Perspective' })).toBeNull();
   await user.keyboard('{Escape}');
-  expect(displayPopover()).toBeNull();
-  expect(shown()).toEqual(stack);
-  expect(tool('Draw').getAttribute('aria-pressed')).toBe('true');
-  // A press outside it — on the model — puts it away too, and the kept effect stays.
-  await user.click(display);
+  await waitFor(() => expect(displayMenu()).toBeNull());
+  expect(projectionButton().getAttribute('aria-label')).toBe('Projection: Orthographic');
+  await user.click(projectionButton());
+  expect(within(projectionMenu()!).getAllByRole('radio').map(item => [item.textContent, item.getAttribute('aria-checked')]))
+    .toEqual([['Orthographic', 'true'], ['Perspective', 'false']]);
+  // A choice closes it, and its tile says it.
+  await user.click(within(projectionMenu()!).getByRole('radio', { name: 'Perspective', exact: true }));
+  await waitFor(() => expect(projectionMenu()).toBeNull());
+  expect(projectionButton().getAttribute('aria-label')).toBe('Projection: Perspective');
+  await user.click(tool('Keep'));
+  await user.click(tool('Annotate'));
+  const stack = shown();
+  const controls = screen.getByRole('toolbar', { name: 'Annotation controls' });
+  await openDisplay(user);
+  expect([shown(), screen.getByRole('toolbar', { name: 'Annotation controls' })]).toEqual([stack, controls]);
+  // Grid toggles and leaves the menu open.
+  await user.click(within(displayMenu()!).getByRole('menuitemcheckbox', { name: 'Grid' }));
+  expect(within(displayMenu()!).getByRole('menuitemcheckbox', { name: 'Grid' }).getAttribute('aria-checked')).toBe('true');
+  expect(displayButton().getAttribute('aria-label')).toBe('Display mode: Solid');
+  await user.keyboard('{Escape}');
+  await waitFor(() => expect(displayMenu()).toBeNull());
+  expect(tool('Annotate').getAttribute('aria-pressed')).toBe('true');
+  await openDisplay(user);
   await user.pointer({ keys: '[MouseLeft]', target: document.querySelector('[data-mock-viewport] canvas')! });
-  expect(displayPopover()).toBeNull();
+  await waitFor(() => expect(displayMenu()).toBeNull());
   expect(tool('Keep').getAttribute('aria-pressed')).toBe('true');
-  // Another opening of the file starts with it shut.
-  await user.click(display);
-  expect(displayPopover()).not.toBeNull();
+  await openDisplay(user);
   remount();
-  expect(displayPopover()).toBeNull();
-  expect(screen.getByRole('button', { name: 'Display' }).getAttribute('aria-pressed')).toBe('false');
+  expect([displayMenu(), displayLit()]).toEqual([null, false]);
 });
 
-it("two surfaces: the strip and the stack share the light chrome surface, and Display's dropdown and a menu over the viewport the more opaque one", async () => {
+// Preview, entered as its tile enters it: the view covered first, then Preview under the cover.
+async function enterPreview(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: 'Preview' }));
+  await screen.findByRole('button', { name: 'Exit preview' });
+}
+const previewSettings = () => screen.queryByRole('region', { name: 'Preview settings' });
+
+it("three surfaces: the strip, the sidebar's tiles and the stack share the light chrome surface; the sidebar's panel and Preview's settings, read while they are up, are between; Display's dropdown is the most opaque", async () => {
   const user = userEvent.setup();
   frame();
-  expect(FLOATING_CHROME_SURFACE_CLASS).not.toBe(FLOATING_SURFACE_CLASS);
+  expect(new Set([FLOATING_CHROME_SURFACE_CLASS, FILE_SIDEBAR_SURFACE_CLASS, FLOATING_SURFACE_CLASS]).size).toBe(3);
   const classes = (element: Element) => element.className.split(/\s+/);
   const has = (element: Element, surface: string) => surface.split(' ').every(name => classes(element).includes(name));
   expect(has(screen.getByRole('group', { name: 'Interaction tools' }), FLOATING_CHROME_SURFACE_CLASS)).toBe(true);
-  for (const label of ['Harness tree', 'Harness reference']) expect(has(panel(label)!, FLOATING_CHROME_SURFACE_CLASS), label).toBe(true);
-  // Display's settings are read while they are up: their text must not compete with the model.
-  await user.click(screen.getByRole('button', { name: 'Display' }));
-  expect(has(displayPopover()!, FLOATING_SURFACE_CLASS)).toBe(true);
+  expect(has(screen.getByRole('group', { name: 'File sidebar' }), FLOATING_CHROME_SURFACE_CLASS)).toBe(true);
+  fireEvent.click(tool('Keep'));
+  expect(has(panel('Kept controls')!, FLOATING_CHROME_SURFACE_CLASS)).toBe(true);
+  // The sidebar's panel is read for as long as a section is open, and its sections have no surface of their own.
+  expect(has(bar(), FILE_SIDEBAR_SURFACE_CLASS)).toBe(true);
+  expect(has(panel('Harness tree')!, FLOATING_CHROME_SURFACE_CLASS)).toBe(false);
+  // Display's menu is read while it is up: its text must not compete with the model.
+  await openDisplay(user);
+  expect(has(displayMenu()!, FLOATING_SURFACE_CLASS)).toBe(true);
   await user.keyboard('{Escape}');
-  await user.click(screen.getByRole('button', { name: 'Preview' }));
-  await user.click(screen.getByRole('button', { name: 'Orbit' }));
-  expect(has(screen.getByRole('menu'), FLOATING_SURFACE_CLASS)).toBe(true);
+  await enterPreview(user);
+  await user.click(screen.getByRole('button', { name: 'Preview settings' }));
+  expect(has(previewSettings()!, FILE_SIDEBAR_SURFACE_CLASS)).toBe(true);
 });
 
-it("Preview is fullscreen: the strip, the stack and the navbar's controls step aside; its corner holds Orbit, Display — the file's own settings — and the way out, which brings back the tool in hand with its panel", async () => {
+it("Preview is in Render: the strip, the view's controls, the stack and the file sidebar step aside; the top-right holds its settings (Orbit and Render's) and the way out, which brings back the tool in hand and the file's own mode", async () => {
   const user = userEvent.setup();
-  const onFullscreenChange = vi.fn();
-  frame({ onFullscreenChange });
+  frame();
   await user.click(tool('Pose'));
-  expect(shown()).toContain('Harness position');
-  await user.click(screen.getByRole('button', { name: 'Display' }));
-  await user.click(screen.getByRole('button', { name: 'Preview' }));
+  expect(tileNames()).toEqual(['Harness tree', 'Reference', 'Position']);
+  await openDisplay(user);
+  const editor = viewportProps.current;
+  await enterPreview(user);
   const chrome = document.querySelector<HTMLElement>('[data-preview-chrome]')!;
   expect([chrome.hidden, chrome.hasAttribute('inert')]).toEqual([true, true]);
   expect(chrome.contains(document.querySelector('[data-cad-tool-stack]'))).toBe(true);
-  expect(displayPopover()).toBeNull();
-  // The page steps aside (the host hides its navbar), and the view's controls are its own corner's:
-  // Orbit, then Display, as it sat in the navbar, then the way out where Preview sat.
-  expect(onFullscreenChange.mock.calls).toEqual([[true]]);
-  expect(barButtons()).toEqual([]);
-  expect(cornerButtons()).toEqual(['Orbit', 'Display', 'Exit preview']);
+  expect(displayMenu()).toBeNull();
+  // The strip goes with the tools view.
+  expect([barButtons(), screen.queryByRole('group', { name: 'Interaction tools' })]).toEqual([[], null]);
+  // The file sidebar is the tools view's alone: hidden, its sections kept mounted. (The harness has
+  // no routine, so no playbar either.)
+  expect([document.querySelector<HTMLElement>('[data-file-sidebar-room]')!.hidden, screen.queryByRole('group', { name: 'File sidebar' })]).toEqual([true, null]);
+  expect(sections()).toEqual([]);
+  expect(panel('Harness position')).not.toBeNull();
+  expect(screen.queryByRole('toolbar', { name: 'Animation playback' })).toBeNull();
+  // The top-right: its settings and the way out, an X, 8px in.
+  expect(cornerButtons()).toEqual(['Preview settings', 'Exit preview']);
   const corner = document.querySelector<HTMLElement>('[data-preview-corner]')!;
-  expect(viewportProps.current.previewMode).toBe(true);
-  // Display is preview's as well: the same dropdown over the file's own settings, preview's tools
-  // still put away under it.
-  await user.click(within(corner).getByRole('button', { name: 'Display' }));
-  expect(displayPopover()!.getAttribute('aria-label')).toBe('Display settings');
-  expect(within(corner).getByRole('button', { name: 'Display' }).getAttribute('aria-pressed')).toBe('true');
-  await user.click(within(displayPopover()!).getByRole('button', { name: 'Enable Grid / Axes' }));
-  expect([viewportProps.current.previewMode, chrome.hidden]).toEqual([true, true]);
+  expect([corner.parentElement!.style.top, corner.parentElement!.style.right]).toEqual(['8px', '8px']);
+  expect(within(corner).getByRole('button', { name: 'Exit preview' }).querySelector('svg.lucide-x')).not.toBeNull();
+  // Preview draws Render in a view of its own; the editor's viewport is asked for nothing new.
+  expect([inPreview(), previewProps.current.renderMode, previewProps.current.projection, viewportProps.current.renderMode]).toEqual([true, true, 'perspective', false]);
+  const unchanged = () => ['renderMode', 'renderConfiguration', 'displaySettings', 'quality', 'projection', 'themeSettings', 'appearance']
+    .filter(key => viewportProps.current[key] !== editor[key]);
+  expect(unchanged()).toEqual([]);
+  // Its settings are closed as it opens; they are Orbit, then Preview's own look, the file's.
+  expect(previewSettings()).toBeNull();
+  await user.click(within(corner).getByRole('button', { name: 'Preview settings' }));
+  expect(within(previewSettings()!).getAllByRole('heading').map(heading => heading.textContent)).toEqual(expect.arrayContaining(['Settings', 'Orbit']));
+  const floor = () => within(previewSettings()!).getByRole('checkbox', { name: 'Floor', exact: true });
+  expect(floor().getAttribute('aria-checked')).toBe('true');
+  fireEvent.click(floor());
+  expect([inPreview(), chrome.hidden]).toEqual([true, true]);
   await user.click(within(corner).getByRole('button', { name: 'Exit preview' }));
-  expect(onFullscreenChange.mock.calls).toEqual([[true], [false]]);
   expect(chrome.hidden).toBe(false);
-  expect(viewportProps.current.previewMode).toBe(false);
-  expect(barButtons()).toEqual(['Display', 'Preview']);
-  // The stack comes back as it was, the tool in hand with its panel; Display, put away, stays shut,
-  // even where Preview was asked for without a press outside it.
-  expect(shown()).toContain('Harness position');
+  // Preview's view is gone, and the editor's is as it was: nothing Preview did reached it.
+  expect([inPreview(), previewProps.current, viewportProps.current.suspended, unchanged()]).toEqual([false, null, false, []]);
+  expect(barButtons()).toEqual(['Projection', 'Display mode', 'Preview']);
+  // The tools view is in the file's own mode, as it always was.
+  expect(displayButton().getAttribute('aria-label')).toBe('Display mode: Solid');
+  // The tool in hand is as it was, its section's tile with it; Display, put away, stays shut.
+  expect(tileNames()).toEqual(['Harness tree', 'Reference', 'Position']);
   expect(tool('Pose').getAttribute('aria-pressed')).toBe('true');
-  expect([displayPopover(), screen.getByRole('button', { name: 'Display' }).getAttribute('aria-pressed')]).toEqual([null, 'false']);
-  await user.click(screen.getByRole('button', { name: 'Display' }));
-  // What was set in preview is the file's view: the tools view's Display holds it.
-  expect(within(displayPopover()!).getByRole('button', { name: 'Disable Grid / Axes' })).toBeTruthy();
+  expect([displayMenu(), displayLit()]).toEqual([null, false]);
+  // What was set in Preview is the file's Render settings: the next visit has it.
   act(() => { fireEvent.click(document.querySelector('[data-harness-ask-preview]')!); });
-  expect([viewportProps.current.previewMode, displayPopover()]).toEqual([true, null]);
+  expect(inPreview()).toBe(true);
+  await user.click(within(document.querySelector<HTMLElement>('[data-preview-corner]')!).getByRole('button', { name: 'Preview settings' }));
+  expect(floor().getAttribute('aria-checked')).toBe('false');
   await user.click(within(document.querySelector<HTMLElement>('[data-preview-corner]')!).getByRole('button', { name: 'Exit preview' }));
-  expect([displayPopover(), screen.getByRole('button', { name: 'Display' }).getAttribute('aria-pressed')]).toEqual([null, 'false']);
+  expect([displayMenu(), displayLit()]).toEqual([null, false]);
 });
 
-it("preview's Orbit is the file's: kept between previews, written to the file's view, restored when it is reopened, and another file starts at the defaults", async () => {
-  const user = userEvent.setup();
-  const states: any[] = [];
-  const settings = () => screen.getByRole('menu', { name: 'Orbit' });
-  const choices = async () => {
-    await user.click(screen.getByRole('button', { name: 'Orbit' }));
-    const orbit = within(settings()).getByRole('menuitemcheckbox', { name: 'Orbit' }).getAttribute('aria-checked');
-    const speed = within(settings()).getByRole('menuitem', { name: /^Orbit speed/ }).getAttribute('aria-label');
-    await user.keyboard('{Escape}');
-    return [orbit, speed];
+it("Preview is covered from the press until its picture has converged, then shows the finished picture", async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'requestAnimationFrame', 'cancelAnimationFrame'] });
+  try {
+    // The studio frame's progress, as the viewport reports it: samples drawn of those it accumulates.
+    const picture = { sample: 0, samples: 16 };
+    viewportHandle.current = { pictureProgress: () => ({ ...picture }) };
+    frame();
+    const cover = () => document.querySelector('[data-preview-cover]');
+    const wait = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    // The press is answered at once, before Preview itself is entered under it.
+    expect(cover()?.textContent).toBe('Preparing preview…');
+    await wait(100);
+    expect([inPreview(), cover() !== null]).toEqual([true, true]);
+    // In Render, and still converging well past the shortest cover: it holds.
+    picture.sample = 9;
+    await wait(2000);
+    expect([previewProps.current.renderMode, cover() !== null]).toEqual([true, true]);
+    // Every sample drawn: it lifts.
+    picture.sample = 16;
+    await wait(100);
+    expect(cover()).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// Preview's Orbit, in its settings: off at every entry, its speed a row of Orbit's there while it is on.
+function previewOrbit(user: ReturnType<typeof userEvent.setup>) {
+  const orbit = () => within(previewSettings()!).getByRole('checkbox', { name: 'Orbit' });
+  const speed = () => within(previewSettings()!).getByRole('combobox', { name: 'Orbit speed' }).textContent;
+  return {
+    orbit,
+    enter: async () => { await enterPreview(user); await user.click(screen.getByRole('button', { name: 'Preview settings' })); },
+    speedOnceOn: async () => { if (orbit().getAttribute('aria-checked') !== 'true') await user.click(orbit()); return speed(); },
+    async choose(value: string) {
+      await user.click(within(previewSettings()!).getByRole('combobox', { name: 'Orbit speed' }));
+      await user.click(screen.getByRole('option', { name: value }));
+    }
   };
-  const first = frame({ onStateChange: state => states.push(state) });
-  await user.click(screen.getByRole('button', { name: 'Preview' }));
-  // A static file has nothing under the model: no playbar, and Orbit leads the corner.
-  expect(screen.queryByRole('toolbar', { name: 'Animation playback' })).toBeNull();
-  expect(cornerButtons()).toEqual(['Orbit', 'Display', 'Exit preview']);
-  // A fresh file orbits at 1×.
-  expect(await choices()).toEqual(['true', 'Orbit speed: 1×']);
-  // Orbit off, and its speed 2×.
-  await user.click(screen.getByRole('button', { name: 'Orbit' }));
-  await user.click(within(settings()).getByRole('menuitemcheckbox', { name: 'Orbit' }));
-  expect(screen.getByRole('menu', { name: 'Orbit' })).toBeTruthy();
-  const speedItem = within(settings()).getByRole('menuitem', { name: /^Orbit speed/ });
-  await user.click(speedItem);
-  // jsdom has no geometry for the submenu's pointer grace area; the keyboard path is the same handler.
-  (await screen.findByRole('menuitemradio', { name: '2×' })).focus();
-  await user.keyboard('{Enter}');
-  // Leaving and re-entering preview keeps both.
+}
+
+it("Preview opens still: Orbit, in its settings, turns the camera, and a speed chosen is kept between visits", async () => {
+  const user = userEvent.setup();
+  const { orbit, enter, speedOnceOn, choose } = previewOrbit(user);
+  frame();
+  await enter();
+  expect([orbit().getAttribute('aria-checked'), previewProps.current.orbit, within(previewSettings()!).queryByRole('combobox', { name: 'Orbit speed' })]).toEqual(['false', false, null]);
+  await user.click(orbit());
+  expect([orbit().getAttribute('aria-checked'), previewProps.current.orbit]).toEqual(['true', true]);
+  // A fresh file orbits at 1×; 2× chosen.
+  expect(await speedOnceOn()).toBe('1×');
+  await choose('2×');
+  expect(previewProps.current.orbitSpeed).toBe(2);
+  // Leaving and coming back: still again, at 2×.
   await user.click(screen.getByRole('button', { name: 'Exit preview' }));
-  await user.click(screen.getByRole('button', { name: 'Preview' }));
-  expect(await choices()).toEqual(['false', 'Orbit speed: 2×']);
-  // The file's view holds them.
+  await enter();
+  expect([orbit().getAttribute('aria-checked'), previewProps.current.orbit, await speedOnceOn()]).toEqual(['false', false, '2×']);
+});
+
+it("Orbit's speed is the file's: its view holds it and no Orbit on or off, it comes back with the view, and another file is at the default", async () => {
+  const user = userEvent.setup();
+  const { enter, speedOnceOn, choose } = previewOrbit(user);
+  const states: any[] = [];
+  const first = frame({ onStateChange: state => states.push(state) });
+  await enter();
+  await speedOnceOn();
+  await choose('2×');
   first.unmount();
   const saved = states.at(-1);
-  expect(saved.playback).toEqual({ orbit: false, orbitSpeed: 2, autoplay: false });
-  // Reopened from that view: the same choices. Another file: the defaults.
+  expect(saved.playback).toEqual({ orbitSpeed: 2, autoplay: false });
+  // Reopened from that view: 2×. Another file: 1×.
   const reopened = frame({ state: saved });
-  await user.click(screen.getByRole('button', { name: 'Preview' }));
-  expect(await choices()).toEqual(['false', 'Orbit speed: 2×']);
+  await enter();
+  expect(await speedOnceOn()).toBe('2×');
   reopened.unmount();
   frame({ name: 'other.harness' });
-  await user.click(screen.getByRole('button', { name: 'Preview' }));
-  expect(await choices()).toEqual(['true', 'Orbit speed: 1×']);
+  await enter();
+  expect(await speedOnceOn()).toBe('1×');
 });
 
-it('the Display dropdown keeps its controls together: a dropdown or a color editor inside it goes first, and without taking the dropdown; a preset keeps it open', async () => {
-  override(Element.prototype, 'scrollIntoView', { value() {} });
-  // An open listbox makes the page under it inert to the pointer (`pointer-events: none`); a press
-  // there still reaches the listbox's outside-press layer, as it does in a browser.
-  const user = userEvent.setup({ pointerEventsCheck: 0 });
+it('Escape puts the tool in hand down and takes Select up, what it set kept', async () => {
+  const user = userEvent.setup();
+  frame({ viewer: true });
+  await user.click(tool('Annotate'));
+  expect(tool('Annotate').getAttribute('aria-pressed')).toBe('true');
+  act(() => { document.querySelector<HTMLElement>('[data-slot="cad-file-view"]')!.focus(); });
+  await user.keyboard('{Escape}');
+  expect([tool('Annotate').getAttribute('aria-pressed'), tool('Select').getAttribute('aria-pressed')]).toEqual(['false', 'true']);
+});
+
+it('Escape closes the Display menu and gives its tile the focus back, the tool in hand kept', async () => {
+  const user = userEvent.setup({ skipHover: true });
   frame();
-  await user.click(screen.getByRole('button', { name: 'Display' }));
-  const popover = displayPopover()!;
-  expect(popover.querySelectorAll('[data-settings-sections]').length).toBe(1);
-  const mode = within(popover).getByRole('combobox', { name: 'Mode' });
-  // (Found before a listbox opens: an open one hides the rest of the page from the accessibility tree.)
-  const heading = within(popover).getByRole('heading', { name: 'Display' });
-  for (const dismiss of ['Escape', 'trigger', 'heading']) {
-    await user.click(mode);
-    expect(screen.getByRole('listbox')).toBeTruthy();
-    if (dismiss === 'Escape') await user.keyboard('{Escape}');
-    else await user.click(dismiss === 'trigger' ? mode : heading);
-    expect(screen.queryByRole('listbox'), dismiss).toBeNull();
-    expect(displayPopover(), `dismissing the dropdown with ${dismiss} keeps Display open`).toBe(popover);
-  }
-  await user.click(mode);
-  await user.click(screen.getByRole('option', { name: 'Render' }));
-  expect(displayPopover()).toBe(popover);
-  expect(mode.textContent).toContain('Render');
-  await user.click(mode);
-  await user.click(screen.getByRole('option', { name: 'Solid' }));
-  // Solid draws no grid: its colour is there once Grid / Axes is on; Escape closes the colour editor, then Display.
-  expect(within(popover).queryByRole('button', { name: 'Grid color' })).toBeNull();
-  await user.click(within(popover).getByRole('button', { name: 'Enable Grid / Axes' }));
-  await user.click(within(popover).getByRole('button', { name: 'Grid color' }));
-  expect(screen.getByRole('spinbutton', { name: 'Color opacity' })).toBeTruthy();
+  await openDisplay(user);
   await user.keyboard('{Escape}');
-  expect(screen.queryByRole('spinbutton', { name: 'Color opacity' })).toBeNull();
-  expect(displayPopover()).toBe(popover);
-  await user.keyboard('{Escape}');
-  expect(displayPopover()).toBeNull();
-  expect(screen.getByRole('button', { name: 'Display' }).getAttribute('aria-pressed')).toBe('false');
+  await waitFor(() => expect([displayMenu(), displayLit()]).toEqual([null, false]));
+  await waitFor(() => expect(document.activeElement).toBe(displayButton()));
+  expect(tool('Select').getAttribute('aria-pressed')).toBe('true');
 });

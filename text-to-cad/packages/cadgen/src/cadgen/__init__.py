@@ -6,8 +6,9 @@ from typing import TYPE_CHECKING
 # Before anything imports build123d, which every cadgen entry point eventually does:
 # build123d parses EVERY font in the system font folders at import time, with no
 # per-file guard, so one malformed file aborts the import and every cadgen command
-# with it (issue #322, upstream in build123d's register_folder). This hides
-# unparseable fonts from that one listing.
+# with it (issue #322, upstream in build123d's register_folder), as does a font with
+# no family name, whose empty name OCCT refuses (#636). This hides the fonts build123d
+# cannot register from that one listing.
 #
 # It belongs here rather than in a launcher because the `cadgen` front door, the daemon's
 # warm workers and `python -m cadgen.X` children all reach cadgen by different routes, and a

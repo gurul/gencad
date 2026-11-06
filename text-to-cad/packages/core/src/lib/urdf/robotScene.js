@@ -1,11 +1,9 @@
-import { resolveCadEdgeSettings } from "../../common/cadInk.js";
-import {
-  PART_HOVER_EMISSIVE_INTENSITY, PART_HOVER_HIGHLIGHT_BLEND, PART_SELECTED_EMISSIVE_INTENSITY,
-  PART_SELECTED_HIGHLIGHT_BLEND, partHighlightSurfaceColor, syncPartOcclusionGhost
-} from "../viewer/partHighlight.js";
+import { hitTriangle } from "../viewer/meshMeasure.js";
 import { scheduleRuntimeRaycastBvh } from "../viewer/raycastBvh.js";
-import { REFERENCE_HOVER_COLOR } from "../viewer/referenceGeometry.js";
+import { createSceneHighlight } from "../viewer/sceneHighlight.js";
+import { ROBOT_SCENE_UNITS } from "../viewer/sceneUnits.js";
 import { createSurfaceLook } from "../viewer/surfaceLook.js";
+import { releaseGeometry, shareGeometry } from "../render/sharedGeometry.js";
 import { shapeSourceColor } from "../viewer/surfaceMaterials.js";
 import { jointMotionTransform, resolveUrdfJointValues } from "./kinematics.js";
 
@@ -29,7 +27,6 @@ import { jointMotionTransform, resolveUrdfJointValues } from "./kinematics.js";
 // ONE builder of a robot's scene: the viewer's robot renderer and the snapshot CLI's
 // headless stage both call it, and both pose it the one way it poses (`setJointValues`).
 
-const HIGHLIGHT_RENDER_ORDER = 23;
 const POSE_EPSILON = 1e-9;
 const HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
 const hex = value => (HEX_COLOR.test(String(value || "").trim()) ? String(value).trim() : "");
@@ -86,7 +83,7 @@ function boxOf(bounds) {
  *   `setHiddenPartIds(ids)`, `linkCentre(name)`, `motionFrame(jointName)`, `linkFrames()`, `hasComponent(id)`,
  *   and `stats` (test seam: matrix writes per pose).
  */
-export function createRobotScene(THREE, { description, parts }) {
+export function createRobotScene(THREE, { description, parts }, { shareFrom = null } = {}) {
   let hiddenPartIds = new Set();
   const isVisible = record => !hiddenPartIds.has(record.mesh.userData.partId);
   const root = new THREE.Group();
@@ -153,7 +150,13 @@ export function createRobotScene(THREE, { description, parts }) {
     const described = hex(part.descriptionColor);
     const wearsVertexColors = !described && Boolean(part.hasSourceColors);
     const key = `${String(part.sourceMeshKey || part.meshUrl || part.id)}:${wearsVertexColors ? "source-colors" : "flat"}`;
-    if (!geometries.has(key)) geometries.set(key, partGeometry(THREE, part, wearsVertexColors));
+    if (!geometries.has(key)) {
+      // A sibling draws its source's buffers; vertex colours, which its look grades, are its own.
+      const source = shareFrom?.get(key);
+      geometries.set(key, source
+        ? { geometry: shareGeometry(THREE, source.geometry, { own: source.sourceColors ? ["color"] : [] }), sourceColors: source.sourceColors }
+        : partGeometry(THREE, part, wearsVertexColors));
+    }
     const entry = geometries.get(key);
     if (!entry) continue;
     const vertexColors = Boolean(entry.sourceColors);
@@ -258,14 +261,12 @@ export function createRobotScene(THREE, { description, parts }) {
 
   // ---- look and highlight ------------------------------------------------------------
   const look = createSurfaceLook(THREE, root);
+  const ink = createSceneHighlight(THREE, look);
   const gradedColor = new THREE.Color();
   let lastLook = null;
   let lastGrading = "";
+  let clipPlanes = [];
   let highlight = { hoveredLink: "", hoveredComponent: "", selectedLinks: [], selectedComponents: [] };
-  const highlighted = new Set();
-  // The viewer's highlight ink: a selection wears the colour a selected STEP part does.
-  const hoverColor = new THREE.Color(REFERENCE_HOVER_COLOR);
-  const selectedColor = new THREE.Color(resolveCadEdgeSettings().highlightColor);
 
   // Vertex colours take the same grading a material colour takes, so a link coloured
   // per vertex and one coloured by its description read as one robot.
@@ -293,40 +294,11 @@ export function createRobotScene(THREE, { description, parts }) {
     for (const id of componentIds) if (recordByComponent.has(id)) records.push(recordByComponent.get(id));
     return records.filter(isVisible);
   }
-  function paint(record, selected) {
-    const material = record.mesh.material;
-    const color = selected ? selectedColor : hoverColor;
-    material.color.copy(partHighlightSurfaceColor(THREE, material.color, color, selected ? PART_SELECTED_HIGHLIGHT_BLEND : PART_HOVER_HIGHLIGHT_BLEND));
-    if (material.emissive) {
-      material.emissive.copy(color);
-      material.emissiveIntensity = selected ? PART_SELECTED_EMISSIVE_INTENSITY : PART_HOVER_EMISSIVE_INTENSITY;
-    }
-    // A highlighted surface is drawn after its neighbours, opaque: the cue must not
-    // depend on the surface opacity the Display tab set.
-    if (!material.transparent) { material.transparent = true; material.needsUpdate = true; }
-    material.opacity = 1;
-    record.mesh.renderOrder = HIGHLIGHT_RENDER_ORDER;
-    highlighted.add(record);
-  }
+  // The viewer's highlight ink (`sceneHighlight.js`): a selection wears the colour a selected STEP part does.
   function applyHighlight() {
-    // The look restores every base it owns; the rest of a highlight is undone here.
-    for (const record of highlighted) {
-      record.mesh.renderOrder = 0;
-      syncPartOcclusionGhost(THREE, record.ghostRecord, { visible: false });
-    }
-    highlighted.clear();
-    look.apply(lastLook);
     const selected = recordsFor(highlight.selectedLinks, highlight.selectedComponents);
-    // Selection outranks hover: hovering what is already picked must not weaken it.
-    for (const record of recordsFor(highlight.hoveredLink, highlight.hoveredComponent ? [highlight.hoveredComponent] : [])) {
-      if (!selected.includes(record)) paint(record, false);
-    }
-    for (const record of selected) {
-      paint(record, true);
-      // Only a SELECTED part shows through what hides it.
-      record.ghostRecord ||= { mesh: record.mesh, geometry: record.mesh.geometry, partId: record.mesh.userData.partId, baseColor: selectedColor };
-      syncPartOcclusionGhost(THREE, record.ghostRecord, { visible: true, color: selectedColor });
-    }
+    const hovered = recordsFor(highlight.hoveredLink, highlight.hoveredComponent ? [highlight.hoveredComponent] : []);
+    ink.apply(lastLook, { hovered, selected }, clipPlanes);
   }
 
   // ---- pick --------------------------------------------------------------------------
@@ -345,6 +317,8 @@ export function createRobotScene(THREE, { description, parts }) {
     links,
     stats,
     partCount: meshes.length,
+    // A robot is drawn in its own metres (REP 103).
+    units: ROBOT_SCENE_UNITS,
     // A robot authors no finish: Render is the studio's surface over the same colours.
     setSurfaceLook(next) {
       if (disposed) return;
@@ -353,6 +327,18 @@ export function createRobotScene(THREE, { description, parts }) {
       applyHighlight();
     },
     setJointValues(values) { return disposed ? false : setJointValues(values); },
+    // Clip's planes, on every surface and on the ghost a selection shows through what hides it.
+    setClipPlanes(planes) {
+      if (disposed) return;
+      clipPlanes = Array.isArray(planes) ? planes : [];
+      look.setClipPlanes(clipPlanes);
+    },
+    /**
+     * A second scene of the same robot (the viewer's Preview beside its editor): its own links,
+     * pose, materials and look over this scene's geometry (`sharedGeometry.js`). This scene stays
+     * the geometry's owner, so the sibling is disposed first.
+     */
+    createSibling() { return createRobotScene(THREE, { description, parts }, { shareFrom: geometries }); },
     /** The value each joint is posed at now (mimic followers included). */
     jointValue(name) { return motions.get(name)?.value ?? null; },
     /** A joint's frame AFTER its motion, relative to the robot: `THREE.Matrix4`, or null for a joint off the tree. */
@@ -409,25 +395,25 @@ export function createRobotScene(THREE, { description, parts }) {
       if (disposed) return null;
       root.updateMatrixWorld();
       raycaster.ray.copy(ray);
-      const hit = raycaster.intersectObjects(pickable, false).find(candidate => candidate.object.visible);
+      // The first visible surface Clip has not cut away.
+      const hit = raycaster.intersectObjects(pickable, false)
+        .find(candidate => candidate.object.visible && clipPlanes.every(plane => plane.distanceToPoint(candidate.point) >= 0));
       if (!hit) return null;
       const componentId = hit.object.userData.componentId || "";
       let owner = hit.object;
       while (owner && !(owner.isGroup && owner.userData.linkName)) owner = owner.parent;
       const linkName = owner?.userData.linkName || "";
-      return { id: componentId || `link:${linkName}`, kind: componentId ? "component" : "link", linkName, componentId, point: hit.point };
+      // The triangle hit, in the scene's coordinates, for Measure (`meshMeasure.js`).
+      return { id: componentId || `link:${linkName}`, kind: componentId ? "component" : "link", linkName, componentId, point: hit.point, triangle: hitTriangle(hit) };
     },
     dispose() {
       if (disposed) return;
       disposed = true;
       root.removeFromParent();
-      for (const record of meshes) {
-        record.ghostRecord?.ghostMesh?.removeFromParent();
-        record.ghostRecord?.ghostMaterial?.dispose();
-      }
+      ink.dispose();
       look.dispose();
       for (const material of materials) material.dispose();
-      for (const entry of geometries.values()) entry?.geometry.dispose();
+      for (const entry of geometries.values()) releaseGeometry(entry?.geometry);
     }
   };
 }

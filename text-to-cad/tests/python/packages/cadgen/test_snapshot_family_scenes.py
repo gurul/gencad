@@ -240,7 +240,7 @@ class SnapshotFamilySceneTests(unittest.TestCase):
         (workspace / "red_box.glb").write_bytes(box_glb(color=(0.85, 0.05, 0.05), metallic=0, roughness=0.6))
 
         # No guides: a silhouette is then everything that is not the backdrop.
-        plain = {"grid": {"enabled": False}, "axes": {"enabled": False}}
+        plain = {"grid": False}
 
         def job(name: str, source: str, display=None, camera="iso", **extra):
             return {"input": source, "display": {"mode": "solid", **plain, **(display or {})}, **extra,
@@ -255,8 +255,8 @@ class SnapshotFamilySceneTests(unittest.TestCase):
             job("straight", "straight.glb", camera="front"),
             job("mirror-solid", "mirror.glb"),
             job("matte-solid", "matte.glb"),
-            job("mirror-render", "mirror.glb", {"mode": "render"}),
-            job("matte-render", "matte.glb", {"mode": "render"}),
+            job("mirror-render", "mirror.glb", preview=True),
+            job("matte-render", "matte.glb", preview=True),
             job("painted", "painted.urdf"),
             job("srdf", "arm.srdf"),
             job("urdf-home", "arm.urdf", jointValues={"shoulder": home_degrees}),
@@ -267,6 +267,15 @@ class SnapshotFamilySceneTests(unittest.TestCase):
                 {"path": "stl-front.png", "width": SIZE[0], "height": SIZE[1], "camera": "front"},
                 {"path": "stl-top.png", "width": SIZE[0], "height": SIZE[1], "camera": "top"}]},
         ]
+        # The saved job packet names an annotation file, as Quick Edit's job does. Two jobs
+        # replay that same saved ink and dimension through the real Python -> browser path.
+        annotation = workspace / "part.annotation.json"
+        annotation.write_text(json.dumps({"units": "mm", "parts": {}, "marks": [
+            {"id": "1", "kind": "stroke", "part": None, "points": [2, 2, 10.1, 8, 8, 10.1],
+             "color": "#ff00ff", "width": 14}]}), encoding="utf-8")
+        measurement = {"start": [1, 9, 10.2], "end": [9, 9, 10.2], "label": "8.00 mm", "color": "#00ff00"}
+        jobs += [job(name, str(workspace / "part.stl"), camera="top", annotation=str(annotation),
+                     measurements=[measurement]) for name in ("annotation", "annotation-replay")]
         packet = workspace / "packet.json"
         packet.write_text(json.dumps({"jobs": jobs}), encoding="utf-8")
 
@@ -284,7 +293,7 @@ class SnapshotFamilySceneTests(unittest.TestCase):
 
     def test_every_output_was_written_at_its_size(self) -> None:
         self.assertTrue(self.result.ok)
-        self.assertEqual(15, len(self.names), self.names)
+        self.assertEqual(17, len(self.names), self.names)
         for name, image in self.images.items():
             with self.subTest(output=name):
                 self.assertEqual(SIZE, (image.width, image.height))
@@ -319,8 +328,22 @@ class SnapshotFamilySceneTests(unittest.TestCase):
         self.assertEqual(self.bytes["stl-first.png"], self.bytes["stl-again.png"])
         self.assertNotEqual(self.bytes["stl-front.png"], self.bytes["stl-top.png"])
 
+    def test_a_saved_annotation_file_and_measurement_replay_as_visible_ink(self) -> None:
+        self.assertEqual(self.bytes["annotation.png"], self.bytes["annotation-replay.png"])
+        baseline = self.images["stl-top"]
+        annotated = self.images["annotation"]
+        # Neither colour occurs in the plain STL. Check both overlays independently, so a
+        # rendered model or only one working overlay cannot satisfy this regression.
+        for name, colour in (("annotation", lambda r, g, b: r > 180 and b > 180 and g < 100),
+                             ("measurement", lambda r, g, b: g > 160 and r < 100 and b < 100)):
+            with self.subTest(overlay=name):
+                count = lambda image: sum(colour(*image.pixel(x, y)) for y in range(image.height) for x in range(image.width))
+                self.assertEqual(count(baseline), 0)
+                self.assertGreater(count(annotated), 20, f"{name} must draw its own coloured pixels")
+
     def test_list_mode_lists_what_the_scene_drew(self) -> None:
-        self.assertEqual([("#o1.1", "box", 12)], [(part["ref"], part["name"], part["triangleCount"]) for part in self.listing.parts])
+        # A GLB's row is its node, as a Quick Edit reference names it (`model.glb#n0`, glTF `nodes[0]`).
+        self.assertEqual([("#n0", "box", 12)], [(part["ref"], part["name"], part["triangleCount"]) for part in self.listing.parts])
 
 
 if __name__ == "__main__":

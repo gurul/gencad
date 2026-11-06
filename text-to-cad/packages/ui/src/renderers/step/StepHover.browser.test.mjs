@@ -84,9 +84,8 @@ async function open() {
   await page.route('**/__cad/preview?**', route => route.fulfill({ contentType: 'application/json', body: '{}' }));
   await pane.locator('[aria-busy="false"] > div > canvas').first().waitFor();
   await page.waitForFunction(() => window.cadHarness.a.controller?.readState().loading === false);
-  await pane.getByRole('region', { name: 'Features', exact: true }).waitFor();
-  await page.evaluate(() => window.cadHarness.a.controller.setDisplaySettings({ axes: { enabled: false } }));
-  await page.waitForFunction(() => window.cadHarness.a.controller.readState().display.axes?.enabled === false);
+  await pane.getByRole('group', { name: 'File sidebar' }).getByRole('button', { name: 'Model tree', exact: true }).click();
+  await pane.getByRole('region', { name: 'Model tree', exact: true }).waitFor();
   // The opening fit at rest, the same camera two frames running: `at` projects from it.
   await page.waitForFunction(() => {
     const camera = JSON.stringify(window.__cadCamera());
@@ -96,13 +95,13 @@ async function open() {
   }, null, { polling: 'raf' });
   await settle(page);
   const box = await pane.locator('[data-cad-surface] canvas').first().boundingBox();
-  // The tool strip and stack float over the canvas and change with every hover, so a frame is
-  // shot without them -- except under a hovered Features row: hiding the row under the pointer
-  // is itself a pointer leaving it, and the part it lit goes dark for the shot. Those frames
-  // keep the stack and are read to its right.
-  const frame = async ({ keepStack = false } = {}) => {
+  // The tool strip, its stack and the file sidebar float over the canvas and change with every
+  // hover, so a frame is shot without them -- except the sidebar under a hovered Features row:
+  // hiding the row under the pointer is itself a pointer leaving it, and the part it lit goes dark
+  // for the shot. Those frames keep the sidebar and are read to its right.
+  const frame = async ({ keepSidebar = false } = {}) => {
     await settle(page);
-    return PNG.sync.read(await pane.locator('[aria-busy] > div > canvas').first().screenshot({ style: `[data-slot=popover-content], [data-slot=dropdown-menu-content], [data-slot=dropdown-menu-sub-content]${keepStack ? '' : ', [data-cad-tool-groups]'} { visibility: hidden !important; }` }));
+    return PNG.sync.read(await pane.locator('[aria-busy] > div > canvas').first().screenshot({ style: `[data-slot=popover-content], [data-slot=dropdown-menu-content], [data-slot=dropdown-menu-sub-content], [data-cad-tool-groups]${keepSidebar ? '' : ', [data-file-sidebar-room]'} { visibility: hidden !important; }` }));
   };
   /** The drawn frame once it satisfies `reached`; a repaint can land a frame or two late. */
   const frameWhen = async (reached, what, options) => {
@@ -165,12 +164,12 @@ test('a part hover, in the viewport or on a Features row, re-renders the viewpor
 
   // A Features row lights its part, and is a hover of the same kind.
   const row = pane.getByRole('button', { name: 'Select arm', exact: true });
-  const stack = await pane.locator('[data-cad-tool-stack]').boundingBox();
-  const beside = { x0: Math.ceil(stack.x + stack.width - view.box.x) + 4 };
-  const stillBeside = await view.frame({ keepStack: true });
+  const sidebar = await pane.locator('[data-cad-file-sidebar]').boundingBox();
+  const beside = { x0: Math.ceil(sidebar.x + sidebar.width - view.box.x) + 4 };
+  const stillBeside = await view.frame({ keepSidebar: true });
   const overRow = await rendersDuring(view, async () => {
     await row.hover();
-    await view.frameWhen(shot => differing(stillBeside, shot, beside) > 2000, 'lit the part under the hovered row', { keepStack: true });
+    await view.frameWhen(shot => differing(stillBeside, shot, beside) > 2000, 'lit the part under the hovered row', { keepSidebar: true });
   });
   assert.ok(overRow.StepSceneLayers >= 1, JSON.stringify(overRow));
   assert.deepEqual([overRow.StepSurfaceBody, overRow.ToolStack, overRow.RendererShell], [0, 0, 0],

@@ -38,13 +38,13 @@ function saved(revision: number, { mates = [swing], poses = OPEN, routine = '' }
     ...(routine ? { animationHash: routine } : {}) };
 }
 
-/** The hook over one entry, as StepSurface mounts it; `offered` is whether Position is offered (its `poseAvailable`), at every render. */
-function mount(entry: ReturnType<typeof saved>) {
+/** The hook over one entry, as StepSurface mounts it; `offered` is whether Position is offered (its `poseAvailable`), at every render. `host`: the frame's side (whether Preview is up). */
+function mount(entry: ReturnType<typeof saved>, host: { previewing(): boolean, onUse(motion: string): void } | null = null) {
   const clock = createAnimationClock();
   const offered: boolean[] = [];
   const hook = renderHook(({ entry }) => {
     const motion = useStepMotion({ entry, fileKey: entry.file, resources: null, meshData: null, meshPartial: false,
-      readStored: () => ({ pose: null }), clipboard: null, reportError: () => {} });
+      readStored: () => ({ pose: null }), clipboard: null, reportError: () => {}, host });
     offered.push(stepPosableDofs(motion.definition).length > 0);
     return motion;
   }, { initialProps: { entry },
@@ -93,12 +93,12 @@ it('a rebuild keeps the named pose chosen while the joints and named poses are t
   expect(chosen()).toEqual(['', { swing: 0 }]);
 });
 
-it('an update that leaves the routine as it was neither stops nor rewinds it, and keeps the pose it set aside; a changed routine is compiled again, at rest', async () => {
-  const { result, rerender } = mount(saved(1, { routine: 'swing-1' }));
+it('an update that leaves the routine as it was neither stops nor rewinds it, a changed routine is compiled again, at rest', async () => {
+  // Played, the routine plays from the model at rest.
+  const { result, rerender } = mount(saved(1, { routine: 'swing-1' }), { onUse() {} });
   await loaded(result, 1);
   await waitFor(() => expect(result.current.animationControls.clips).toHaveLength(1));
   act(() => result.current.onParameterChange('swing', 30));
-  // Play takes the pose: Position's values are set aside, and the routine plays from rest.
   act(() => result.current.onPlayToggle());
   expect([result.current.animationState.playing, result.current.parameterValues]).toEqual([true, { swing: 0 }]);
 
@@ -107,9 +107,10 @@ it('an update that leaves the routine as it was neither stops nor rewinds it, an
   expect(compiled.loads).toBe(1);
   expect(result.current.animationState).toMatchObject({ activeClipId: 'swing', enabled: true, playing: true });
   expect(result.current.animationControls.clips).toHaveLength(1);
-  // Leaving preview hands the pose back as Position left it, across the update.
+  // Releasing the routine leaves the pose as it is.
+  const pose = result.current.parameterValues;
   act(() => result.current.releaseAnimation());
-  expect(result.current.parameterValues).toEqual({ swing: 30 });
+  expect(result.current.parameterValues).toEqual(pose);
 
   // A routine the save changed is compiled again, and is at rest.
   act(() => result.current.onPlayToggle());

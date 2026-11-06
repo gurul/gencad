@@ -1,0 +1,235 @@
+import { useEffect, useRef, useState } from "react";
+import { Check, Copy, X } from "lucide-react";
+import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@text-to-cad/ui/primitives/popover";
+import { ScrollArea } from "@text-to-cad/ui/primitives/scroll-area";
+import { cn } from "@text-to-cad/ui/utils";
+import { useViewerMobile } from "../../../../file-viewer/responsive.js";
+import { FLOATING_SURFACE_CLASS } from "../../../../lib/floatingSurface.js";
+import { useCopyFlash } from "../../inspector/copyFlash.js";
+import { InfoRow } from "../../inspector/referenceRows.jsx";
+import { PickGlyph, compactSuffix, hasPickGlyph } from "../../inspector/pickGlyph.jsx";
+
+/**
+ * One chip: what a renderer says a piece of its selection is. Several picks of one kind on one part
+ * are ONE chip ("base · 6 faces"), so a grouped pick or a long run of picks never floods the box.
+ * @typedef {object} ReferenceChip
+ * @property {string} key  Stable while the chip stands for the same picks.
+ * @property {string} label  Its words: "base · face 3", "base · 6 faces", "upper_arm". Its accessible
+ *   name always, and what it shows unless it has a `compact` one.
+ * @property {import("../../inspector/pickGlyph.jsx").CompactName} [compact]  What it shows, short:
+ *   its part, then its kind's glyph and its number or count ("base ◧3", "base ◧×6").
+ * @property {string} [id]  Its id in its file, as its card shows it: "o1.2.f3", "upper_arm".
+ * @property {string | (() => string)} [copy]  What a click on it copies: its reference, the file's path and its
+ *   id; or a reference resolved at the click. Annotation and measurement chips omit this.
+ * @property {import("react").ReactNode} [card]  What it is, for its card: its key measurements.
+ * @property {import("react").ReactNode} [icon]  Before its words: a measurement's ruler in its colour, the annotation's pen.
+ * @property {string} [glyph]  Else, the glyph of what it names (`pickGlyph.jsx`: "solid" for a part, "face", "edge",
+ *   "vertex", "ruler" for a measurement, "pencil" for the annotation); a compact name's own kind where it has none.
+ * @property {string} [glyphColor]  The glyph's colour, where it has its own (a measurement's); else muted.
+ * @property {string} [text]  The words beside an icon, where they are shorter than its accessible `label`.
+ * @property {() => void} [onRemove]  Drops these picks from the selection.
+ * @property {(on: boolean) => void} [onHover]  Lights these picks in the view while the pointer is on the chip.
+ */
+
+// The chips the box shows before the rest go under "+N more": one or two lines at the box's width.
+export const VISIBLE_REFERENCE_CHIPS = 4;
+// A card opens to the left of what it is the card of, over the view rather than over the chips
+// under it. It follows the pointer onto a chip after a moment, and stays while the pointer is on
+// it or its card. A click copies the chip's reference; a press with no pointer to rest (a touch,
+// a key) opens the card too. A card is as tall as its rows, up to the room the view has.
+const OPEN_DELAY_MS = 300;
+const CLOSE_DELAY_MS = 150;
+const CHIP_CLASS = "inline-flex h-5 min-w-0 max-w-full items-center rounded-sm bg-accent/70 text-tiny text-foreground";
+const CHIP_LABEL_CLASS = "min-w-0 truncate rounded-sm px-1.5 leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring/45";
+const CHIP_REMOVE_CLASS = "-ml-0.5 mr-0.5 flex size-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45";
+const POPOVER_CLASS = cn(FLOATING_SURFACE_CLASS, "p-0 text-tiny data-[state=closed]:animate-none!");
+// What the room left by a card's title and padding is: the rest of the view's height is its rows'.
+const CARD_ROWS_STYLE = { maxHeight: "calc(var(--radix-popover-content-available-height, 32rem) - 2.25rem)" };
+const LIST_STYLE = { maxHeight: "calc(var(--radix-popover-content-available-height, 32rem) - 0.5rem)" };
+
+function useHoverOpen(card) {
+  const [open, setOpen] = useState(false);
+  const timer = useRef(0);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const settle = (next, delay) => { clearTimeout(timer.current); timer.current = setTimeout(() => setOpen(next), delay); };
+  return {
+    open: open && card, setOpen,
+    // A mouse only: a touch opens the card by its press.
+    enter: event => { if (event.pointerType === "mouse" && card) settle(true, OPEN_DELAY_MS); },
+    stay: event => { if (event.pointerType === "mouse") clearTimeout(timer.current); },
+    leave: event => { if (event.pointerType === "mouse") settle(false, CLOSE_DELAY_MS); },
+  };
+}
+
+/**
+ * A chip's behaviour wherever it is drawn (in the box, or a row of "+N more"): its card on a rest of
+ * the pointer, its picks lit meanwhile, its reference copied by a click — "Copied" in its label's
+ * place, held at the label's width so nothing shifts — and the card opened by a touch's press.
+ */
+// What a chip shows: its compact name where it has one (its part, then a glyph and a number), else its words.
+// Every chip leads with its icon (`icon`, else the glyph of what it names), then its words: its compact
+// name's part and its number or count where it has one, else its own.
+function ChipText({ chip }) {
+  const { compact } = chip;
+  const glyph = chip.glyph ?? compact?.kind;
+  const icon = chip.icon ?? (hasPickGlyph(glyph)
+    ? <PickGlyph kind={glyph} color={chip.glyphColor} className={cn("size-2.5 shrink-0", !chip.glyphColor && "text-muted-foreground")} /> : null);
+  const named = compact && hasPickGlyph(compact.kind);
+  return <span className="inline-flex min-w-0 max-w-full items-center gap-1 align-top" data-chip-compact={named ? "" : undefined}>
+    {icon}
+    {named ? <>
+      {compact.name ? <span className="min-w-0 truncate">{compact.name}</span> : null}
+      <span className="shrink-0 text-muted-foreground">{compactSuffix(compact)}</span>
+    </> : <span className="min-w-0 truncate">{chip.text ?? chip.label}</span>}
+  </span>;
+}
+
+// What a click copies: the chip's reference, or what it makes then (`copy` a function).
+const copyChip = (flash, chip) => flash.copy(typeof chip.copy === "function" ? chip.copy() : chip.copy);
+
+function useChip(chip) {
+  const card = Boolean(chip.card || chip.id);
+  const hover = useHoverOpen(card);
+  const flash = useCopyFlash();
+  const label = useRef(null);
+  const anchor = useRef(null);
+  const pointer = useRef("");
+  const [width, setWidth] = useState(0);
+  const copyable = Boolean(chip.copy) && flash.canCopy;
+  const copied = copyable && flash.copied;
+  // On a phone a tap is for reading: it opens the card, whose title copies.
+  const tapCopies = !useViewerMobile();
+  return {
+    card, hover, copyable, copied,
+    // A press on the chip is not one outside its card: the card stays while the chip copies.
+    keepOnChip: event => { if (anchor.current?.contains(event.target)) event.preventDefault(); },
+    surface: {
+      ref: anchor,
+      "data-quick-edit-ref": chip.key,
+      onPointerEnter: event => { if (event.pointerType === "mouse") chip.onHover?.(true); hover.enter(event); },
+      onPointerLeave: event => { if (event.pointerType === "mouse") chip.onHover?.(false); hover.leave(event); },
+    },
+    label: {
+      ref: label, type: "button", "aria-label": chip.label, "data-copied": copied ? "" : undefined,
+      style: copied && width ? { minWidth: width } : undefined,
+      onPointerDown: event => { pointer.current = event.pointerType; },
+      onClick: () => {
+        if (copyable && tapCopies) { setWidth(label.current?.offsetWidth || 0); void copyChip(flash, chip); }
+        if (pointer.current !== "mouse" && card) hover.setOpen(open => !open);
+        pointer.current = "";
+      },
+      children: copied ? <span className="inline-flex items-center gap-1"><Check className="size-2.5" aria-hidden="true" />Copied</span> : <ChipText chip={chip} />,
+    },
+  };
+}
+
+function RemoveButton({ chip }) {
+  return chip.onRemove ? <button type="button" className={CHIP_REMOVE_CLASS} aria-label={`Remove ${chip.label}`}
+    onClick={() => { chip.onHover?.(false); chip.onRemove(); }}><X className="size-2.5" aria-hidden="true" /></button> : null;
+}
+
+// A card's title: the chip's name with a small copy icon after it, the two a button that copies
+// what the chip does (no hint: the icon says it), the icon a tick for a moment once it has.
+function CardTitle({ chip }) {
+  const flash = useCopyFlash();
+  if (!chip.copy || !flash.canCopy) return <p className="truncate px-2 pt-1.5 text-tiny text-foreground">{chip.label}</p>;
+  const Icon = flash.copied ? Check : Copy;
+  // Only the name and its icon are the button, tight together; the rest of the row is not.
+  return <div className="flex min-w-0 px-2 pt-1.5">
+    <button type="button" aria-label={`Copy reference ${chip.label}`} data-copied={flash.copied ? "" : undefined}
+      onClick={() => void copyChip(flash, chip)}
+      className="group/title inline-flex min-w-0 max-w-full cursor-pointer items-center gap-1 rounded-sm text-left text-tiny text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/45">
+      <span className="min-w-0 truncate">{chip.label}</span>
+      <Icon className={cn("size-2.5 shrink-0", flash.copied ? "text-foreground" : "text-muted-foreground group-hover/title:text-foreground")} aria-hidden="true" />
+    </button>
+  </div>;
+}
+
+// A chip's card: its name, its id, then what the renderer says of it (or its picture).
+// Beside the box, a card opens to its left, over the view; on a phone the box is the bottom sheet
+// across the screen, so the card opens above the chip, inside the screen.
+function useCardPlace() {
+  return useViewerMobile() ? { side: "top", align: "start", sideOffset: 6 } : { side: "left", align: "start", sideOffset: 14 };
+}
+
+function ChipCard({ chip, state }) {
+  const place = useCardPlace();
+  return state.card ? <PopoverContent {...place} collisionPadding={8} className={cn(POPOVER_CLASS, "w-56 max-w-[calc(100vw-1rem)]")}
+    onOpenAutoFocus={event => event.preventDefault()} onCloseAutoFocus={event => event.preventDefault()}
+    onPointerEnter={state.hover.stay} onPointerLeave={state.hover.leave} onInteractOutside={state.keepOnChip} data-quick-edit-ref-card={chip.key}>
+    <CardTitle chip={chip} />
+    <ScrollArea className="min-w-0" viewportProps={{ style: CARD_ROWS_STYLE }}>
+      <div className="px-2 pb-1.5">
+        {chip.id ? <InfoRow label="ID"><span className="tabular-nums">{chip.id}</span></InfoRow> : null}
+        {chip.card}
+      </div>
+    </ScrollArea>
+  </PopoverContent> : null;
+}
+
+function Chip({ chip }) {
+  const state = useChip(chip);
+  return <Popover open={state.hover.open} onOpenChange={state.hover.setOpen}>
+    <PopoverAnchor asChild>
+      <span className={CHIP_CLASS} {...state.surface}>
+        <button className={cn(CHIP_LABEL_CLASS, state.copyable && "cursor-pointer")} {...state.label} />
+        <RemoveButton chip={chip} />
+      </span>
+    </PopoverAnchor>
+    <ChipCard chip={chip} state={state} />
+  </Popover>;
+}
+
+// A row of "+N more": the chip, a line of the list, with its own card to the list's left.
+function MoreChip({ chip }) {
+  const state = useChip(chip);
+  return <Popover open={state.hover.open} onOpenChange={state.hover.setOpen}>
+    <PopoverAnchor asChild>
+      <li className="flex h-6 min-w-0 items-center gap-1 rounded-sm pl-1.5 hover:bg-accent/50" {...state.surface}>
+        <button className={cn("min-w-0 flex-1 truncate rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/45",
+          state.copyable ? "cursor-pointer" : "cursor-default")} {...state.label} />
+        <RemoveButton chip={chip} />
+      </li>
+    </PopoverAnchor>
+    <ChipCard chip={chip} state={state} />
+  </Popover>;
+}
+
+// The rest, under one chip: a narrow list of them, each a chip in all but its look.
+function MoreChips({ chips }) {
+  const [open, setOpen] = useState(false);
+  const place = useCardPlace();
+  return <Popover open={open} onOpenChange={setOpen}>
+    <PopoverTrigger asChild>
+      <button type="button" className={cn(CHIP_CLASS, CHIP_LABEL_CLASS, "text-muted-foreground hover:text-foreground")}
+        data-quick-edit-ref-more="">+{chips.length} more</button>
+    </PopoverTrigger>
+    <PopoverContent {...place} collisionPadding={8} className={cn(POPOVER_CLASS, "w-max min-w-28 max-w-44")}
+      onOpenAutoFocus={event => event.preventDefault()} aria-label="More references">
+      <ScrollArea className="min-w-0" viewportProps={{ style: LIST_STYLE }}>
+        <ul className="flex flex-col p-1">
+          {chips.map(chip => <MoreChip key={chip.key} chip={chip} />)}
+        </ul>
+      </ScrollArea>
+    </PopoverContent>
+  </Popover>;
+}
+
+/**
+ * What a Quick Edit carries, as chips under its header: the first few, then "+N more" for the rest.
+ * Each chip (a row of "+N more" too) names its picks, lights them in the view while the pointer is
+ * on it, opens a card of what they are (their id first) on a rest of the pointer, copies their
+ * reference on a click (and opens the card on a touch), and its X drops them from the selection. A
+ * card's title copies the reference too, and a click on one of its values copies that value.
+ *
+ * @param {{ chips: readonly ReferenceChip[], className?: string }} props
+ */
+export default function ReferenceChips({ chips, className }) {
+  if (!chips.length) return null;
+  const shown = chips.length > VISIBLE_REFERENCE_CHIPS + 1 ? chips.slice(0, VISIBLE_REFERENCE_CHIPS) : chips;
+  const rest = chips.slice(shown.length);
+  return <div className={cn("flex min-w-0 flex-wrap gap-1", className)} aria-label="References" data-quick-edit-refs="">
+    {shown.map(chip => <Chip key={chip.key} chip={chip} />)}
+    {rest.length ? <MoreChips chips={rest} /> : null}
+  </div>;
+}

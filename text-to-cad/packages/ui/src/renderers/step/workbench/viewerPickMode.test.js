@@ -172,9 +172,12 @@ test("viewer pick mode falls back to auto without the measure tool", () => {
 });
 
 test('explicit filters never use the automatic part fallback', () => {
-  for (const selectionFilter of ['faces','edges']) {
+  for (const selectionFilter of ['faces','edges','topology']) {
     assert.equal(viewerPickModeForRenderPane({selectionFilter,viewerMode:'assembly'}), VIEWER_PICK_MODE.TOPOLOGY);
   }
   assert.equal(viewerPickModeForRenderPane({selectionFilter:'parts',topologySelectionPending:true}),VIEWER_PICK_MODE.PARTS);
   assert.equal(viewerPickModeForRenderPane({selectionFilter:'edges',measureMode:true}),VIEWER_PICK_MODE.MEASURE);
+  // A filter ticking no geometry picks nothing of the model; Measure still measures.
+  assert.equal(viewerPickModeForRenderPane({selectionFilter:'none',viewerMode:'assembly'}),VIEWER_PICK_MODE.NONE);
+  assert.equal(viewerPickModeForRenderPane({selectionFilter:'none',measureMode:true}),VIEWER_PICK_MODE.MEASURE);
 });

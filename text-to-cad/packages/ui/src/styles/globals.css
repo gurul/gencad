@@ -10,6 +10,65 @@
 
 @import "./tokens.css";
 
+/* The chrome's type sizes: 10, 11, 12 and 13px at a desktop's pointer. */
+:root {
+  --cad-text-micro: 10px;
+  --cad-text-tiny: 11px;
+  --cad-text-xs: 0.75rem;
+  --cad-text-ui: 0.8125rem;
+}
+
+/* A phone's view (`data-viewer-layout="mobile"`: the viewer under 720px) is read at arm's length and
+ * worked with a finger, so its chrome takes one step up: type 12, 13, 14 and 15px (the platforms'
+ * floor is 11pt; body text 15-17pt), rows and menu items 40px, controls 36px, and text entry at 16px,
+ * under which iOS Safari zooms the page into the field. The whole page follows, so a menu, a select
+ * or a hint portalled out of the viewer is the same size as the chrome it opened from. */
+:root:has([data-viewer-layout="mobile"]) {
+  --cad-text-micro: 12px;
+  --cad-text-tiny: 13px;
+  --cad-text-xs: 14px;
+  --cad-text-ui: 15px;
+}
+:root:has([data-viewer-layout="mobile"]) :is([data-slot="dropdown-menu-item"], [data-slot="dropdown-menu-checkbox-item"],
+  [data-slot="dropdown-menu-radio-item"], [data-slot="dropdown-menu-sub-trigger"], [data-slot="select-item"], [data-slot="context-menu-item"], [data-menu-theme], [data-clip-axis-row], [data-menu-language]) {
+  min-height: 40px;
+}
+/* The navbar a 48px row of 36px controls; a section's heading in the file sidebar 36px, its buttons 32px. */
+[data-viewer-layout="mobile"] [data-viewer-navbar] { height: 48px; }
+[data-viewer-layout="mobile"] [data-viewer-navbar] :is(button, a) { min-height: 36px; min-width: 36px; }
+[data-viewer-layout="mobile"] [data-sidebar-head] [data-tool-panel-heading] { height: 36px; }
+[data-viewer-layout="mobile"] [data-sidebar-head] button { min-height: 32px; min-width: 32px; }
+[data-viewer-layout="mobile"] [data-select-trigger], [data-viewer-layout="mobile"] [data-slot="select-trigger"] { min-height: 36px; }
+/* A slider anywhere on a phone (Position's joints, Display's settings, a tool's row): a 36px band to
+ * press in — the band takes the finger, so the thumb need only be seen: 16px. The selected ink's
+ * bar: 36px buttons. */
+:root:has([data-viewer-layout="mobile"]) [data-slot="slider"] { height: 36px; }
+:root:has([data-viewer-layout="mobile"]) [data-slot="slider-thumb"] { width: 16px; height: 16px; }
+[data-viewer-layout="mobile"] [data-annotation-selection-bar] button { min-width: 36px; min-height: 36px; }
+/* The file sidebar on a phone, on the Display menu's scale: ONE text size, the panel's (13px), for
+ * headings, labels, rows and fields alike — a heading told apart by its colour, never its size —
+ * and its rows a finger's. A tree row is 36px (`TREE_ROW_TOUCH_HEIGHT`), its glyphs 16px; the
+ * filter a 32px field; a pose or routine dropdown, a value field and the transport's buttons 32px.
+ * (Inputs keep the panel's text size: the page's viewport, not a 16px font, stops a phone zooming
+ * in on a focused field.) */
+[data-viewer-layout="mobile"] [data-cad-file-sidebar] [data-tree-row] { gap: 6px; }
+[data-viewer-layout="mobile"] [data-cad-file-sidebar] [data-tree-row] svg { width: 16px; height: 16px; }
+[data-viewer-layout="mobile"] [data-cad-file-sidebar] [data-slot="tree-filter"] { height: 40px; padding: 4px; }
+[data-viewer-layout="mobile"] [data-cad-file-sidebar] [data-slot="tree-filter"] input { height: 32px; padding-left: 28px; border: 1px solid var(--input); }
+[data-viewer-layout="mobile"] [data-cad-file-sidebar] [data-slot="tree-filter"] svg { width: 16px; height: 16px; left: 8px; }
+[data-viewer-layout="mobile"] [data-cad-file-sidebar] :is([data-pose-menu], [data-animation-routine] button, input[type="text"]) { height: 32px; }
+[data-viewer-layout="mobile"] [data-cad-file-sidebar] :is([data-pose-row], [data-animation-routine]) { height: 44px; }
+[data-viewer-layout="mobile"] [data-cad-file-sidebar] [data-animation-transport] { height: 44px; }
+/* A joint's row as on a desktop: its label tight over its slider (5px to the track), the value field
+ * centred on the two, the rows 12px apart — a label reads as its slider's, not the one above's. The
+ * slider draws a 16px band; its 36px touch band reaches over the label's foot and the gap, invisibly. */
+[data-viewer-layout="mobile"] [data-cad-file-sidebar] [data-position-control] { padding-block: 3px; }
+[data-viewer-layout="mobile"] [data-cad-file-sidebar] [data-position-control] :has(> [data-slot="slider"]) { margin-top: 0; }
+[data-viewer-layout="mobile"] [data-cad-file-sidebar] [data-position-control] [data-slot="slider"] { height: 16px; }
+[data-viewer-layout="mobile"] [data-cad-file-sidebar] [data-position-control] [data-slot="slider"]::before { content: ""; position: absolute; inset: -10px 0; }
+[data-viewer-layout="mobile"] [data-cad-file-sidebar] [data-position-control] [data-file-sheet-field-label] { line-height: 16px; }
+[data-viewer-layout="mobile"] [data-cad-file-sidebar] [data-animation-transport] button { width: 32px; height: 32px; }
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -66,7 +125,6 @@
 .cad-library-byline > span { color: #258cc5; }
 .dark .cad-library-byline { color: #fff; }
 .dark .cad-library-byline > span { color: #94d9fa; }
-.cad-library-update { display: flex; justify-content: center; margin: 14px 0 0; }
 .cad-library-links { display: flex; align-items: center; justify-content: center; gap: 2px; margin: 12px 0 40px; }
 .cad-library-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
 .cad-library-heading { margin: 0; font-size: calc(min(360px, 100cqw) / 20.8); line-height: 28px; font-weight: 600; color: var(--foreground); }

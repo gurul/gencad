@@ -14,7 +14,7 @@ one revolute mate. Every property is there for a test:
 | the bore | a cylindrical face beside planar ones, so a face pick has something to report a diameter for, and the modeling tree a cut feature to recognise |
 | one revolute mate `hinge` (0…90°) | the panel's Position section, the Position tool and its one knob |
 | one named pose `open` | the named-pose jump |
-| one routine `swing` | its playbar in preview |
+| one routine `swing` | its Animation section, in the tools view and Preview |
 
 ## The files, and which request each answers
 

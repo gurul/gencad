@@ -254,7 +254,7 @@ function materialForGroup(material, group) {
   return material || null;
 }
 
-function appendMeshPrimitive(THREE, accumulator, mesh, group, material) {
+function appendMeshPrimitive(THREE, accumulator, mesh, group, material, path) {
   const geometry = mesh?.geometry;
   const positions = geometry?.getAttribute?.("position");
   if (!positions || positions.itemSize !== 3 || positions.count <= 0) {
@@ -325,6 +325,7 @@ function appendMeshPrimitive(THREE, accumulator, mesh, group, material) {
     name: label || id,
     label: label || id,
     nodeType: "part",
+    path,
     color: color && !color.generatedDefault ? color.hex : "",
     bounds: buildBoundsFromVertices(partVertices),
     vertexOffset,
@@ -339,6 +340,18 @@ function appendMeshPrimitive(THREE, accumulator, mesh, group, material) {
   }
 }
 
+// Where a mesh's object stands in the build: three's loader adds one child per build item to its
+// group, a component object one child per component, and an object's meshes (one per material)
+// to the object's own group. So the object is the mesh's parent, and its place is each ancestor's
+// place among its siblings, from the build item down, counted from 1.
+function threeMfObjectPath(root, mesh) {
+  const path = [];
+  for (let object = mesh.parent; object && object !== root; object = object.parent) {
+    path.unshift(object.parent ? object.parent.children.indexOf(object) + 1 : 1);
+  }
+  return path.length ? path : [1];
+}
+
 export function buildMeshDataFromThreeMfGroup(THREE, group, { toCreasedNormals = null } = {}) {
   const accumulator = {
     vertices: [],
@@ -351,13 +364,14 @@ export function buildMeshDataFromThreeMfGroup(THREE, group, { toCreasedNormals =
   group?.updateWorldMatrix?.(true, true);
   group?.traverse?.((object) => {
     if (object?.isMesh && object.geometry) {
+      const path = threeMfObjectPath(group, object);
       // A 3MF mesh shares its vertices, so plain vertex normals round every hard edge.
       object.geometry = displayGeometryWithNormals(object.geometry, toCreasedNormals);
       const groups = Array.isArray(object.geometry.groups) && object.geometry.groups.length
         ? object.geometry.groups
         : [null];
       for (const geometryGroup of groups) {
-        appendMeshPrimitive(THREE, accumulator, object, geometryGroup, materialForGroup(object.material, geometryGroup));
+        appendMeshPrimitive(THREE, accumulator, object, geometryGroup, materialForGroup(object.material, geometryGroup), path);
       }
     }
   });
@@ -379,7 +393,7 @@ export function buildMeshDataFromThreeMfGroup(THREE, group, { toCreasedNormals =
   };
 }
 
-function appendParsedMeshPart(THREE, accumulator, meshData, matrix, label) {
+function appendParsedMeshPart(THREE, accumulator, meshData, matrix, label, path) {
   if (!meshData?.vertices?.length || !meshData?.triangles?.length) {
     return;
   }
@@ -436,6 +450,7 @@ function appendParsedMeshPart(THREE, accumulator, meshData, matrix, label) {
     name: partLabel,
     label: partLabel,
     nodeType: "part",
+    path,
     color: "",
     bounds: buildBoundsFromVertices(partVertices),
     vertexOffset,
@@ -456,7 +471,7 @@ function findObjectInAnyModel(models, objectId) {
   return null;
 }
 
-function appendParsed3MfObject(THREE, accumulator, models, modelPath, objectId, matrix, stack = []) {
+function appendParsed3MfObject(THREE, accumulator, models, modelPath, objectId, matrix, path, stack = []) {
   const stackKey = `${modelPath}#${objectId}`;
   if (stack.includes(stackKey)) {
     throw new Error(`3MF component cycle detected at ${stackKey}`);
@@ -480,12 +495,13 @@ function appendParsed3MfObject(THREE, accumulator, models, modelPath, objectId, 
       accumulator,
       objectData.mesh,
       matrix,
-      objectData.name || `${resolvedModelPath}#${objectData.id}`
+      objectData.name || `${resolvedModelPath}#${objectData.id}`,
+      path
     );
     return;
   }
 
-  for (const component of objectData.components || []) {
+  for (const [index, component] of (objectData.components || []).entries()) {
     const componentPath = component.path || resolvedModelPath;
     const componentMatrix = matrix.clone();
     if (component.transform) {
@@ -498,6 +514,7 @@ function appendParsed3MfObject(THREE, accumulator, models, modelPath, objectId, 
       componentPath,
       component.objectId,
       componentMatrix,
+      [...path, index + 1],
       [...stack, stackKey]
     );
   }
@@ -568,9 +585,9 @@ async function buildMeshDataFrom3MfPackageFallback(THREE, buffer) {
     ? buildModel.build
     : Array.from(buildModel.objects.keys()).map((objectId) => ({ objectId, transform: null }));
 
-  for (const buildItem of buildItems) {
+  for (const [index, buildItem] of buildItems.entries()) {
     const matrix = buildItem.transform ? buildItem.transform.clone() : identity.clone();
-    appendParsed3MfObject(THREE, accumulator, models, buildModelPath, buildItem.objectId, matrix);
+    appendParsed3MfObject(THREE, accumulator, models, buildModelPath, buildItem.objectId, matrix, [index + 1]);
   }
 
   const meshData = finalizeParsed3MfMesh(accumulator);
@@ -580,18 +597,51 @@ async function buildMeshDataFrom3MfPackageFallback(THREE, buffer) {
   return meshData;
 }
 
+const UNIT_READ_CHUNK = 1024;
+/**
+ * The unit the root model part declares (`<model unit="…">`, millimeter when absent): its
+ * coordinates are in it, and nothing here scales them. Only the head of that part is inflated,
+ * a kilobyte of the archive at a time, so reading it costs nothing beside the load itself.
+ * @param {ArrayBuffer | Uint8Array} buffer  The 3MF package.
+ * @returns {Promise<string>}  As the file writes it: "millimeter", "inch"…
+ */
+export async function declared3MfUnit(buffer) {
+  const { Unzip, UnzipInflate } = await import("three/examples/jsm/libs/fflate.module.js");
+  const bytes = new Uint8Array(buffer);
+  let tag = null;
+  let ended = false;
+  const unzip = new Unzip((file) => {
+    if (ended || !/^3D\/[^/]+\.model$/i.test(file.name)) return;
+    const decoder = new TextDecoder();
+    let head = "";
+    file.ondata = (error, chunk, final) => {
+      if (ended) return;
+      head += error ? "" : decoder.decode(chunk, { stream: !final });
+      tag = /<(?:[\w.-]+:)?model\b[^>]*>/.exec(head)?.[0] ?? null;
+      if (tag || error || final || head.length > 1 << 16) { ended = true; file.terminate(); }
+    };
+    file.start();
+  });
+  unzip.register(UnzipInflate);
+  for (let at = 0; at < bytes.length && !ended; at += UNIT_READ_CHUNK) {
+    unzip.push(bytes.subarray(at, at + UNIT_READ_CHUNK), at + UNIT_READ_CHUNK >= bytes.length);
+  }
+  return /\sunit\s*=\s*["']([^"']*)["']/.exec(tag || "")?.[1] || "millimeter";
+}
+
 export async function buildMeshDataFrom3MfBuffer(buffer) {
-  const [THREE, { ThreeMFLoader }, { toCreasedNormals }] = await Promise.all([
+  const [THREE, { ThreeMFLoader }, { toCreasedNormals }, unit] = await Promise.all([
     import("three"),
     import("three/examples/jsm/loaders/3MFLoader.js"),
     import("three/examples/jsm/utils/BufferGeometryUtils.js"),
+    declared3MfUnit(buffer),
   ]);
   const loader = new ThreeMFLoader();
   try {
-    return buildMeshDataFromThreeMfGroup(THREE, loader.parse(buffer), { toCreasedNormals });
+    return { ...buildMeshDataFromThreeMfGroup(THREE, loader.parse(buffer), { toCreasedNormals }), unit };
   } catch (error) {
     try {
-      return await buildMeshDataFrom3MfPackageFallback(THREE, buffer);
+      return { ...await buildMeshDataFrom3MfPackageFallback(THREE, buffer), unit };
     } catch {
       throw error;
     }

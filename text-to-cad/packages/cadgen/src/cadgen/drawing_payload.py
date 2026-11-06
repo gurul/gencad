@@ -29,6 +29,20 @@ sets the string at that cap height, stretches it to that width (so a font that
 differs from ezdxf's keeps the layout ezdxf computed), and paints it. Text inside
 a clipped block reference is still outlined, because only paths can be clipped.
 
+Entities
+--------
+Every primitive names the modelspace entity it came from (``entity``: its
+handle, the id DXF gives every entity and keeps across saves). The add-on
+reports the TOP-LEVEL handle, so the lines, arrows and text of a DIMENSION all
+name the DIMENSION, and everything a block reference draws names its INSERT —
+a block's contents have no modelspace handle of their own. ``entities`` lists
+each entity that drew something, in first-seen order: its handle, its DXF
+type, its own layer, the block an INSERT places, and a CIRCLE's or ARC's
+centre and radius (in drawing coordinates), so a client can name what it picks
+and snap to a hole's centre without parsing DXF. A layer row counts the
+entities that drew on it (an INSERT whose contents sit on two layers counts on
+both).
+
 The default pen
 ---------------
 A DXF entity that resolves to ACI 7 has no colour of its own: 7 means
@@ -82,7 +96,9 @@ __all__ = [
 # checks it before drawing) and in the cache key (an old shape is not served
 # from the store after an upgrade). 2: text is a `text` primitive and the
 # payload lists its `fonts`, where 1 outlined every glyph into `filled-paths`.
-DRAWING_PAYLOAD_SCHEMA_VERSION = 2
+# 3: every primitive names its `entity` (a handle), the payload lists its
+# `entities`, and a layer row counts `entities` rather than primitives.
+DRAWING_PAYLOAD_SCHEMA_VERSION = 3
 
 # The layout foreground handed to ezdxf, and therefore the exact colour every
 # default-pen primitive comes back wearing. Not in the ACI palette; see the
@@ -235,12 +251,33 @@ def _text_pipeline(backend):
     return _text_pipeline_class(backend)
 
 
+_handle_backend_class = None
+
+
+def _handle_backend():
+    """ezdxf's JSON backend, with ONE change: each primitive's properties carry its entity's handle.
+
+    The pipeline already hands every backend call the TOP-LEVEL entity's handle
+    (``BackendProperties.handle``); the stock backend drops it when it writes
+    the properties out.
+    """
+    global _handle_backend_class
+    if _handle_backend_class is None:
+        from ezdxf.addons.drawing.json import CustomJSONBackend
+
+        class _HandleBackend(CustomJSONBackend):
+            def make_properties_dict(self, properties):
+                return {**super().make_properties_dict(properties), "handle": str(properties.handle or "")}
+
+        _handle_backend_class = _HandleBackend
+    return _handle_backend_class()
+
+
 def _render(document):
     """``(render context, ezdxf primitive dicts)`` for the modelspace."""
     from ezdxf.addons.drawing import RenderContext
     from ezdxf.addons.drawing.config import Configuration, LineweightPolicy
     from ezdxf.addons.drawing.frontend import UniversalFrontend
-    from ezdxf.addons.drawing.json import CustomJSONBackend
     from ezdxf.addons.drawing.properties import LayerProperties, LayoutProperties
 
     modelspace = document.modelspace()
@@ -249,7 +286,7 @@ def _render(document):
     fallback_layer.has_aci_color_7 = True
     context.layers = _DefaultPenLayers(context.layers, fallback_layer)
 
-    backend = CustomJSONBackend()
+    backend = _handle_backend()
     # ABSOLUTE lineweights keep the frontend from scaling strokes against a
     # page size we do not have. The widths are dropped from the payload anyway
     # (the client draws hairlines), but the policy must still be pinned or the
@@ -489,28 +526,58 @@ def _layer_color(properties):
 
 
 def _layers(context, primitives):
-    """One row per layer that DREW something, in first-seen order.
+    """One row per layer that DREW something, in first-seen order, with the entities drawn on it.
 
     First-seen order rather than table order, for two reasons: a drawing's
     LAYER table routinely lists layers no entity uses (and a row with
-    ``count: 0`` is noise), and first-seen order is the order a reader meets
-    the geometry, so a legend built from it matches the drawing.
+    nothing on it is noise), and first-seen order is the order a reader meets
+    the geometry, so a legend built from it matches the drawing. ``entities``
+    counts the modelspace entities that drew on the layer, not the primitives
+    they became: a circle is one entity however many curves draw it.
     """
     from ezdxf.addons.drawing.properties import layer_key
 
-    counts: dict[str, int] = {}
+    drawn: dict[str, set[str]] = {}
     for primitive in primitives:
-        name = str(primitive["properties"]["layer"])
-        counts[name] = counts.get(name, 0) + 1
+        properties = primitive["properties"]
+        drawn.setdefault(str(properties["layer"]), set()).add(str(properties.get("handle") or ""))
     return [
         {
             "name": name,
             "color": _layer_color(context.layers.get(layer_key(name))),
-            "count": count,
+            "entities": len(handles),
         }
         # dicts preserve insertion order, which IS first-seen order here.
-        for name, count in counts.items()
+        for name, handles in drawn.items()
     ]
+
+
+def _entity(document, handle):
+    """One ``entities`` row: what the entity under ``handle`` is, for a client to name and snap to."""
+    entity = document.entitydb.get(handle) if handle else None
+    if entity is None:
+        return {"handle": handle, "type": "", "layer": ""}
+    row = {"handle": handle, "type": entity.dxftype(), "layer": str(entity.dxf.get("layer", "0"))}
+    if row["type"] == "INSERT":
+        row["block"] = str(entity.dxf.get("name", ""))
+    elif row["type"] in ("CIRCLE", "ARC"):
+        try:
+            centre = entity.ocs().to_wcs(entity.dxf.center)
+            row["center"] = [_rounded(centre.x), _rounded(centre.y)]
+            row["radius"] = _rounded(entity.dxf.radius)
+        except (AttributeError, TypeError, ValueError):
+            pass
+    return row
+
+
+def _entities(document, primitives):
+    """One row per modelspace entity that drew something, in first-seen order (see the module docstring)."""
+    seen: dict[str, None] = {}
+    for primitive in primitives:
+        handle = str(primitive["properties"].get("handle") or "")
+        if handle:
+            seen.setdefault(handle, None)
+    return [_entity(document, handle) for handle in seen]
 
 
 # --- units -----------------------------------------------------------------
@@ -548,8 +615,9 @@ def _units(document):
 def build_drawing_payload(path) -> dict:
     """The flat 2D render payload for one ``.dxf`` file.
 
-    ``{schemaVersion, units, bounds, layers, fonts, primitives}``; see the
-    module docstring for the coordinate, colour and text contracts.
+    ``{schemaVersion, units, bounds, layers, entities, fonts, primitives}``;
+    see the module docstring for the coordinate, colour, text and entity
+    contracts.
     """
     document = read_drawing_document(path)
     context, emitted = _render(document)
@@ -564,6 +632,7 @@ def build_drawing_payload(path) -> dict:
             "type": primitive_type,
             "layer": str(properties["layer"]),
             "color": _color(properties.get("color")),
+            "entity": str(properties.get("handle") or ""),
         }
         if primitive_type == _TEXT:
             primitives.append({**head, **_text(primitive["geometry"], fonts, extent)})
@@ -574,6 +643,7 @@ def build_drawing_payload(path) -> dict:
         "units": _units(document),
         "bounds": extent.bounds(),
         "layers": _layers(context, emitted),
+        "entities": _entities(document, emitted),
         "fonts": fonts.rows,
         "primitives": primitives,
     }

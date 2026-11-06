@@ -25,7 +25,7 @@ test("normal CAD stays an orthographic responsive inspection scene", () => {
   assert.equal(dark.materialOverrides, null);
   assert.equal(light.quality.id, SCENE_QUALITY.INTERACTIVE);
   assert.equal(light.theme.background.solidColor, "#f0f4f9");
-  assert.equal(dark.theme.background.solidColor, "#333333");
+  assert.equal(dark.theme.background.solidColor, "#25272b");
   assert.deepEqual(dark.theme.materials, light.theme.materials);
   assert.deepEqual(dark.theme.lighting, light.theme.lighting);
   assert.deepEqual(dark.theme.environment, light.theme.environment);
@@ -62,13 +62,13 @@ test("omitted Render fields stay sparse while configuration expands effective de
     quality: "final",
     exposure: 0,
     lighting: { rotation: 0, size: 1, fill: 0.25 },
-    // Render's floor at the model's lowest point, as the Display preset's (`RENDER_FLOOR_PLACEMENT`).
-    backdrop: { color: "#ffffff", transparent: false, ground: true, groundPlacement: "lowest", groundColor: "#e7e7e5", groundOpacity: 0.6, groundFinish: "matte" }
+    // Render's floor at Z=0, as the Display preset's (`RENDER_FLOOR_PLACEMENT`).
+    backdrop: { color: "#ffffff", transparent: false, ground: true, groundPlacement: "origin", groundColor: "#e7e7e5", groundOpacity: 0.6, groundFinish: "matte" }
   });
   assert.equal(camera.projection, "orthographic");
   assert.deepEqual(light.camera, camera);
   assert.equal(dark.render.configuration.studio, "dark");
-  assert.equal(dark.render.configuration.backdrop.color, "#121315");
+  assert.equal(dark.render.configuration.backdrop.color, "#202226");
   assert.equal(Object.hasOwn(light.render.payload, "studio"), false);
   assert.equal(light.camera.projection, "orthographic");
   assert.equal(light.display.mode, "render");
@@ -162,7 +162,7 @@ test("unified render display preserves the common orthographic camera and inspec
     display: {
       mode: "render",
       render: { studio: "dark", exposure: 1 },
-      clip: { enabled: true, axis: "z", offsets: { z: 0.4 } },
+      clip: { enabled: true, axis: "z", at: 0.4 },
       exploded: { enabled: true, amount: 0.6 },
       guides: { grid: { enabled: true }, axis: { enabled: false } },
       partColor: { mode: "single", color: "#123456" }
@@ -250,5 +250,5 @@ test("explicit floor appearance survives sparse resolution independently of back
   assert.deepEqual(resolved.render.payload, render);
   assert.equal(resolved.render.configuration.backdrop.groundColor, "#123456");
   assert.equal(resolved.render.configuration.backdrop.groundOpacity, 0);
-  assert.equal(resolved.render.configuration.backdrop.color, "#121315");
+  assert.equal(resolved.render.configuration.backdrop.color, "#202226");
 });

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AppSetting } from "../file-viewer/types.js";
+import { translator } from "../i18n/core.js";
 
 /** What a CAD app's server says about the usage stats cadgen sends (its telemetry). */
 export interface AnalyticsConsent {
@@ -12,15 +13,16 @@ export interface AnalyticsConsent {
 }
 
 /**
- * The app menu's Share usage stats toggle, from the host's server (`consent()` reads, `consent(share)`
+ * The app menu's Share anonymous usage data toggle, from the host's server (`consent()` reads, `consent(share)`
  * answers): read once, read again whenever the person comes back to the page (another view, the agent or
  * the CLI may have changed it meanwhile), and changed by a click. Nothing asks: cadgen's telemetry is on
  * by default once a `cadgen` command has said so. Each read and answer takes a number and only the latest
  * one's reply is kept, so a read sent just before a click (the click's own focus) can never undo it. An
  * answer that did not arrive is read back rather than shown as kept. A choice the environment made shows
- * as fixed.
+ * as fixed. Its label is in `locale`, the language the host hands the view (`environment.locale`).
  */
-export function useAnalyticsConsent(consent: (share?: boolean) => Promise<AnalyticsConsent>) {
+export function useAnalyticsConsent(consent: (share?: boolean) => Promise<AnalyticsConsent>, locale?: string) {
+  const t = translator(locale);
   const [state, setState] = useState<AnalyticsConsent | null>(null);
   const turn = useRef(0);
   const read = useCallback(function read(share?: boolean) {
@@ -40,10 +42,10 @@ export function useAnalyticsConsent(consent: (share?: boolean) => Promise<Analyt
     read(share);
   }, [read]);
   const appSettings = useMemo<AppSetting[] | undefined>(() => state ? [{
-    id: "analytics", checked: state.sharing, onCheckedChange: (checked: boolean) => answer(checked),
+    id: "analytics", checked: state.sharing, onCheckedChange: (checked: boolean) => answer(checked), info: t("consent.telemetryInfo"),
     ...(state.reason === "environment"
-      ? { label: "Share usage stats (set by your environment)", disabled: true }
-      : { label: "Share usage stats" }),
-  }] : undefined, [state, answer]);
+      ? { label: t("consent.shareUsageEnvironment"), disabled: true }
+      : { label: t("consent.shareUsage") }),
+  }] : undefined, [state, answer, t]);
   return { consent: state, appSettings };
 }

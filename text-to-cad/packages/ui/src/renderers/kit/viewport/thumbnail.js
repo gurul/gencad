@@ -88,8 +88,9 @@ export async function renderThumbnail(runtime, { bounds, modelOffset = null, sce
     runtime.setScreenSpaceLineResolution?.(pixelWidth, pixelHeight);
     renderer.setViewport(0, 0, pixelWidth / pixelRatio, pixelHeight / pixelRatio);
     renderer.render(scene, camera);
-    // The GL viewport starts at the buffer's bottom-left; the canvas's rows run from its top.
-    context.drawImage(renderer.domElement, 0, buffer.y - pixelHeight, pixelWidth, pixelHeight, 0, 0, pixelWidth, pixelHeight);
+    // The GL viewport starts at the buffer's bottom-left; the canvas's rows run from its top. A view
+    // of a shared GPU device reads the device's buffer, where the frame was just drawn.
+    context.drawImage(renderer.drawingCanvas || renderer.domElement, 0, buffer.y - pixelHeight, pixelWidth, pixelHeight, 0, 0, pixelWidth, pixelHeight);
   } finally {
     scene.background = background;
     for (const [object, visible] of stage) object.visible = visible;

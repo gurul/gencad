@@ -28,21 +28,24 @@ import { useViewportCamera } from "../camera/useViewportCamera.js";
 import {
   DEFAULT_VIEW_DIRECTION, DEFAULT_VIEW_PLANE_ORIENTATION, KEYBOARD_ORBIT_NUDGE_RAD, VIEWING_MODE, VIEW_PLANE_FACES,
   WHEEL_PINCH_DELTA_BOOST, WORLD_UP, applyOrbitDelta, clearKeyboardOrbitState, createViewPlaneOrientationStore,
-  getActiveViewPlaneFaceId, getKeyboardOrbitAxes, getKeyboardOrbitCommand, isPinchWheelEvent, isTrackpadLikeWheelEvent,
+  getActiveViewPlaneFaceId, getKeyboardOrbitAxes, getKeyboardOrbitCommand, orbitControlsBoostsPinch, isTrackpadLikeWheelEvent,
   reframeReason, stepKeyboardOrbit
 } from "../camera/viewportCameraKit.js";
 import {
   ACCELERATED_WHEEL_ZOOM_SPEED, COARSE_POINTER_PINCH_ZOOM_SPEED, COARSE_POINTER_ZOOM_SPEED, DEFAULT_ZOOM_SPEED,
-  TRACKPAD_PINCH_ZOOM_SPEED
+  TRACKPAD_PINCH_ZOOM_SPEED, restingZoomSpeed
 } from "../camera/zoomSpeeds.js";
 import { loadStudioScene, studioScene } from "../look/renderStudioChunk.js";
 import { DEFAULT_LIGHTING, syncRuntimeScaledLightingAndShadow, updateGridHelper, updateStageEffects } from "../look/stageEffects.js";
 import { CONTACT_SHADOW_HEIGHT_INTERVAL_MS, stageFitCurrent, stageFitInputs } from "../look/stageFollow.js";
-import { createStudioEnvironmentCache } from "../look/studioEnvironmentCache.js";
+import { studioEnvironmentCacheFor } from "../look/studioEnvironmentCache.js";
 import { isKitScene } from "../scene.js";
 import LoadingIndicator from "../status/LoadingIndicator.js";
-import DrawingOverlay from "../tools/draw/DrawingOverlay.jsx";
-import { useDrawingViewLock } from "../tools/draw/useDrawingViewLock.js";
+import AnnotationOverlay from "../tools/annotate/AnnotationOverlay.jsx";
+import { useSceneEffects } from "../tools/model-effects/useSceneEffects.js";
+import { TOUCH_HIT_PX, prefersCoarsePointer } from "../viewport/dom.js";
+import { annotationAt } from "../../../annotation/geometry.js";
+import { annotationsOnScreen, mountAnnotations } from "../tools/annotate/annotation3d.js";
 import { createViewerRenderStateResolver } from "../view-settings/renderState.js";
 import { shareSettingsValue } from "../view-settings/shareSettingsValue.js";
 import { createViewUpdateGate } from "../view-settings/viewUpdateGate.js";
@@ -53,7 +56,7 @@ import { requestSceneFrame } from "../viewport/sceneFrames.js";
 import { renderThumbnail } from "../viewport/thumbnail.js";
 import { useViewerRuntime } from "../viewport/useViewerRuntime.js";
 import ViewportError from "../status/ViewportError.jsx";
-import { VIEWPORT_CUBE_BOTTOM_PX, VIEWPORT_CUBE_SIZE, VIEWPORT_CORNER_INSET_PX } from "./viewportLayout.js";
+import { VIEWPORT_CUBE_BOTTOM, VIEWPORT_CUBE_SIZE, VIEWPORT_CORNER_INSET_PX } from "./viewportLayout.js";
 
 const STORED_CAMERA_COORDINATES = "cad-z-up-v1";
 /** How long after the open-time fit the viewport and projection may still be settling. */
@@ -65,7 +68,7 @@ function clearGroup(group) {
 
 /**
  * The viewport every file-family renderer mounts: the kit's WebGL runtime, camera,
- * look and Draw overlay around ONE scene the renderer built (`kit/scene.js`). It
+ * look and Annotate overlay around ONE scene the renderer built (`kit/scene.js`). It
  * adopts `scene.object3D`, frames `restBounds`, lights and floors `bounds`, hands
  * the scene the surface look the Display panel resolved, and never reaches inside
  * it. The scene stays its renderer's: this component detaches it, never disposes it.
@@ -85,20 +88,33 @@ const ShellViewport = forwardRef(function ShellViewport({
   focalLength = null,
   themeSettings = null,
   displaySettings = null,
+  // The viewport applies the model effects `displaySettings` holds to the scene, through the scene
+  // contract (`tools/model-effects/useSceneEffects.js`); a renderer whose own layers apply them
+  // leaves this off.
+  sceneEffects = false,
   appearance = "light",
   receiveShadows = false,
   renderMode = false,
   renderConfiguration = null,
   quality = null,
-  previewMode = false,
-  orbitPreview = false,
-  previewOrbitSpeed = 1,
+  // Preview's viewport (`PreviewView.jsx`): opened on the model at rest, framed afresh,
+  // keeping no camera, no cube, no Annotate; its Orbit turns the camera at `orbitSpeed`.
+  preview = false,
+  orbit = false,
+  orbitSpeed = 1,
+  // Covered by another view (the editor's, under Preview): it draws nothing until uncovered,
+  // and then, before that paint, whatever it was asked to meanwhile.
+  suspended = false,
   isLoading = false,
   viewCube = true,
   viewUpdate = null,
   loadingPresentation = null,
-  drawingEnabled = false,
-  drawing = null,
+  annotationEnabled = false,
+  annotation = null,
+  // The ink Select's pointer rests on (ids, the marks drawn with it), haloed fainter than a pick.
+  hoveredAnnotation = null,
+  // The view on screen as a prompt carries it (`annotation/views.js`), for each mark Annotate puts down.
+  annotationView = null,
   onPerspectiveChange = null,
   onPresentationChange = null,
   onViewerAlertChange = null,
@@ -184,9 +200,8 @@ const ShellViewport = forwardRef(function ShellViewport({
   const [viewPlaneOrientation] = useState(() => createViewPlaneOrientationStore(DEFAULT_VIEW_PLANE_ORIENTATION));
   const setViewPlaneOrientation = viewPlaneOrientation.set;
   const activeViewPlaneFaceRef = useRef("");
-  const previewModeRef = useRef(previewMode);
-  // The presentation camera never becomes the file's stored camera.
-  const previewCameraRef = useRef(null);
+  const previewRef = useRef(preview);
+  useLayoutEffect(() => { runtimeRef.current?.setSuspended?.(suspended); }, [suspended, viewerReadyTick]);
   const perspectivePropRef = useRef(perspective);
   const modelKeyRef = useRef(modelKey);
   const sceneScaleModeRef = useRef(normalizedSceneScaleMode);
@@ -229,8 +244,8 @@ const ShellViewport = forwardRef(function ShellViewport({
   const renderShadowMapSizeRef = useRef(renderShadowMapSize);
   renderShadowMapSizeRef.current = renderShadowMapSize;
 
-  // Render's studio is a lazy chunk. The shell normally warms it; this is the
-  // backstop for a cold cache and a session restored straight into Render.
+  // Render's studio is a lazy chunk. The shell warms it once a model is on screen; this is the
+  // backstop for Preview entered before that warm-up has landed.
   const [studioSceneTick, setStudioSceneTick] = useState(() => (studioScene() ? 1 : 0));
   useEffect(() => {
     if (!renderMode || studioScene()) return undefined;
@@ -242,9 +257,9 @@ const ShellViewport = forwardRef(function ShellViewport({
         viewerAlertChangeRef.current?.({
           severity: "error",
           summary: "Render unavailable",
-          title: "Couldn't load the Render studio",
-          message: "The photographic studio is fetched the first time Render is opened, and that request did not complete.",
-          recovery: "Check the connection to the viewer and reload the page, then switch to Render again.",
+          title: "Couldn't load Preview's lighting",
+          message: "Preview's photographic lighting is fetched the first time Preview is opened, and that request did not complete.",
+          recovery: "Check the connection to the viewer and reload the page, then open Preview again.",
           details: String(loadError?.message || loadError)
         });
         console.error("Failed to load the Render studio chunk", loadError);
@@ -263,7 +278,7 @@ const ShellViewport = forwardRef(function ShellViewport({
     // routine never rescales the ground under the model. Its lights and its height follow the model.
     const studioState = studio.applyPhotographicStudio(runtime.THREE, runtime, configuration, {
       bounds, groundBounds: runtime.zeroPoseBounds || null,
-      sceneScale: normalizedSceneScaleMode, shadowMapSize: renderShadowMapSizeRef.current,
+      shadowMapSize: renderShadowMapSizeRef.current,
       // While a routine plays or a pose is dragged, the floor shadow's heights are measured at
       // most this often (its cast shadow still follows every frame), and once more at rest, in
       // a frame of their own that keeps the shadow maps.
@@ -292,13 +307,13 @@ const ShellViewport = forwardRef(function ShellViewport({
   const coordinateSystemFor = useCallback(() => STORED_CAMERA_COORDINATES, []);
   const {
     activateViewPlaneFace, orbitFromViewCube, applyInitialPerspective, emitPerspectiveChange,
-    resetZoomAndPan, syncPreviewCamera, syncViewPlaneOrientation
+    resetZoomAndPan, syncViewPlaneOrientation
   } = useViewportCamera({
-    coordinateSystemFor, activeViewPlaneFaceRef, previewCameraRef,
-    lastEmittedPerspectiveRef, cameraMovedRef, modelBounds: scene?.restBounds || scene?.bounds || null, modelKey, modelKeyRef,
-    modelTransformRef, perspectiveChangeRef, perspectivePropRef, perspectiveRef, previewMode,
-    previewModeRef, previewOrbit: orbitPreview, previewOrbitSpeed, runWithoutPerspectiveEvents, runtimeRef, sceneScaleModeRef, setActiveViewPlaneFace,
-    setViewPlaneOrientation, suppressPerspectiveEventsRef, viewerReadyTick
+    coordinateSystemFor, activeViewPlaneFaceRef,
+    lastEmittedPerspectiveRef, cameraMovedRef, modelBounds: scene?.restBounds || scene?.bounds || null, modelKeyRef,
+    modelTransformRef, perspectiveChangeRef, perspectivePropRef, perspectiveRef,
+    runWithoutPerspectiveEvents, runtimeRef, sceneScaleModeRef, setActiveViewPlaneFace,
+    setViewPlaneOrientation, suppressPerspectiveEventsRef
   });
   // The open-time fit is taken under the lens the viewport opens with, and the file's own
   // projection arrives a moment later. CONVERTING that fit to the other projection is not the
@@ -326,7 +341,7 @@ const ShellViewport = forwardRef(function ShellViewport({
   const refitOpenFraming = useCallback((runtime) => {
     const framing = runtime.interactiveFraming;
     const target = runtime.controls?.target;
-    if (!runtime.openFitPending || runtime.userMovedCamera || previewModeRef.current
+    if (!runtime.openFitPending || runtime.userMovedCamera
       || runtime.cameraTransition || !framing?.bounds || !target) return false;
     const fitted = zoomRuntimeToBounds(runtime, framing.bounds, sceneScaleModeRef.current, {
       animate: false, modelOffset: modelTransformRef.current.offset,
@@ -349,10 +364,22 @@ const ShellViewport = forwardRef(function ShellViewport({
   }, []);
 
   const hasViewportContent = Boolean(scene);
-  const drawingOverlayActive = drawingEnabled && !previewMode && hasViewportContent;
-  const { drawingControllerRef, handleDrawingContent, handleDrawingReady, followDrawingViewport } = useDrawingViewLock({
-    active: drawingOverlayActive, sketch: drawing?.sketch ?? 0, drawing, runtimeRef, mountRef, viewerReadyTick
-  });
+  const annotationOverlayActive = annotationEnabled && hasViewportContent;
+  // The annotation's ink in the model (`tools/annotate/annotation3d.js`), from every angle, Annotate up or not: each
+  // change to it draws it again.
+  const items = annotation?.items;
+  const annotationRef = useRef(annotation);
+  annotationRef.current = annotation;
+  // The annotation's ink in the scene, mounted once it has some and kept for the runtime: each change
+  // draws only the marks it adds.
+  const annotationMount = useRef(null);
+  useEffect(() => () => { annotationMount.current?.dispose(); annotationMount.current = null; }, [viewerReadyTick]);
+  useEffect(() => {
+    const runtime = runtimeRef.current;
+    if (!runtime?.scene || !runtime?.THREE) return;
+    if (!annotationMount.current && items?.length) annotationMount.current = mountAnnotations(runtime);
+    annotationMount.current?.update(items || [], annotation?.selected || [], hoveredAnnotation || []);
+  }, [items, annotation?.selected, hoveredAnnotation, viewerReadyTick]);
 
   useImperativeHandle(ref, () => ({
     async prepareViewSettings(nextScene, signal) {
@@ -361,19 +388,28 @@ const ShellViewport = forwardRef(function ShellViewport({
         const studio = await loadStudioScene();
         signal.throwIfAborted();
         if (runtime?.renderer && nextScene.view.lighting.enabled) {
-          runtime.studioEnvironmentCache ??= createStudioEnvironmentCache();
-          await runtime.studioEnvironmentCache.prepare(studio, runtime.renderer,
+          await studioEnvironmentCacheFor(runtime).prepare(studio, runtime.renderer,
             nextScene.render.configuration, nextScene.quality.environmentMapSize, signal, runtime.environmentResource);
         }
       }
     },
     presentViewSettings() { return runtimeRef.current?.viewUpdateGate?.present(); },
+    // Whether WebGL runs on a software renderer (SwiftShader, llvmpipe): the runtime's own fact,
+    // read once as it was made (`useViewerRuntime.js`).
+    softwareRendering() { return runtimeRef.current?.softwareRendering === true; },
+    // How far the picture on screen has converged: Render's studio frame's samples drawn of those
+    // it takes (`studioFrame.js`), or null where there is no frame to converge (anything but lit Render).
+    pictureProgress() {
+      const studioFrame = runtimeRef.current?.photographicStudio?.frame;
+      return studioFrame ? { sample: studioFrame.sample, samples: studioFrame.samples } : null;
+    },
     // The viewport produces pixels. Its host owns clipboard and prompt delivery.
+    // The view as it is on screen, the annotation's ink in it (it is in the model).
     async captureScreenshotBlob() {
       await viewUpdateBindingRef.current?.whenReady();
       const runtime = runtimeRef.current;
       if (!runtime?.renderer || !runtime?.scene || !runtime?.camera) throw new Error("The viewer is not ready");
-      return await buildCompositeScreenshotBlob(runtime, drawingControllerRef.current?.inkCanvas() || null, {
+      return await buildCompositeScreenshotBlob(runtime, {
         backgroundColor: resolveElementBackgroundColor(runtime.renderer.domElement)
       });
     },
@@ -396,6 +432,35 @@ const ShellViewport = forwardRef(function ShellViewport({
       return readScopedPerspectiveSnapshot(runtimeRef.current, {
         modelKey, sceneScaleMode: normalizedSceneScaleMode, coordinateSystem: STORED_CAMERA_COORDINATES
       });
+    },
+    // The annotation's mark under a point of the page (client pixels), by its id: what Select picks
+    // before a part. Null over no ink. A touch reaches further (`TOUCH_HIT_PX`) than a cursor.
+    annotationAt(clientX, clientY, pointerType = "") {
+      const runtime = runtimeRef.current, element = runtime?.renderer?.domElement;
+      const marks = annotationRef.current?.items;
+      if (!runtime || !element || !marks?.length) return null;
+      const rect = element.getBoundingClientRect();
+      const screen = annotationsOnScreen(runtime, marks, { width: rect.width, height: rect.height });
+      return annotationAt({ x: clientX - rect.left, y: clientY - rect.top }, screen, pointerType === "touch" ? TOUCH_HIT_PX : undefined)[0]?.id ?? null;
+    },
+    // The camera as a snapshot job says it, and the viewport's size: a prompt's view
+    // (`annotation/views.js`), including the actual projection and lens. The equivalent half-height
+    // also lets annotation view grouping detect perspective zooms and pans.
+    promptCamera() {
+      const runtime = runtimeRef.current;
+      const camera = runtime?.camera, target = runtime?.controls?.target, element = runtime?.renderer?.domElement;
+      if (!camera || !target || !(element?.clientWidth > 0) || !(element?.clientHeight > 0)) return null;
+      const halfHeight = camera.isOrthographicCamera
+        ? Math.abs(camera.top - camera.bottom) / 2 / (camera.zoom || 1)
+        : camera.position.distanceTo(target) * Math.tan(runtime.THREE.MathUtils.degToRad(camera.getEffectiveFOV()) / 2);
+      return {
+        camera: { position: camera.position.toArray(), target: target.toArray(), up: camera.up.toArray(), orthographicHalfHeight: halfHeight,
+          ...(camera.isPerspectiveCamera ? { zoom: camera.zoom } : {}) },
+        display: { camera: camera.isPerspectiveCamera
+          ? { projection: "perspective", focalLength: camera.getFocalLength() }
+          : { projection: "orthographic" } },
+        width: element.clientWidth, height: element.clientHeight
+      };
     },
     setPerspective(nextPerspective, options = {}) {
       // A camera somebody hands the viewport (the live `setCamera`) replaces the open-time fit,
@@ -433,8 +498,8 @@ const ShellViewport = forwardRef(function ShellViewport({
     }
   }), [activateViewPlaneFace, modelKey, normalizedSceneScaleMode, resetZoomAndPan, scene]);
 
-  // Read-only debug/test seam: the LIVE camera of the viewport that mounted last, so a
-  // browser test can assert that moving a model leaves the framing exactly where it was.
+  // Read-only debug/test seam: the LIVE camera of the view on screen, so a browser test can
+  // assert that moving a model leaves the framing exactly where it was.
   useEffect(() => {
     const read = () => {
       const active = runtimeRef.current;
@@ -460,12 +525,21 @@ const ShellViewport = forwardRef(function ShellViewport({
       const ground = active?.photographicStudio?.ground || null;
       return active ? { gridRadius: active.gridRadius ?? null, bounds: active.modelBounds || null,
         floorZ: active.modelFloorZBelowModel ?? null, studioGroundZ: active.photographicGroundZ ?? null,
-        studioGround: ground ? { size: ground.scale.x, center: [ground.position.x, ground.position.y] } : null } : null;
+        studioGround: ground ? { size: ground.scale.x, center: [ground.position.x, ground.position.y] } : null,
+        // How many planes cut the model just now (Clip).
+        cut: (active.activeClipPlanes || []).length,
+        // How far Render's picture has converged (`pictureProgress`).
+        studioFrame: active.photographicStudio?.frame ? { sample: active.photographicStudio.frame.sample, samples: active.photographicStudio.frame.samples } : null } : null;
     };
+    // The view on screen answers: Preview's while it is open, and as it closes the view it
+    // covered (the editor's) answers again.
+    const covered = { __cadCamera: window.__cadCamera, __cadStage: window.__cadStage };
     Object.assign(window, { __cadCamera: read, __cadStage: stage });
     return () => {
-      if (window.__cadCamera === read) delete window.__cadCamera;
-      if (window.__cadStage === stage) delete window.__cadStage;
+      for (const [name, own] of [["__cadCamera", read], ["__cadStage", stage]]) {
+        if (window[name] !== own) continue;
+        if (covered[name]) window[name] = covered[name]; else delete window[name];
+      }
     };
   }, []);
   useEffect(() => { perspectiveChangeRef.current = onPerspectiveChange; }, [onPerspectiveChange]);
@@ -503,9 +577,9 @@ const ShellViewport = forwardRef(function ShellViewport({
   }, []);
 
   useViewerRuntime({
-    mountRef, runtimeRef, previewModeRef, setError, setViewerReadyTick, viewerTheme, emitPerspectiveChange,
+    mountRef, runtimeRef, previewRef, setError, setViewerReadyTick, viewerTheme, emitPerspectiveChange,
     setActiveViewPlaneFace, activeViewPlaneFaceRef, stepCameraTransition, stepKeyboardOrbit, getActiveViewPlaneFaceId,
-    cancelCameraTransition, clearKeyboardOrbitState, isTrackpadLikeWheelEvent, isPinchWheelEvent, WHEEL_PINCH_DELTA_BOOST,
+    cancelCameraTransition, clearKeyboardOrbitState, isTrackpadLikeWheelEvent, orbitControlsBoostsPinch, WHEEL_PINCH_DELTA_BOOST,
     getKeyboardOrbitCommand, getKeyboardOrbitAxes, applyOrbitDelta, getViewerThemeValue, getPixelRatioCap,
     applySceneBackground, onViewportResize: handleViewportResize, applyInitialPerspective,
     updateGridHelper: updateActiveGridHelper, disposeScene: releaseScene,
@@ -611,6 +685,10 @@ const ShellViewport = forwardRef(function ShellViewport({
     (window.__viewerSurfaceLooks ||= { count: 0 }).count += 1;
     runtime.requestRender();
   }, [scene, surfaceLook, receiveShadows, viewerReadyTick]);
+
+  // The model effects on the scene, after its look (`useSceneEffects.js`).
+  useSceneEffects({ runtimeRef, scene, displaySettings, enabled: sceneEffects, look: surfaceLook, loading: isLoading,
+    viewerReadyTick, onBoundsChanged: () => syncSceneBounds() });
 
   // The look: lighting rig or studio, background, floor, grid and axes.
   useEffect(() => {
@@ -724,7 +802,7 @@ const ShellViewport = forwardRef(function ShellViewport({
         return;
       }
       if (!runtime.environmentResource || runtime.environmentResourceIdentity !== resourceIdentity) {
-        const nextResource = runtime.studioEnvironmentCache?.get(resourceIdentity)
+        const nextResource = studioEnvironmentCacheFor(runtime).get(resourceIdentity)
           || studio.createEnvironmentResource(runtime.renderer, renderConfiguration, { size: renderEnvironmentMapSize });
         const previousResource = runtime.environmentResource;
         runtime.scene.environment = null;
@@ -763,24 +841,21 @@ const ShellViewport = forwardRef(function ShellViewport({
       runtime.interactionState.restoreTimerId = 0;
     }
     clearKeyboardOrbitState(runtime.keyboardOrbitState);
-    // Preview installs a camera of its own and leaving restores the file's own: neither
-    // is the open-time fit, so the viewport stops treating the pose as its to re-fit.
-    runtime.openFitPending = false;
-    // The orbit is preview's alone, and runs at preview's full pixel ratio (`renderProfile.js`).
-    const orbitActive = previewMode && orbitPreview && previewOrbitSpeed > 0;
+    // The orbit is Preview's alone, and runs at its full pixel ratio (`previewViewScene.js`).
+    const orbitActive = preview && orbit && orbitSpeed > 0;
     runtime.previewOrbitEnabled = orbitActive;
     runtime.orbitControlsLastTimestamp = 0;
     runtime.controls.autoRotate = orbitActive;
-    runtime.controls.autoRotateSpeed = PREVIEW_AUTO_ROTATE_SPEED * previewOrbitSpeed;
-    if (previewMode) runtime.controls.enabled = true;
-    if (!drawingOverlayActive) runtime.controls.enableDamping = true;
+    runtime.controls.autoRotateSpeed = PREVIEW_AUTO_ROTATE_SPEED * orbitSpeed;
+    if (preview) runtime.controls.enabled = true;
+    runtime.controls.enableDamping = true;
     runtime.controls.dampingFactor = DEFAULT_DAMPING_FACTOR;
     if (orbitActive) {
       cancelCameraTransition(runtime, { scheduleIdle: false });
       runtime.beginInteraction?.();
     } else runtime.scheduleIdleQuality();
     runtime.requestRender();
-  }, [previewMode, orbitPreview, previewOrbitSpeed, drawingOverlayActive, viewerReadyTick]);
+  }, [preview, orbit, orbitSpeed, viewerReadyTick]);
 
   // Everything that follows where the scene IS, and nothing that frames it: lighting and
   // shadow reach and the floor's height. The ground's SIZE comes from the rest
@@ -847,7 +922,9 @@ const ShellViewport = forwardRef(function ShellViewport({
     // The camera's reach covers the box it frames as well as what is placed: a package framed on
     // its declared box from its first publish may have only a corner of itself on screen yet.
     controls.maxDistance = Math.max(Math.max(radius, framingRadius) * 140, 50);
-    controls.zoomSpeed = DEFAULT_ZOOM_SPEED;
+    // At rest, between gestures: on a touch page a pinch is OrbitControls' own dolly at this speed, so
+    // a commit must not leave it at a desktop wheel's (a first pinch after a load zoomed ~22x for 2x).
+    controls.zoomSpeed = restingZoomSpeed(prefersCoarsePointer());
 
     // The camera is framed by the pass that runs AFTER this render's lens and projection have
     // been applied; a commit from a child's effect that lands ahead of them leaves it to that pass.
@@ -882,7 +959,7 @@ const ShellViewport = forwardRef(function ShellViewport({
       const restorable = reframe === "model" || reframe === "mode"
         || (reframe === "complete" && restoredCameraModelKeyRef.current === (modelKey || ""));
       runWithoutPerspectiveEvents(() => {
-        const restored = !previewModeRef.current && restorable && storedMatches
+        const restored = restorable && storedMatches
           && applyPerspectiveSnapshot(runtime, nextPerspective, { scheduleIdle: false });
         restoredCameraModelKeyRef.current = restored ? (modelKey || "") : "";
         // Only a camera the viewer chose is the viewer's to re-fit when the viewport changes.
@@ -919,8 +996,6 @@ const ShellViewport = forwardRef(function ShellViewport({
     }
     setError("");
     runtime.requestRender();
-    // Also handles opening preview before the first scene arrives.
-    syncPreviewCamera(runtime);
     markPresentationReady(runtime);
   };
   const adoptSceneRef = useRef(adoptScene);
@@ -1023,20 +1098,19 @@ const ShellViewport = forwardRef(function ShellViewport({
           />
         </div>
       ) : null}
-      {drawingOverlayActive ? <DrawingOverlay drawing={drawing} onReady={handleDrawingReady} onContentChange={handleDrawingContent} onViewportChange={followDrawingViewport} /> : null}
+      {annotationOverlayActive ? <AnnotationOverlay annotation={annotation} runtimeRef={runtimeRef} viewOf={annotationView} /> : null}
       {overlay}
       {/* The cube is the tools view's: preview has no cube to draw or keep in step with the orbit,
           a model still loading has none to orient, and a compact view (`viewCube`) has no room. */}
-      {viewCube && !previewMode && !isLoading && <div className="pointer-events-none absolute inset-0">
+      {viewCube && !isLoading && <div className="pointer-events-none absolute inset-0">
       <ViewPlaneControl
         showViewPlane
-        disabled={drawingOverlayActive}
         isLoading={isLoading}
         meshData={scene}
-        // Close into the bottom-left corner, under its actions: the cube's box is larger than the
-        // cube, whose labels overhang it.
-        viewPlaneOffsetLeft={VIEWPORT_CORNER_INSET_PX}
-        viewPlaneOffsetBottom={VIEWPORT_CUBE_BOTTOM_PX}
+        // Close into the bottom-right corner, clear of the file sidebar down the left: the cube's box
+        // is larger than the cube, whose labels overhang it.
+        viewPlaneOffsetRight={VIEWPORT_CORNER_INSET_PX}
+        viewPlaneOffsetBottom={VIEWPORT_CUBE_BOTTOM}
         viewPlaneSize={VIEWPORT_CUBE_SIZE}
         compact={false}
         activeViewPlaneFace={activeViewPlaneFace}

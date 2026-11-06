@@ -86,9 +86,6 @@ test("STEP keeps the full capability set", () => {
   const step = renderCapabilities(RENDER_FORMAT.STEP);
   assert.equal(step.parts, true);
   assert.equal(step.topology, true);
-  assert.equal(step.exploded, true);
-  assert.equal(step.displayModes, true);
-  assert.equal(step.clip, true);
   assert.equal(step.params, PARAMETER_SOURCE.SIDECAR);
   assert.equal(step.artifactManaged, true);
 });
@@ -98,21 +95,9 @@ test("a plain mesh is the minimal row", () => {
     const row = renderCapabilities(format);
     assert.equal(row.parts, false);
     assert.equal(row.topology, false);
-    assert.equal(row.measure, false);
     assert.equal(row.params, null);
     assert.equal(row.artifactManaged, false);
   }
-});
-
-test("Measure is a STEP tool", () => {
-  // It snaps to B-rep faces, edges and vertices. A mesh offers only triangle corners,
-  // which measured little anyone wanted, so no other format has the tool.
-  for (const format of Object.values(RENDER_FORMAT)) {
-    assert.equal(hasCapability(format, "measure"), format === RENDER_FORMAT.STEP, format);
-  }
-  assert.equal(hasCapability(RENDER_FORMAT.STEP, "measure"), true);
-  assert.equal(hasCapability(RENDER_FORMAT.URDF, "measure"), false);
-  assert.equal(hasCapability(RENDER_FORMAT.DXF, "measure"), false);
 });
 
 test("STEP is the only artifact-managed format", () => {

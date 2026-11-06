@@ -52,30 +52,33 @@ and matching do not load the component.
 `prepare` returns `{ data, dispose? }`. FileViewer opens a file's document when the
 file is shown, and again only on `reload`: a renderer follows its file's changes
 itself (every CAD renderer loads the next revision behind what is on screen). A CAD
-file's controls are panels of its own tool stack, over the viewport, shown by the
-tool they belong to ([the design system](settings-ui.md#the-tool-stack)).
+file's controls are its own, over the viewport: its tool strip, the tool in hand's
+sub-toolbar, and its file sidebar
+([the design system](settings-ui.md#the-file-sidebar-and-the-tool-stack)); the view's
+controls (Display, Preview) are the navbar's, last at its right end.
 
-Below 720px of its own width FileViewer is mobile (`useViewerMobile`). The width is a
+Below 600px of its own width FileViewer is mobile (`useViewerMobile`). The width is a
 breakpoint boolean, never a pixel value, so a resize within one layout does not
 re-render the renderer.
 
 A renderer is handed, besides its document: `onNavigationActionsChange`, for its
 nav-row actions (`FileNavigationAction`, with an optional shorter `hint`), hidden
-while it reports `onReady(false)`; `displayActions`, the host's controls for the
-Display settings; `appearance`; and `onOpenFile(path)`, which shows another file, by
+while it reports `onReady(false)`; `appearance`; and `onOpenFile(path)`, which shows another file, by
 its absolute path, in this view (a robot's mesh), absent where the view shows its file alone. Its loading and update status are its
 own to show: a CAD renderer shows them in its viewport. Host-specific pages are supplied through `presentation`,
 without duplicating the view's placement: `home` is a host's own page for a view with
-no file (every CAD host's model library), with no navbar over it; `loading`; and
+no file (every CAD host's model library), under the navbar; `loading`; and
 `error({ message, missing })` for a file that will not open, `missing` when it does
 not exist. Per-file renderer state is also accepted during a departing renderer's
 cleanup, while it still belongs to the same source.
 
 ## The navbar and the explorer
 
-The navbar is drawn over every file from the moment one is asked for, and never over
-the home, for a `compact` view (a picture: the home's thumbnails) or while a renderer
-shows its file fullscreen. Left to right:
+The navbar is drawn over every file from the moment one is asked for, and over the
+host's home — only its logo and menu, without Back to files, Back and Forward where the
+host keeps the view's history, and the host's update and Full size, where they stand over
+a file — never for a `compact` view (a
+picture: the home's thumbnails); the CAD viewer's Preview keeps it. Over a file, left to right:
 
 - the text-to-cad "C" logo (named Menu, with no chevron), which opens the app menu
   (`navigation/AppMenu.jsx`): Back to files where the host has a home
@@ -97,10 +100,9 @@ at rest, the same accent background while the pointer is on it and while its men
 pointer cursor, and no tooltip.
 
 At the right, only what a host or a file adds: the host's update button, a renderer's
-actions, the host's Full size, where the host shows the view small, and last the box for
-the renderer's own view controls, which FileViewer hands it as `navbarSlot` (a 3D view's
-Display and Preview). Last, so that a renderer showing its file fullscreen, which puts the
-navbar away, can draw its own controls where they sat.
+actions and the host's Full size, where the host shows the view small. A renderer's
+own view controls (a 3D view's Display and Preview, or Preview's settings and Exit preview)
+go last, in the box FileViewer hands it (`navbarSlot`, `data-view-controls`).
 
 The explorer (`navigation/FolderExplorer.jsx`) is a popover under the file's name, a
 fixed 18rem wide and never resized. It floats over the view, so opening it resizes
