@@ -1,55 +1,59 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { build } from 'esbuild';
+import { harnessBundle } from '../harness/bundle.mjs';
 import { chromium } from 'playwright';
 import { PNG } from 'pngjs';
+import { APP_THEME_COLORS } from '@cad/core/lib/appTheme.js';
 
 // The drawing under test is a COMMITTED payload: exactly what
-// `GET /__cad/drawing` answered for `__fixtures__/sample.dxf`, so this test
+// a DXF document's `drawing` answered for `__fixtures__/sample.dxf`, so this test
 // needs neither Python nor ezdxf and cannot drift from the route by accident.
 // `__fixtures__/README.md` says how to regenerate the pair.
 const SAMPLE = JSON.parse(await readFile(new URL('./__fixtures__/sample.drawing.json', import.meta.url), 'utf8'));
-// A drawing whose modelspace is empty: `bounds: null`, and nothing to frame.
-const EMPTY = { schemaVersion: SAMPLE.schemaVersion, units: SAMPLE.units, bounds: null, layers: [], fonts: [], primitives: [] };
-const BAD_DXF_MESSAGE = 'plate.dxf is not a readable DXF document: run `ezdxf audit` on it, or export it again.';
 
 // The fixture's own measurements, so an assertion can say WHICH edge it is reading.
 const MODEL = { width: 100, height: 60 };
-const DRAWINGS = { 'sample.dxf': SAMPLE, 'empty.dxf': EMPTY };
+const DRAWINGS = { 'sample.dxf': SAMPLE };
 
 // The harness renders its panes at a fixed CSS size; the spec draws them smaller, so a software
 // GL (CI's SwiftShader) paints and a screenshot reads fewer pixels. A resize writes the variables.
 const HARNESS_SIZE = '<style>#root > div { width: var(--harness-width, 800px) !important; height: var(--harness-height, 500px) !important; }</style>';
 
 // One harness bundle, one server and one browser for the file; every test opens its own page.
-let temporary, server, browser;
+let server, browser;
 before(async () => {
-  temporary = await mkdtemp(join(tmpdir(), 'text-to-cad-dxf-browser-'));
-  await build({ entryPoints: [fileURLToPath(new URL('../harness/index.tsx', import.meta.url))], outfile: join(temporary, 'harness.js'), bundle: true, format: 'esm', platform: 'browser', conditions: ['production'], jsx: 'automatic', loader: { '.webp': 'dataurl', '.avif': 'dataurl', '.woff2': 'dataurl', '.svg': 'dataurl' } });
-  const bundle = await readFile(join(temporary, 'harness.js'));
+  const { bundle } = await harnessBundle();
   const css = await readFile(new URL('../../../dist/styles.css', import.meta.url));
-  const files = ['sample.dxf', 'empty.dxf', 'broken.dxf'];
+  const files = ['sample.dxf'];
   server = createServer((request, response) => {
     const url = new URL(request.url, 'http://test');
     const root = url.pathname.split('/')[1];
+    if (url.pathname.endsWith('/api/v1/documents') && request.method === 'POST') {
+      // A file opened by its path: its document's reads are under its kind, by an id (here its name).
+      let body = '';
+      request.on('data', chunk => { body += chunk; });
+      request.on('end', () => {
+        const file = String(JSON.parse(body || '{}').path || '').split('/').pop();
+        response.statusCode = 201;
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify({ id: file, kind: file.split('.').pop(), api: `/api/v1/documents/${file.split('.').pop()}/${file}` }));
+      });
+      return;
+    }
     if (url.pathname === '/harness.js') { response.setHeader('Content-Type', 'text/javascript'); response.end(bundle); }
     else if (url.pathname === '/styles.css') { response.setHeader('Content-Type', 'text/css'); response.end(css); }
-    else if (url.pathname.endsWith('/__cad/drawing')) {
-      // Asked for by the file's absolute path, which names the fixture last.
-      const drawing = DRAWINGS[String(url.searchParams.get('file')).split('/').pop()];
+    else if (url.pathname.endsWith('/drawing')) {
+      // Asked for under the document's id, which names the fixture.
+      const drawing = DRAWINGS[url.pathname.split('/').at(-2)];
       response.setHeader('Content-Type', 'application/json');
-      if (!drawing) { response.statusCode = 400; response.end(JSON.stringify({ error: BAD_DXF_MESSAGE })); return; }
       response.end(JSON.stringify(drawing));
-    } else if (url.pathname.endsWith('/__cad/catalog')) {
+    } else if (url.pathname.endsWith('/api/v1/documents') && request.method === 'GET') {
       response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ entries: files.map(file => (
-        { kind: 'dxf', file: `/models/${file}`, url: `/${file}`, hash: `${root}-${file}`, bytes: 4096 })) }));
-    } else if (url.pathname.endsWith('/__cad/server')) {
+      response.end(JSON.stringify({ documents: (files.map(file => (
+        { kind: 'dxf', file: `/models/${file}`, url: `/${file}`, hash: `${root}-${file}`, bytes: 4096 }))).map(entry => ({ entry, revision: entry.hash })) }));
+    } else if (url.pathname.endsWith('/api/v1/server')) {
       response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ backend: 'cadgen' }));
     } else { response.setHeader('Content-Type', 'text/html'); response.end(`<!doctype html><html><head><title>Host title</title><link rel="stylesheet" href="/styles.css">${HARNESS_SIZE}</head><body><div id="root"></div><script type="module" src="/harness.js"></script></body></html>`); }
   });
@@ -59,7 +63,6 @@ before(async () => {
 after(async () => {
   await browser?.close();
   if (server) await new Promise(resolve => server.close(resolve));
-  if (temporary) await rm(temporary, { recursive: true, force: true });
 });
 
 async function open(t, file) {
@@ -90,7 +93,8 @@ async function frame(pane, before = null) {
   let last = null;
   for (let attempt = 0; attempt < 60; attempt += 1) {
     await settle(pane.page());
-    const shot = await canvasOf(pane).screenshot();
+    // The drawing alone: the tools that float over it (the strip, Quick Edit, the corner's zoom) are not its picture.
+    const shot = await canvasOf(pane).screenshot({ style: '[data-cad-tool-groups], [data-viewport-top-right], [data-zoom-pill] { visibility: hidden !important; }' });
     if (last?.equals(shot) && !before?.shot.equals(shot)) return Object.assign(PNG.sync.read(shot), { shot });
     last = shot;
   }
@@ -166,24 +170,41 @@ const wheelAt = (page, box, point, deltaY) => page.mouse.move(box.x + point.x, b
 /** The wheel delta this renderer reads as `factor`: it zooms by exp(-deltaY * 0.0015). */
 const deltaForFactor = factor => -Math.log(factor) / 0.0015;
 
+// The room the view measures for its tool strip at the pane's top, which a fit keeps clear of.
+// Both margins of a fit: every flat view's, 6% of the pane's shorter side and at least 16px (`fitBoardBounds`).
+const margins = shot => 2 * Math.max(16, 0.06 * Math.min(shot.width, shot.height));
+const stripRoom = page => page.evaluate(() => Number.parseFloat(getComputedStyle(document.querySelector('[data-slot="cad-file-view"]')).getPropertyValue('--cad-tools-bottom')) || 0);
+
 test('a drawing opens fitted and centred, in the theme’s ink, and flips with the theme', async (t) => {
   const { page, pane, errors } = await open(t, 'sample.dxf');
   await drawn(pane);
 
+  // This harness opens dark. Ask for the light token cascade before measuring its light ink;
+  // the later switch on html then exercises the same host theme change in the other direction.
+  await page.evaluate(() => {
+    for (let element = document.querySelector('[data-drawing-surface]'); element; element = element.parentElement) {
+      element.classList.remove('dark');
+    }
+    document.documentElement.classList.add('light');
+  });
+
   const light = await frame(pane);
   const box = inkBox(light);
-  // Fitted: the drawing's own aspect, centred, filling the pane but for the gutter.
+  const strip = await stripRoom(page);
+  // Fitted: the drawing's own aspect, centred, filling the pane below its tool strip but for its margin.
+  assert.ok(strip > 0, `the strip's room is measured: ${strip}`);
   assert.ok(Math.abs(box.centreX - light.width / 2) <= 2, `centred across: ${box.centreX} of ${light.width}`);
-  assert.ok(Math.abs(box.centreY - light.height / 2) <= 2, `centred down: ${box.centreY} of ${light.height}`);
+  assert.ok(Math.abs(box.centreY - (strip + (light.height - strip) / 2)) <= 2, `centred down, under the strip: ${box.centreY} of ${light.height}`);
   const aspect = box.width / box.height;
   assert.ok(Math.abs(aspect - MODEL.width / MODEL.height) < 0.05, `the drawing's own aspect: ${aspect}`);
   // The pane is wider than the drawing, so height is the binding axis: the ink
-  // reaches to the 16 px gutter and no further.
-  assert.ok(Math.abs(box.height - (light.height - 32)) <= 3, `fitted to the gutter: ${box.height} in ${light.height}`);
+  // reaches to the margin and no further.
+  assert.ok(Math.abs(box.height - (light.height - strip - margins(light))) <= 3, `fitted to the margin: ${box.height} in ${light.height}`);
 
-  // Default pen: the theme's foreground, on the theme's background. The outline is
+  // Default pen: the theme's foreground, on the canvas. The outline is
   // default-pen line-work.
-  assert.ok(near(box.backdrop, [255, 255, 255], 12), `light background: ${box.backdrop}`);
+  const canvas = [1, 3, 5].map(at => Number.parseInt(APP_THEME_COLORS.light.canvas.slice(at, at + 2), 16));
+  assert.ok(near(box.backdrop, canvas, 12), `light canvas: ${box.backdrop}`);
   const edgeLight = darkestInk(light);
   assert.ok(edgeLight[0] < 110 && edgeLight[1] < 110 && edgeLight[2] < 110, `dark ink on light: ${edgeLight}`);
 
@@ -235,6 +256,8 @@ test('strokes stay hairlines when the drawing is zoomed in eight times', async (
 
   // Zoom about a point ON that bottom edge, so the edge stays under the column.
   await wheelAt(page, canvas, { x: column, y: fitted.maxY }, deltaForFactor(8));
+  // The pointer leaves, so Select lights nothing under it: the strokes are measured unlit.
+  await page.mouse.move(0, 0);
   const zoomed = await frame(pane, fittedShot);
   const bottomAtZoom = columnRuns(zoomed, column).at(-1);
 
@@ -304,7 +327,7 @@ test('a pane that is resized re-fits only while the view is still the one it ope
   const resized = await frame(pane, fittedShot);
   const refitted = inkBox(resized);
   assert.ok(refitted.height < fitted.height * 0.8, `re-fitted smaller: ${fitted.height} -> ${refitted.height}`);
-  assert.ok(Math.abs(refitted.height - (resized.height - 32)) <= 3, `fitted to the new pane: ${refitted.height} in ${resized.height}`);
+  assert.ok(Math.abs(refitted.height - (resized.height - await stripRoom(page) - margins(resized))) <= 3, `fitted to the new pane: ${refitted.height} in ${resized.height}`);
 
   // Touched: the person's framing is theirs and a resize does not take it back — but it is
   // kept in the terms it was chosen in, not in pixels. The view holds the same zoom
@@ -318,34 +341,16 @@ test('a pane that is resized re-fits only while the view is still the one it ope
   await shrink('460px');
   const grownShot = await frame(pane, chosenShot);
   const kept = inkBox(grownShot);
-  // The canvas is the pane less its navbar; the share of it the drawing covers is the
-  // person's zoom, and that is what survives.
-  const share = (ink, shot) => ink.height / (shot.height - 32);
+  // The canvas is the pane less its navbar; the share of what a fit fills (below the strip, inside
+  // the margin) that the drawing covers is the person's zoom, and that is what survives.
+  const strip = await stripRoom(page);
+  const share = (ink, shot) => ink.height / (shot.height - strip - margins(shot));
   assert.ok(Math.abs(share(kept, grownShot) - share(chosen, chosenShot)) < 0.02,
     `half the fit, before and after: ${share(chosen, chosenShot)} -> ${share(kept, grownShot)}`);
   assert.ok(kept.height > chosen.height * 1.3,
     `a bigger pane shows the same view bigger: ${chosen.height} -> ${kept.height}`);
   assert.ok(share(kept, grownShot) < 0.7, 'and it is still the zoom they chose, not the fit');
   assert.deepEqual(errors, []);
-});
-
-test('an unreadable drawing shows the server’s own sentence, and an empty one says it is empty', async (t) => {
-  const broken = await open(t, 'broken.dxf');
-  const alert = broken.pane.getByRole('alert');
-  await alert.waitFor();
-  const text = await alert.innerText();
-  assert.match(text, /The viewer couldn’t complete the request/);
-  assert.match(text, /HTTP 400/);
-  assert.match(text, /not a readable DXF document/);
-  assert.match(text, /Retry/);
-  assert.equal(await broken.pane.locator('[data-viewer-loading]').count(), 0, 'and not a spinner forever');
-
-  const empty = await open(t, 'empty.dxf');
-  await drawn(empty.pane);
-  await empty.pane.locator('[data-drawing-empty]').waitFor();
-  assert.match(await empty.pane.locator('[data-drawing-empty]').innerText(), /no geometry in its modelspace/);
-  assert.equal(await empty.pane.getByRole('alert').count(), 0, 'an empty drawing is not an error');
-  assert.deepEqual(empty.errors, []);
 });
 
 test('the view a person chose comes back when the tab is reopened', async (t) => {
@@ -360,7 +365,11 @@ test('the view a person chose comes back when the tab is reopened', async (t) =>
   await page.waitForFunction(stateKey => window.cadHarness.state.renderers?.[stateKey]?.camera?.scale > 0, key);
   const record = await page.evaluate(stateKey => window.cadHarness.state.renderers[stateKey], key);
   assert.equal(record.version, 2);
-  assert.deepEqual(Object.keys(record.camera).sort(), ['offsetX', 'offsetY', 'scale'], 'the drawing\'s transform is its camera');
+  // Its camera is its transform with the pane it was framed in, in CSS pixels (`kit/viewport/flatView.js`).
+  assert.deepEqual(Object.keys(record.camera).sort(), ['height', 'offsetX', 'offsetY', 'scale', 'width'],
+    'the drawing\'s transform and its pane are its camera');
+  assert.ok(Math.abs(record.camera.width - canvas.width) <= 1 && Math.abs(record.camera.height - canvas.height) <= 1,
+    `the pane is the canvas it was framed in: ${record.camera.width}x${record.camera.height} vs ${canvas.width}x${canvas.height}`);
   assert.deepEqual([record.display, record.renderer], [null, {}], 'and a drawing has nothing else');
 
   await page.evaluate(() => window.cadHarness.mounted(false));

@@ -1,3 +1,5 @@
+import { syncMaterialClipPlanes } from "./clipPlane.js";
+import { useSurfaceBrdf } from "./surfaceBrdf.js";
 import { resolveMaterialFillBaseColor, shapeSourceColor } from "./surfaceMaterials.js";
 
 // The viewer's surface LOOK over a scene somebody else authored: the Display
@@ -11,10 +13,28 @@ import { resolveMaterialFillBaseColor, shapeSourceColor } from "./surfaceMateria
 // A look is plain data:
 //   { materialSettings,     resolved display material settings
 //                           (`resolveDisplayMaterialSettings`): fills, colour
-//                           grading and the finish channels
+//                           grading and the finish channels (a `specularIntensity`
+//                           among them replaces the authored one)
 //     authored: boolean,    true: keep each material's own finish, sidedness and
 //                           source colours (photographic Render)
-//     surface: { style: "shaded" | "flat", opacity } }
+//     surface: { style: "shaded" | "flat", opacity },
+//     colorPower?: number,  the colour of every surface without a finish of its own, and
+//                           of every fill, linear, raised to this power (1: as written,
+//                           unless a scene's own look says otherwise: `lib/xbf/xbfLook.js`)
+//     brdf?: string,        the surface model the lit surfaces are drawn by (a name of
+//                           `surfaceBrdf.js`'s `SURFACE_BRDFS`); three's own when absent,
+//                           and in an authored look always
+//     finishes?: boolean }  false: no surface keeps a finish or a glow its file authored, and
+//                           every colour is raised to `colorPower` (a scene's own look that
+//                           draws none: X-ray's, `lib/xbf/xbfLook.js`)
+//
+// A surface drawn see-through (it writes no depth) steps a hair forward in the depth test, and one that
+// writes depth keeps its family's step (`surfaceOffset`), whatever the look.
+//
+// A material marked `userData.cadAuthoredFinish` (a finish its file authored, which the
+// scene asks to keep) keeps it in the shaded looks too -- opaque, its source colour shown --
+// reflecting the scene's environment; in every other look (a fill, X-ray, Flat) it wears the
+// look's finish like any other surface.
 //
 // Colour modes are the material settings' own: `overrideSourceColors` paints every
 // part with a fill (one colour, or the palette cycled per mesh: in traversal
@@ -27,6 +47,24 @@ const clamp01 = (value, fallback = 0) => {
   return Number.isFinite(number) ? Math.min(Math.max(number, 0), 1) : fallback;
 };
 
+// Where a surface stands in the depth test. One that writes depth keeps the step its family gives it (an engine
+// document's step back a hair, so the edges on them win: `xbfScene.js`); one that writes none, a see-through
+// surface, steps a hair forward instead. Lying on an opaque surface (a diffuser on its baffle, a pane on its
+// frame), it is then in front of it at every pixel, where at one depth the two would be decided pixel by pixel by
+// how each one's triangles round their depth, in shards. It writes no depth, so it hides nothing by the step, the
+// edges on it included. OCCT's stills draw by the same rule (`render/occt.py`'s `SEE_THROUGH_OFFSET`).
+export const SEE_THROUGH_OFFSET = Object.freeze({ polygonOffset: true, polygonOffsetFactor: 0, polygonOffsetUnits: -4 });
+
+/**
+ * The polygon offset a surface is drawn at: `own` (its family's: `polygonOffset`, `polygonOffsetFactor` and
+ * `polygonOffsetUnits`) where it writes depth, `SEE_THROUGH_OFFSET` where it writes none.
+ */
+export function surfaceOffset(depthWrite, own = null) {
+  if (!depthWrite) return SEE_THROUGH_OFFSET;
+  return { polygonOffset: Boolean(own?.polygonOffset), polygonOffsetFactor: Number(own?.polygonOffsetFactor) || 0,
+    polygonOffsetUnits: Number(own?.polygonOffsetUnits) || 0 };
+}
+
 function litMaterial(material) {
   return Boolean(material?.isMeshStandardMaterial);
 }
@@ -37,6 +75,9 @@ function readAuthored(material) {
     opacity: material.opacity,
     transparent: material.transparent,
     depthWrite: material.depthWrite,
+    // The step it was made with, which it keeps while it writes depth (`surfaceOffset`).
+    offset: { polygonOffset: material.polygonOffset, polygonOffsetFactor: material.polygonOffsetFactor,
+      polygonOffsetUnits: material.polygonOffsetUnits },
     side: material.side,
     vertexColors: material.vertexColors,
     map: material.map || null,
@@ -49,6 +90,22 @@ function readAuthored(material) {
 // Inspect wears a physical stand-in that starts as the authored material, maps
 // included, and the authored material itself is only ever touched by settings
 // that apply to it (colour mode, opacity) and is always written back in full.
+// What an authored finish is beyond a colour: what its stand-in copies from it in a shaded
+// look, and resets to a plain surface's in any other.
+const FINISH_KEYS = Object.freeze(["roughness", "metalness", "clearcoat", "clearcoatRoughness", "ior", "anisotropy",
+  "anisotropyRotation", "transmission", "thickness", "attenuationDistance"]);
+
+function plainFinish(THREE) {
+  const plain = new THREE.MeshPhysicalMaterial();
+  const found = Object.fromEntries(FINISH_KEYS.map(key => [key, plain[key]]));
+  found.attenuationColor = plain.attenuationColor.clone();
+  plain.dispose();
+  return found;
+}
+
+// How strongly an authored material answers light specularly (a standard one: three's default).
+const authoredSpecular = (material) => (material.isMeshPhysicalMaterial ? material.specularIntensity : 1);
+
 function inspectStandIn(THREE, authored) {
   if (authored.isMeshPhysicalMaterial) return authored.clone();
   const material = new THREE.MeshPhysicalMaterial();
@@ -61,11 +118,15 @@ function inspectStandIn(THREE, authored) {
  * Take over the lit materials under `root`. Materials shared between meshes are
  * un-shared first (a per-part palette needs one colour per mesh); those clones
  * and the stand-ins Inspect and "Flat" wear are this object's to dispose.
- * Textures stay with whoever authored them.
+ * Textures stay with whoever authored them. Clip's planes (`setClipPlanes`) cut every material under
+ * `root`, the stand-ins a later look puts on included.
  *
- * @returns {{ apply(look: object | null): void, dispose(): void, meshCount: number }}
+ * @returns {{ apply(look: object | null): void, setClipPlanes(planes: object[]): void, dispose(): void,
+ *   meshCount: number }}
  */
 export function createSurfaceLook(THREE, root) {
+  let clipPlanes = [];
+  let plain = null;
   const slots = [];
   const seen = new Set();
   const owned = new Set();
@@ -102,22 +163,29 @@ export function createSurfaceLook(THREE, root) {
     const forceFill = Boolean(look) && settings.overrideSourceColors === true;
     const flat = look?.surface?.style === "flat";
     const opacityScale = look?.surface ? clamp01(look.surface.opacity, 1) : 1;
+    const power = Number(look?.colorPower) > 0 ? Number(look.colorPower) : 1;
+    const finishes = look?.finishes !== false;
     for (const entry of slots) {
       const { lit, authored } = entry;
       const sourceColored = lit.userData?.cadSourceColor !== false;
       const filled = forceFill || (!authoredLook && !sourceColored);
       const fillIndex = settings.cycleColors === true ? entry.fillIndex : 0;
-      const color = filled ? resolveMaterialFillBaseColor(THREE, settings, fillIndex)
+      let color = filled ? resolveMaterialFillBaseColor(THREE, settings, fillIndex)
         : authoredLook || authored.vertexColors ? authored.color
           : shapeSourceColor(THREE, authored.color, settings);
+      if (power !== 1 && (filled || !finishes || lit.userData?.cadAuthoredFinish !== true)) {
+        color = new THREE.Color(color.r ** power, color.g ** power, color.b ** power);
+      }
       const opacity = clamp01(authored.opacity * opacityScale, 1);
+      const depthWrite = authored.transparent ? authored.depthWrite : opacity >= 0.999;
       const next = {
         map: forceFill ? null : authored.map,
         vertexColors: forceFill ? false : authored.vertexColors,
         side: authoredLook ? authored.side : THREE.DoubleSide,
         transparent: authored.transparent || opacity < 0.999,
         opacity,
-        depthWrite: authored.transparent ? authored.depthWrite : opacity >= 0.999
+        depthWrite,
+        ...surfaceOffset(depthWrite, authored.offset)
       };
       let target = lit;
       if (flat) {
@@ -125,25 +193,55 @@ export function createSurfaceLook(THREE, root) {
         target = entry.unlit ||= new THREE.MeshBasicMaterial({ name: lit.name });
       } else if (!authoredLook) {
         target = entry.inspect ||= inspectStandIn(THREE, lit);
-        for (const key of ["roughness", "metalness", "clearcoat", "clearcoatRoughness"]) target[key] = clamp01(settings[key]);
-        target.envMapIntensity = Math.max(Number(settings.envMapIntensity) || 0, 0);
+        const finish = lit.userData?.cadAuthoredFinish === true;
+        const preserveFinish = finish && finishes && !forceFill && opacityScale >= 0.999;
+        if (preserveFinish) {
+          // Standard materials have no Physical-only channels. Keep their authored
+          // fields and use neutral Physical defaults for the stand-in's other fields.
+          plain ||= plainFinish(THREE);
+          for (const key of FINISH_KEYS) target[key] = lit[key] ?? plain[key];
+          target.attenuationColor.copy(lit.attenuationColor || plain.attenuationColor);
+          target.specularIntensity = authoredSpecular(lit);
+          target.envMapIntensity = 1;
+        } else {
+          if (finish) {
+            plain ||= plainFinish(THREE);
+            for (const key of FINISH_KEYS) target[key] = plain[key];
+            target.attenuationColor.copy(plain.attenuationColor);
+          }
+          for (const key of ["roughness", "metalness", "clearcoat", "clearcoatRoughness"]) target[key] = clamp01(settings[key]);
+          target.specularIntensity = settings.specularIntensity === undefined ? authoredSpecular(lit) : clamp01(settings.specularIntensity);
+          target.envMapIntensity = Math.max(Number(settings.envMapIntensity) || 0, 0);
+        }
         // The viewer lifts its surfaces by a trace of their own colour. A part that
-        // authored a glow of its own keeps it.
-        if (!authored.glows) {
+        // authored a glow of its own keeps it, where the look keeps finishes.
+        if (authored.glows && finishes) {
+          target.emissive.copy(lit.emissive);
+          target.emissiveIntensity = lit.emissiveIntensity;
+        } else if (!authored.glows || !finishes) {
           target.emissive.copy(color);
           target.emissiveIntensity = clamp01(settings.emissiveIntensity);
         }
       }
-      const programChanged = ["map", "vertexColors", "side", "transparent"].some((key) => target[key] !== next[key]);
+      const brdfChanged = !flat && target !== lit && useSurfaceBrdf(THREE, target, look?.brdf ?? null);
+      const programChanged = brdfChanged || ["map", "vertexColors", "side", "transparent"].some((key) => target[key] !== next[key]);
       Object.assign(target, next);
       target.color.copy(color);
+      // Clip takes the normal base hue, before selection/hover ink is applied.
+      if (entry.slot === 0) entry.mesh.userData.cadBaseColor = color.clone();
       if (programChanged) target.needsUpdate = true;
+      syncMaterialClipPlanes(target, clipPlanes);
       assign(entry, target);
     }
   }
 
   return {
     apply,
+    setClipPlanes(planes) {
+      clipPlanes = Array.isArray(planes) ? planes : [];
+      // The caps' own stencils are cut by the planes they cap (`sectionCaps.js`).
+      root?.traverse?.((object) => { if (object?.isMesh && object.name !== "Section stencil") syncMaterialClipPlanes(object.material, clipPlanes); });
+    },
     meshCount: meshIndex,
     dispose() {
       apply(null);

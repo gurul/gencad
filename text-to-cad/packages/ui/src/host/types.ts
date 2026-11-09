@@ -1,33 +1,46 @@
-import type { PromptContextPort } from '@text-to-cad/core/prompt';
+import type { PromptContextPort } from '@cad/core/prompt';
 import type { FileActions, FileSource } from '../file-viewer/types.js';
+import type { ControlCount } from '../usage/controls.js';
 
 /** Environmental effects are supplied by the app; shared UI never discovers a clipboard. */
 export interface ClipboardPort {
   /**
-   * `text` may still be on its way (a copied Quick Edit whose sketch is being saved): the write
+   * `text` may still be on its way (a copied Quick Edit whose annotation is being saved): the write
    * starts inside the gesture that asked for it and takes the text when it arrives.
    */
   writeText(text: string | Promise<string>): Promise<void>;
-  readText(): Promise<string>;
+  /** Read where the host exposes paste from its clipboard. */
+  readText?(): Promise<string>;
   writeImage(image: Blob | Promise<Blob>): Promise<void>;
 }
 /**
- * Where a picture a prompt names by path is kept: a copied Quick Edit is text, so its sketch is
- * saved as a file on this machine and the text names it. `save` answers the file's absolute path.
- * `createHttpAttachmentStore` (`@text-to-cad/core/client`) is the viewer server's.
+ * A Quick Edit's .snapshot.json, made at Copy/Queue/Send: shared input, inline annotation
+ * and measurements, with one job per drawn view (`cad <type> snapshot --annotation PACKET --camera authored` draws each),
+ * and, from a board, the references the prompt names in it (`references`: its selectors, which `--job` lights).
+ * `create` returns compact inline JSON up to 1024 UTF-8 bytes, otherwise writes it and answers its path; `read` fetches it. `createHttpPromptFiles` (`@cad/core/client`) is the
+ * viewer server's.
  */
-export interface AttachmentStore {
-  save(image: Blob, name: string): Promise<string>;
+export interface PromptFiles {
+  create(request: {
+    name: string; input: string;
+    views: Array<Record<string, unknown> & { label: string }>;
+    annotation: Record<string, unknown> | null;
+    references?: string[];
+  }): Promise<{ snapshot: string; inline?: never } | { inline: string; snapshot?: never }>;
+  read(path: string): Promise<Blob>;
 }
 /**
  * What the app menu links to — the running version (its release notes), the source and the
  * community — and how a link is followed. Build it with
- * `viewerLinks` (`@text-to-cad/ui/links`), which fills in the defaults.
+ * `viewerLinks` (`@cad/ui/links`), which fills in the defaults.
  */
 export interface ViewerLinks {
-  /** The version this host runs, as the app menu shows it (`0.7.4`). */
+  /**
+   * The version this host runs, as the app menu shows it and a new issue names it: `0.7.4` for the
+   * release's own build, `0.7.4-dev.<build>` for a custom build of it (`viewerLinks`' `build`).
+   */
   version: string;
-  /** That version's release notes. */
+  /** The release notes of the release it is, or a custom build was built on. */
   release: string;
   x: string;
   github: string;
@@ -45,13 +58,25 @@ export interface ViewerLinks {
    */
   open?(url: string): Promise<void>;
 }
+/** One export the page started and has not yet handed to the browser: its request and the name it downloads as. */
+export interface ExportRecord { request: import('@cad/core/client').ExportRequest; filename: string }
+/** The browser's own downloads. No picker, handle or server path crosses this port. */
+export interface DownloadPort {
+  /** Hands the browser a same-origin file URL to download as `filename`; where it goes is the browser's setting. */
+  save(url: string, filename: string): void;
+  /** The exports still under way when the page was last here, to pick up again. */
+  restore?(): ExportRecord[];
+  /** Keeps the exports under way, for `restore` after a reload; never a file. */
+  remember?(value: ExportRecord[]): void;
+}
 export interface ViewerHost {
+  downloads?: DownloadPort;
   files: FileSource;
   fileActions?: FileActions;
   clipboard: ClipboardPort;
   promptContext: PromptContextPort;
-  /** Saves a copied prompt's picture where the prompt can name it. Absent: a copied prompt names none. */
-  attachments?: AttachmentStore;
+  /** Makes a Quick Edit's views and annotation as one snapshot JSON file. Absent: a prompt carries none of them. */
+  promptFiles?: PromptFiles;
   /**
    * Show a file, by its absolute path, in this view: a pick in the explorer, a renderer's link.
    * `home` shows the host's home in this view: its recent models, what it shows with no file. A
@@ -67,15 +92,19 @@ export interface ViewerHost {
   links?: ViewerLinks;
   /**
    * What the person used, for the host to count: its telemetry, never what they made. Absent, nothing is
-   * counted. `quickEdit`: a Quick Edit reached its destination -- copied, queued or sent.
+   * counted. `quickEdit`: a Quick Edit reached its destination -- copied, queued or sent. `controls`: which of
+   * the view's controls a person used since the last report, and how long a tool that stays on was on
+   * (`usage/controls.js`), at most every minute; absent, they are not counted.
    */
-  usage?: { used(feature: 'quickEdit'): void };
+  usage?: { used(feature: 'quickEdit'): void; controls?(counts: ControlCount[]): void };
   /**
    * `platform` names the keyboard's modifiers (⌘ on `darwin`, Ctrl elsewhere); `reducedMotion` is
    * the app's own motion setting, honoured beside the system's `prefers-reduced-motion`. `compact`
    * is a view drawn with no chrome (the library's picture of a model, drawn out of sight): a
    * renderer draws the model alone — not its tools, its view's controls, its cube or its Quick
-   * Edit — and the view has no navbar.
+   * Edit — and the view has no navbar. `locale` is the language the view reads in, as the host
+   * resolved it (`@cad/ui/i18n`'s `useLanguage`: the person's choice, else what the context
+   * infers); one it does not speak, or none, reads English.
    */
-  environment: { colorScheme: 'light' | 'dark'; platform?: string; reducedMotion?: boolean; compact?: boolean };
+  environment: { colorScheme: 'light' | 'dark'; locale?: string; platform?: string; reducedMotion?: boolean; compact?: boolean };
 }

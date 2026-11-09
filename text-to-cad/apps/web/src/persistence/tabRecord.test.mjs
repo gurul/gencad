@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const temporary = await mkdtemp(join(tmpdir(), 'text-to-cad-web-tab-'));
 const output = join(temporary, 'tab.mjs');
 await build({
-  stdin: { contents: `export * from './persistence/tabRecord.ts'; export { createTabStore, TAB_RECORD_VERSION } from '@text-to-cad/ui/tab-store';`, resolveDir: fileURLToPath(new URL('../', import.meta.url)) },
+  stdin: { contents: `export * from './persistence/tabRecord.ts'; export { createTabStore, TAB_RECORD_VERSION } from '@cad/ui/tab-store';`, resolveDir: fileURLToPath(new URL('../', import.meta.url)) },
   bundle: true, platform: 'node', conditions: ['production'], format: 'esm', outfile: output, loader: { '.webp': 'dataurl', '.avif': 'dataurl', '.css': 'empty' },
   // The tab store reaches the shared column's width bounds through a React module; nothing of it renders here.
   external: ['react', 'react-dom', 'lucide-react', 'radix-ui'],
@@ -27,11 +27,11 @@ test('the web adapter keeps the whole tab record under one sessionStorage key, a
   const store = createTabStore(sessionTabRecord(storage));
   assert.equal(storage.entries.size, 0, 'construction reads and writes nothing');
   assert.deepEqual(store.settings.getSnapshot().appearance, 'system');
-  store.settings.update({ appearance: 'dark', toolStack: { panels: { tree: { width: 240 } }, collapsed: {}, closed: { tree: true } } });
+  store.settings.update({ appearance: 'dark', toolStack: { panels: { tree: { width: 240 } }, collapsed: {} } });
   store.files.write('/m/a.step', 'step', { version: 2, camera: null, display: null, renderer: {} });
   const stored = JSON.parse(storage.getItem(TAB_RECORD_KEY));
   assert.equal(stored.version, TAB_RECORD_VERSION);
-  assert.deepEqual([stored.settings.appearance, stored.settings.toolStack], ['dark', { panels: { tree: { width: 240 } }, collapsed: {}, closed: { tree: true } }]);
+  assert.deepEqual([stored.settings.appearance, stored.settings.toolStack], ['dark', { panels: { tree: { width: 240 } }, collapsed: {} }]);
   assert.deepEqual(Object.keys(stored.files), [JSON.stringify(['/m/a.step', 'step'])]);
   assert.deepEqual([...storage.entries.keys()], [TAB_RECORD_KEY], 'one key, nothing else');
   // The same storage again is the same tab reloaded; another storage is another tab.
@@ -53,4 +53,12 @@ test('a storage that is blocked or holds junk is a tab at its defaults, and a bl
   assert.equal(createTabStore(sessionTabRecord(junk)).settings.getSnapshot().appearance, 'system');
   junk.setItem(TAB_RECORD_KEY, JSON.stringify({ version: 0, settings: { appearance: 'dark' } }));
   assert.equal(createTabStore(sessionTabRecord(junk)).settings.getSnapshot().appearance, 'system', 'another version is the defaults');
+});
+
+
+test("index.html's first paint reads the tab record's current version, so a tab left in Dark never flips", async () => {
+  const { readFile } = await import('node:fs/promises');
+  const html = await readFile(new URL('../../index.html', import.meta.url), 'utf8');
+  const [, version] = html.match(/record\.version === (\d+)/) || [];
+  assert.equal(Number(version), TAB_RECORD_VERSION);
 });

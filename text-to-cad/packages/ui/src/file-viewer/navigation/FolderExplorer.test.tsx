@@ -45,7 +45,7 @@ it('starts in the open file\'s folder: a press opens a subfolder inline, a doubl
   await screen.findByText('b.step');
   expect(rows()).toEqual(['directory:/home/me/models/parts/brackets', 'file:/home/me/models/parts/brackets/b.step', `file:${FILE}*`]);
   expect([brackets.getAttribute('aria-expanded'), brackets.style.paddingLeft, row('/home/me/models/parts/brackets/b.step').style.paddingLeft])
-    .toEqual(['true', '8px', '18px']);
+    .toEqual(['true', '5px', '15px']);
   // Its rows hang from a faint line under its chevron, as every tree's do.
   expect([brackets.querySelectorAll('[data-tree-guide]').length,
     row('/home/me/models/parts/brackets/b.step').querySelectorAll('[data-tree-guide]').length]).toEqual([0, 1]);
@@ -84,6 +84,27 @@ it('walks the rows on screen by keyboard: Right opens a folder inline and Left c
   expect(document.activeElement).toBe(row(FILE));
   fireEvent.keyDown(brackets, { key: 'ArrowLeft' });
   expect(rows()).toEqual(['directory:/home/me/models/parts/brackets', `file:${FILE}*`]);
+});
+
+it("walks its rows by every tree's keys (`tree-keys`): Right into an open folder, Left up to a row's folder, Home and End, Up back to the filter", async () => {
+  render(<FolderExplorer source={{ list: vi.fn(list), search: vi.fn() }} file={FILE} onOpen={vi.fn()} />);
+  await screen.findByText('brackets');
+  const brackets = row('/home/me/models/parts/brackets'), inner = '/home/me/models/parts/brackets/b.step';
+  brackets.focus();
+  fireEvent.keyDown(brackets, { key: 'ArrowRight' });
+  await screen.findByText('b.step');
+  // Open, Right goes into it; from what it holds, Left goes up to it, and on it Left closes it.
+  fireEvent.keyDown(brackets, { key: 'ArrowRight' });
+  expect(document.activeElement).toBe(row(inner));
+  fireEvent.keyDown(row(inner), { key: 'ArrowLeft' });
+  expect(document.activeElement).toBe(brackets);
+  fireEvent.keyDown(brackets, { key: 'End' });
+  expect(document.activeElement).toBe(row(FILE));
+  fireEvent.keyDown(row(FILE), { key: 'Home' });
+  expect(document.activeElement).toBe(brackets);
+  // Up from the first row is the filter's again.
+  fireEvent.keyDown(brackets, { key: 'ArrowUp' });
+  expect(document.activeElement).toBe(screen.getByRole('textbox'));
 });
 
 it('keeps every crumb whole: the folders that do not fit beside the one it is in go into the ellipsis, the farthest first', async () => {

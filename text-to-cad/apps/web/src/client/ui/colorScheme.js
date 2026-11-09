@@ -1,5 +1,5 @@
 // The app's appearance: System, Light or Dark. It is one of the tab's settings
-// (`settings.appearance` of the tab record, `@text-to-cad/ui/tab-store`); this module says what
+// (`settings.appearance` of the tab record, `@cad/ui/tab-store`); this module says what
 // the ids are and how System resolves against the OS, and applies the answer to the document.
 export const SYSTEM_COLOR_SCHEME_ID = "system";
 export const LIGHT_COLOR_SCHEME_ID = "light";
@@ -7,9 +7,9 @@ export const DARK_COLOR_SCHEME_ID = "dark";
 export const DEFAULT_COLOR_SCHEME_ID = SYSTEM_COLOR_SCHEME_ID;
 
 export const COLOR_SCHEMES = Object.freeze([
-  { id: SYSTEM_COLOR_SCHEME_ID, label: "System" },
-  { id: LIGHT_COLOR_SCHEME_ID, label: "Light" },
-  { id: DARK_COLOR_SCHEME_ID, label: "Dark" }
+  { id: SYSTEM_COLOR_SCHEME_ID, label: "System", key: "appearance.system" },
+  { id: LIGHT_COLOR_SCHEME_ID, label: "Light", key: "appearance.light" },
+  { id: DARK_COLOR_SCHEME_ID, label: "Dark", key: "appearance.dark" }
 ]);
 
 const KNOWN = new Set(COLOR_SCHEMES.map((option) => option.id));

@@ -52,25 +52,29 @@ claim cost or cycle-time optimization.
 
 ## Reproduce
 
-Use the repository's cadgen/build123d environment, plus trimesh, numpy, rtree,
-networkx, lxml and matplotlib for analysis/figure generation. From this folder:
+Use the repository's development environment (the library with its build123d and
+trimesh extras) for analysis. From this folder (each
+script is described in [`src/README.md`](src/README.md)):
 
 ```sh
 for model in src/*.py; do python "$model"; done
 python scripts/verify.py
-python scripts/figure.py
 ```
 
 From the repository root, run these for `baseline` and `fdm`:
 
 ```sh
-python skills/dfam-check/scripts/dfam_tool.py measure models/dfm-process-comparison/STL/fdm.stl --angle-limit 45
-python skills/dfam-check/scripts/dfam_tool.py orientations models/dfm-process-comparison/STL/fdm.stl --angle-limit 45
+cad stl dfm models/dfm-process-comparison/STL/fdm.stl --process printing --angle-limit 45 --json
+cad stl dfm models/dfm-process-comparison/STL/fdm.stl --process printing --candidates --angle-limit 45 --json
+cad stl dfm models/dfm-process-comparison/STL/injection.stl --process molding --pull z --json
+cad stl dfm models/dfm-process-comparison/STL/injection.stl --process molding --candidates --json
 ```
 
+(The checks above were run with the skills' measurement scripts these commands replaced; the figures are
+the same measurements.)
+
 CAD exports, the facts JSON and scratch images are regenerable and ignored:
-`verify.py` writes `tmp/geometry-facts.json` and `figure.py` writes the share
-image `tmp/manufacturing-comparison.png`. Nothing from a run is committed;
+`verify.py` writes `tmp/geometry-facts.json`. The comparison illustration was authored locally. Nothing from a run is committed;
 rerun the commands above to reproduce the numbers this README quotes.
 
 

@@ -2,29 +2,31 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  DEFAULT_TOOL_STACK, TOOL_PANEL_MIN_HEIGHT, TOOL_PANEL_REFERENCE_HEIGHT, TOOL_PANEL_WIDTH,
-  clampToolPanelHeight, clampToolPanelWidth, normalizeToolStack, toolPanelClosed, toolPanelDefaultHeight
+  DEFAULT_TOOL_STACK, TOOL_PANEL_MIN_HEIGHT, TOOL_PANEL_WIDTH,
+  clampToolPanelHeight, clampToolPanelWidth, flatDetailHeight, normalizeToolStack, toolPanelDefaultHeight
 } from "./toolStackLayout.js";
 
-test("the layout is the sizes a person set, by panel, the folded panels and the closed ones — nothing else, whatever a store hands back", () => {
-  assert.deepEqual(DEFAULT_TOOL_STACK, { panels: {}, collapsed: {}, closed: {} });
+test("the layout is the sizes a person set, by panel, and the folded panels — nothing else, whatever a store hands back", () => {
+  assert.deepEqual(DEFAULT_TOOL_STACK, { panels: {}, collapsed: {} });
   for (const value of [null, undefined, "240", Number.NaN, {}, [], { width: 240, heights: { tree: 300 } }]) {
-    assert.deepEqual(normalizeToolStack(value), { panels: {}, collapsed: {}, closed: {} }, `${JSON.stringify(value)}: an older record's stack width and caps are nobody's`);
+    assert.deepEqual(normalizeToolStack(value), { panels: {}, collapsed: {} }, `${JSON.stringify(value)}: an older record's stack width and caps are nobody's`);
   }
   assert.deepEqual(normalizeToolStack({ panels: { tree: { width: 240.4, height: 300 }, position: { height: 12, width: 12 }, reference: { width: 0 }, "Not an id": { width: 200 }, clip: "wide", sdf: {} },
-    collapsed: { tree: true, sdf: false, "Not an id": true, clip: "yes" }, closed: { tree: true, links: false, "Not an id": true, sdf: 1 } }),
-  { panels: { tree: { width: 240, height: 300 }, position: { width: TOOL_PANEL_WIDTH, height: TOOL_PANEL_MIN_HEIGHT } }, collapsed: { tree: true, sdf: false }, closed: { tree: true, links: false } },
-  "a size is rounded and bounded, a panel with neither is absent, and only booleans fold or close");
+    collapsed: { tree: true, sdf: false, "Not an id": true, clip: "yes" }, closed: { tree: true } }),
+  { panels: { tree: { width: 240, height: 300 }, position: { width: TOOL_PANEL_WIDTH, height: TOOL_PANEL_MIN_HEIGHT } }, collapsed: { tree: true, sdf: false } },
+  "a size is rounded and bounded, a panel with neither is absent, only booleans fold, and an older record's closed panels are nobody's");
   assert.deepEqual(normalizeToolStack({ panels: { tree: { width: 99999 } } }).panels.tree, { width: 4000 }, "a stored size is bounded; the viewer bounds what is drawn");
 });
 
-test("a closable panel is closed as the person left it, their choice holding in every file, and otherwise as it starts: closed on a phone, and on a desktop as the file says", () => {
-  assert.equal(toolPanelClosed(DEFAULT_TOOL_STACK, "tree"), false, "an assembly's tree starts open on a desktop");
-  assert.equal(toolPanelClosed(DEFAULT_TOOL_STACK, "tree", { startsClosed: true }), true, "a single part's starts closed");
-  assert.equal(toolPanelClosed(DEFAULT_TOOL_STACK, "tree", { mobile: true }), true, "on a phone every tree starts closed");
-  assert.equal(toolPanelClosed({ closed: { tree: false } }, "tree", { mobile: true, startsClosed: true }), false, "opened, it stays open: a part's, and on a phone");
-  assert.equal(toolPanelClosed({ closed: { tree: true } }, "tree"), true, "closed, it stays closed: an assembly's too");
-  assert.equal(toolPanelClosed(null, "tree"), false);
+test("the old shared form of the view's panel's tab, by the kind of file, reads as it was written until the panel drops it: a word for a word, nothing else", () => {
+  assert.deepEqual(normalizeToolStack({ tabs: { board: "layers", schematic: "sheets", "Not an id": "layers", dxf: 3, sdf: "Layers!" } }).tabs,
+    { board: "layers", schematic: "sheets" });
+  assert.equal("tabs" in normalizeToolStack({ tabs: {} }), false, "no tab chosen is no key");
+});
+
+test("the view's panel's old shared width reads as a panel's until the panel drops it; the old floating sidebar's sizes are nobody's", () => {
+  assert.deepEqual(normalizeToolStack({ panels: { flat: { width: 260 }, "sidebar:tree": { width: 200, height: 300 }, "sidebar:position": { width: 240 } } }).panels,
+    { flat: { width: 260 } });
 });
 
 test("every panel is a six-tool strip wide; a resizable one is only ever wider, up to half the viewer", () => {
@@ -44,13 +46,20 @@ test("a panel's cap is bounded by the minimum and by the stack", () => {
   assert.equal(clampToolPanelHeight(300, 0), TOOL_PANEL_MIN_HEIGHT, "an unmeasured stack allows the minimum");
 });
 
-test("a tree or Position opens capped at half the stack on desktop and the whole of it on mobile; the Reference, shorter, at its own height", () => {
-  assert.equal(toolPanelDefaultHeight("tree", 600), 300);
-  assert.equal(toolPanelDefaultHeight("position", 601), 301);
-  assert.equal(toolPanelDefaultHeight("tree", 600, true), 600);
-  assert.equal(toolPanelDefaultHeight("position", 600, true), 600);
-  assert.equal(TOOL_PANEL_REFERENCE_HEIGHT, 144, "a heading, its Copy and four compact rows");
-  assert.equal(toolPanelDefaultHeight("reference", 600), TOOL_PANEL_REFERENCE_HEIGHT);
-  assert.equal(toolPanelDefaultHeight("reference", 600, true), TOOL_PANEL_REFERENCE_HEIGHT);
-  assert.equal(toolPanelDefaultHeight("tree", 0), TOOL_PANEL_REFERENCE_HEIGHT, "an unmeasured stack falls back to a height");
+test("every resizable panel opens capped at the whole stack, on desktop and phone alike: as tall as its content, up to the room there is", () => {
+  assert.equal(toolPanelDefaultHeight(600), 600);
+  assert.equal(toolPanelDefaultHeight(600.4), 600);
+  assert.equal(toolPanelDefaultHeight(0), null, "an unmeasured stack sets no cap yet");
+});
+
+test("the Selected pane is 40% of the panel whatever is picked, with no ceiling, and a person's height wins within the bounds", () => {
+  assert.equal(flatDetailHeight({ panelHeight: 800 }).height, 320);
+  assert.equal(flatDetailHeight({ panelHeight: 1164 }).height, 466, "a tall panel, a tall pane: no 320px ceiling");
+  assert.equal(flatDetailHeight({ panelHeight: 684 }).height, 274);
+  assert.equal(flatDetailHeight({ panelHeight: 900, content: 50 }).height, 360, "what it holds does not size it");
+  assert.equal(flatDetailHeight({ panelHeight: 200 }).height, 96, "never under the minimum");
+  assert.equal(flatDetailHeight({ panelHeight: 900, kept: 200 }).height, 200);
+  assert.deepEqual(flatDetailHeight({ panelHeight: 400, kept: 300 }), { height: 240, max: 240 }, "the lists keep 160px");
+  assert.equal(flatDetailHeight({ panelHeight: 0 }).height, 96, "unmeasured: the minimum");
+  assert.equal(flatDetailHeight({ panelHeight: 900, kept: 200, draft: 400 }).height, 400, "a drag wins over the kept height");
 });

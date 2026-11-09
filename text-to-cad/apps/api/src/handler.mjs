@@ -1,13 +1,14 @@
 /**
- * api.texttocad.dev: what cadgen talks to -- the version feed its daily check reads, and the receiver
- * cadgen's telemetry is sent to -- served by this project's one function (`api/v1.js`, which vercel.json
+ * api.texttocad.dev: what text-to-cad talks to -- the version feed its hourly check reads, and the receiver
+ * text-to-cad's telemetry is sent to -- served by this project's one function (`api/v1.js`, which vercel.json
  * sends every /v1 path to). A plain fetch handler over a `store` (PostHog's, posthog.mjs), so the host it runs on and
  * the service behind it can change without a release of anything that calls it (README.md).
  *
  *   GET    /v1/versions        the version feed, PyPI's latest (versions.mjs) -> 200, the same for everyone,
  *                              or 503 while PyPI cannot be read and nothing has been
  *   POST   /v1/events          a batch of counts (events.mjs) -> 204
- *   POST   /v1/forget          {install}: forget everything sent under an install id -> 204
+ *   POST   /v1/forget          {install}: forget everything sent under an install id -> 204, or 429 past
+ *                              the limit per address and per install id (limit.mjs)
  *   GET    /v1/health          -> 200, or 503 naming a missing setting (posthog.mjs: SETTINGS)
  *                              or PostHog's status when it will not take the project's keys
  *
@@ -50,7 +51,7 @@ const RELEASE = /^\d{1,3}\.\d{1,3}\.\d{1,3}$/;
 const senderOf = batch => {
   const parts = [];
   if (Number.isInteger(batch?.schema) && batch.schema >= 0 && batch.schema < 100) parts.push(`schema ${batch.schema}`);
-  if (typeof batch?.version === 'string' && RELEASE.test(batch.version)) parts.push(`cadgen ${batch.version}`);
+  if (typeof batch?.version === 'string' && RELEASE.test(batch.version)) parts.push(`release ${batch.version}`);
   return parts.length ? ` (${parts.join(', ')})` : '';
 };
 // Which endpoint, by a name of ours: a path is the caller's to choose.
@@ -72,9 +73,10 @@ async function json(request) {
  *   ready(): Promise<void> }} store `ready`: throws when the service will not take a batch (health asks).
  * @param {{ missing?: string[], country?: string | null, versions?: () => Promise<object | null> }} [options] `missing`: settings the host
  *   lacks, by name (health says so). `country`: where the host places the request, from its IP address.
- *   `versions`: the version feed (versions.mjs).
+ *   `versions`: the version feed (versions.mjs). `limiter`: how often one caller may ask to forget (limit.mjs),
+ *   by `client`, the address the host says the request came from, and by install id.
  */
-export async function handle(request, store, { missing = [], country, versions } = {}) {
+export async function handle(request, store, { missing = [], country, versions, limiter, client } = {}) {
   const { pathname } = new URL(request.url);
   const path = pathname.replace(/\/+$/, '');
   let batch; // what /v1/events parsed, for the line a refusal logs
@@ -98,7 +100,7 @@ export async function handle(request, store, { missing = [], country, versions }
       }
       return reply(200, { ok: true });
     }
-    // No browser posts here. cadgen posts from Python's urllib, which sends no Origin header, while a
+    // No browser posts here. text-to-cad posts from Python's urllib, which sends no Origin header, while a
     // browser sends one with every POST, a form's, `sendBeacon`'s and a no-cors fetch's included. And only
     // JSON is read, which a page can post to another site only after a CORS preflight nothing here approves.
     if (request.method === 'POST') {
@@ -107,7 +109,7 @@ export async function handle(request, store, { missing = [], country, versions }
     }
     if (path === '/v1/events' && request.method === 'POST') {
       batch = await json(request);
-      // Crashes that are never cadgen's bug go no further (noise.mjs), counted in one line by name.
+      // Crashes that are never text-to-cad's bug go no further (noise.mjs), counted in one line by name.
       const { rows, dropped } = withoutNoise(rowsOf(batch));
       if (dropped.size) console.info(`telemetry dropped ${[...dropped].map(([name, n]) => `${name} ${n}`).join(', ')}${senderOf(batch)}`);
       if (rows.length) await store.insert(rows, { country: COUNTRY.test(country ?? '') ? country : null });
@@ -115,9 +117,27 @@ export async function handle(request, store, { missing = [], country, versions }
     }
     // The id rides in the body, never the path: the host's request logs keep each path beside the
     // caller's IP address, and must never pair the two.
+    // Each deletion spends the service's personal key, so one caller -- an address, or an install id from
+    // anywhere -- may ask only so often (limit.mjs): beyond that, a 429 saying when to ask again, which a
+    // client takes as a deletion it still owes.
     if (path === '/v1/forget' && request.method === 'POST') {
+      const limited = key => {
+        const taken = limiter.take(key);
+        if (taken.ok) return null;
+        const refused = refuse(429, path, 'too many requests');
+        refused.headers.set('retry-after', String(taken.retryAfter));
+        return refused;
+      };
+      if (limiter && client) {
+        const refused = limited(`address ${client}`);
+        if (refused) return refused;
+      }
       const { install } = await json(request) ?? {};
       if (!isUuid(install)) return refuse(400, path, 'not an install id');
+      if (limiter) {
+        const refused = limited(`install ${install.toLowerCase()}`);
+        if (refused) return refused;
+      }
       await store.forget(install);
       return reply(204);
     }
