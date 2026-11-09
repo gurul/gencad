@@ -239,3 +239,25 @@ test("a disabled floor shadow hides, and without shadow maps nothing is baked", 
   contact.dispose();
   assert.equal(contact.object.parent, null);
 });
+
+test("a key that only moved (a still frame's sample of its softbox) re-composites its shadow and keeps the heights", () => {
+  const { scene, keyLight, contact, camera } = studio();
+  const renderer = rendererStub();
+  const frame = () => contact.layer.onBeforeRender(renderer, scene, camera);
+  frame();
+  assert.equal(renderer.calls.heights, 1);
+  const passes = renderer.calls.passes;
+
+  contact.holdHeights(true);
+  contact.sentinel.onBeforeShadow(renderer, contact.sentinel, camera, keyLight.shadow.camera);
+  contact.holdHeights(false);
+  assert.equal(contact.stale, true);
+  frame();
+  assert.equal(renderer.calls.heights, 1, "no caster changed: the heights stand");
+  assert.equal(renderer.calls.passes, passes + 3, "the key's new shadow is composited");
+
+  // Released, a key pass is a change of the casters again.
+  contact.sentinel.onBeforeShadow(renderer, contact.sentinel, camera, keyLight.shadow.camera);
+  frame();
+  assert.equal(renderer.calls.heights, 2);
+});

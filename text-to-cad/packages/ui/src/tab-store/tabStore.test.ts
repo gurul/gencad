@@ -1,6 +1,6 @@
 import { act, renderHook } from '@testing-library/react';
 import { expect, test } from 'vitest';
-import { createTabStore, memoryTabRecord } from './tabStore.js';
+import { PAGE_FILE_LIMIT, createTabStore, memoryTabRecord } from './tabStore.js';
 import { TAB_FILE_LIMIT, TAB_RECORD_VERSION, defaultTabRecord, readTabRecord, tabFileKey, writeTabFile } from './tabRecord.js';
 import { useTabViewerState } from './useTabViewerState.js';
 import { readFileView, writeFileView } from '../renderers/kit/shell/fileView.js';
@@ -11,21 +11,23 @@ test('the record normalizes: every setting to its bounds, the files to well-keye
   expect(TAB_RECORD_VERSION).toBe(2);
   expect(readTabRecord(undefined)).toEqual(defaultTabRecord());
   expect(defaultTabRecord()).toEqual({ version: 2, settings: {
-    toolStack: { panels: {}, collapsed: {}, closed: {} }, appearance: 'system', library: { layout: 'grid' },
+    toolStack: { panels: {}, collapsed: {} }, appearance: 'system', library: { layout: 'grid' }, explorer: { folder: null },
   }, files: {} });
   // A record of the version before (a file tree's width, views under a root) is the defaults.
   for (const raw of [null, 'x', [], { version: 1, settings: { appearance: 'dark', fileTree: { width: 300 } } }, { version: 3, settings: { appearance: 'dark' } }]) {
     expect(readTabRecord(raw), JSON.stringify(raw)).toEqual(defaultTabRecord());
   }
   const record = readTabRecord({ version: 2, settings: {
-    fileTree: { width: 300 },
+    fileTree: { width: 300 }, quickEdit: false, features: { quickEdit: false },
     toolStack: { panels: { tree: { width: 12 } }, collapsed: { tree: true, 'Not an id': true }, closed: { tree: true, sdf: 'no' } },
-    orbit: { speed: 99 }, playback: { autoplay: true }, appearance: 'cinematic', library: { layout: 'shelf' },
+    orbit: { speed: 99 }, playback: { autoplay: true }, appearance: 'cinematic', library: { layout: 'shelf' }, explorer: { folder: 3 },
   }, files: { [tabFileKey('/models/a.step', 'step')]: view(1), '["root","b.step","step"]': view(2), 'junk': view(3), [tabFileKey('/models/c.step', 'step')]: 'not a view' } });
   expect(record.settings).toEqual({
-    toolStack: { panels: { tree: { width: 164 } }, collapsed: { tree: true }, closed: { tree: true } }, appearance: 'system', library: { layout: 'grid' },
+    toolStack: { panels: { tree: { width: 164 } }, collapsed: { tree: true } }, appearance: 'system', library: { layout: 'grid' }, explorer: { folder: null },
   });
   expect(readTabRecord({ version: 2, settings: { library: { layout: 'list' } }, files: {} }).settings.library).toEqual({ layout: 'list' });
+  // The folder the explorer was last in, this tab: where a model's Files starts.
+  expect(readTabRecord({ version: 2, settings: { explorer: { folder: '/home/me/parts' } }, files: {} }).settings.explorer).toEqual({ folder: '/home/me/parts' });
   expect(Object.keys(record.files)).toEqual([tabFileKey('/models/a.step', 'step')]);
 });
 
@@ -44,9 +46,9 @@ test('the files are the file on screen\'s, by absolute path: a write keeps the n
   expect(readTabRecord({ version: 2, settings: {}, files: over }).files).toEqual({ [tabFileKey('/models/49.step', 'step')]: view(49) });
 });
 
-test('leaving a file drops its view: retain keeps the file on screen\'s, whichever renderer wrote it, none for no file, and never a setting', () => {
-  const writes: unknown[] = [];
-  const store = createTabStore({ read: () => undefined, write: record => { writes.push(record); } });
+test('leaving a file sets its view aside for the page: retain keeps the file on screen\'s in the record, whichever renderer wrote it, and gives a file left its view back as it is shown again', () => {
+  const writes: Array<{ files: Record<string, unknown> }> = [];
+  const store = createTabStore({ read: () => undefined, write: record => { writes.push(JSON.parse(JSON.stringify(record))); } });
   store.settings.update({ appearance: 'dark', library: { layout: 'list' } });
   const settings = store.settings.getSnapshot();
   store.files.write('/models/a.step', 'mesh', view('a'));
@@ -54,16 +56,45 @@ test('leaving a file drops its view: retain keeps the file on screen\'s, whichev
   const written = writes.length;
   store.files.retain('/models/a.step');
   expect([store.files.read('/models/a.step', 'mesh'), writes.length]).toEqual([view('a'), written]);
-  // Another file, and no file at all, each drop it.
+  // Another file, and no file at all, each take it out of the record: the tab keeps the file on screen's alone.
   for (const path of ['/models/b.step', null]) {
-    store.files.write('/models/a.step', 'step', view('a'));
+    store.files.write('/models/a.step', 'step', view(`a for ${path}`));
     store.files.retain(path);
     expect(store.getSnapshot().files, String(path)).toEqual({});
+    // Shown again in the same page, it opens as it was left: its view, as its renderer last wrote it, is the record's again.
+    store.files.retain('/models/a.step');
+    expect(store.getSnapshot().files, String(path)).toEqual({
+      [tabFileKey('/models/a.step', 'mesh')]: view('a'), [tabFileKey('/models/a.step', 'step')]: view(`a for ${path}`) });
   }
-  store.files.write('/models/a.step', 'step', view('a'));
+  // A view the record's own limit takes out (another file written over it) is set aside the same way.
+  store.files.write('/models/c.step', 'step', view('c'));
+  expect(Object.keys(store.getSnapshot().files)).toEqual([tabFileKey('/models/c.step', 'step')]);
+  store.files.retain('/models/a.step');
+  expect(store.files.read('/models/a.step', 'step')).toEqual(view('a for null'));
+  // What is set aside is the page's: no write the storage ever saw holds two files' views.
+  expect(writes.every(record => new Set(Object.keys(record.files).map(key => JSON.parse(key)[0])).size <= 1)).toBe(true);
+  // A view removed is gone, from the page too.
   store.files.remove('/models/a.step', 'step');
+  store.files.remove('/models/a.step', 'mesh');
+  store.files.retain('/models/b.step');
+  store.files.retain('/models/a.step');
   expect(store.getSnapshot().files).toEqual({});
   expect(store.settings.getSnapshot()).toBe(settings);
+});
+
+test('the page keeps the newest views of the files it left, and no more', () => {
+  const store = createTabStore(memoryTabRecord());
+  for (let index = 0; index <= PAGE_FILE_LIMIT; index += 1) {
+    store.files.write(`/models/${index}.step`, 'step', view(index));
+    store.files.retain(`/models/${index + 1}.step`);
+  }
+  // The oldest of PAGE_FILE_LIMIT + 1 files left is gone; the rest come back.
+  store.files.retain('/models/0.step');
+  expect(store.getSnapshot().files).toEqual({});
+  store.files.retain('/models/1.step');
+  expect(store.files.read('/models/1.step', 'step')).toEqual(view(1));
+  store.files.retain(`/models/${PAGE_FILE_LIMIT}.step`);
+  expect(store.files.read(`/models/${PAGE_FILE_LIMIT}.step`, 'step')).toEqual(view(PAGE_FILE_LIMIT));
 });
 
 test('the store reads its storage once, writes every change through whole, and publishes a new snapshot per change', () => {
@@ -98,9 +129,9 @@ test('the preferences a renderer reads are the settings: patched by key, normali
   preferences.update({ appearance: 'dark' });
   preferences.update({ toolStack: { panels: { tree: { width: 240, height: 12 } }, collapsed: { sdf: false } } as never });
   expect(preferences.getSnapshot().appearance).toBe('dark');
-  expect(preferences.getSnapshot().toolStack).toEqual({ panels: { tree: { width: 240, height: 64 } }, collapsed: { sdf: false }, closed: {} });
-  preferences.update({ toolStack: { panels: {}, collapsed: {}, closed: {} } });
-  expect(preferences.getSnapshot().toolStack).toEqual({ panels: {}, collapsed: {}, closed: {} });
+  expect(preferences.getSnapshot().toolStack).toEqual({ panels: { tree: { width: 240, height: 64 } }, collapsed: { sdf: false } });
+  preferences.update({ toolStack: { panels: {}, collapsed: {} } });
+  expect(preferences.getSnapshot().toolStack).toEqual({ panels: {}, collapsed: {} });
   expect(preferences.getSnapshot()).toBe(store.getSnapshot().settings);
 });
 
@@ -137,10 +168,10 @@ test('FileViewer\'s state comes from the tab: its file views, kept across a relo
 test("a file view's slices drop by signature while its camera and display are kept, whatever store it came through", () => {
   const store = createTabStore(memoryTabRecord());
   const camera = { position: [1, 2, 3], target: [0, 0, 0], up: [0, 0, 1] };
-  store.files.write('/models/a.step', 'step', writeFileView({ camera, display: { mode: 'render' }, renderer: { tree: { open: ['o1'] } }, signatures: { tree: 'geo:1' } }) as never);
+  store.files.write('/models/a.step', 'step', writeFileView({ camera, display: { mode: 'xray' }, renderer: { tree: { open: ['o1'] } }, signatures: { tree: 'geo:1' } }) as never);
   const reopened = createTabStore(memoryTabRecord(JSON.parse(JSON.stringify(store.getSnapshot()))));
   const same = readFileView(reopened.files.read('/models/a.step', 'step'), { tree: 'geo:1' });
-  expect([same.camera, same.display.mode, same.renderer]).toEqual([camera, 'render', { tree: { open: ['o1'] } }]);
+  expect([same.camera, same.display.mode, same.renderer]).toEqual([camera, 'xray', { tree: { open: ['o1'] } }]);
   const rebuilt = readFileView(reopened.files.read('/models/a.step', 'step'), { tree: 'geo:2' });
-  expect([rebuilt.camera, rebuilt.display.mode, rebuilt.renderer]).toEqual([camera, 'render', {}]);
+  expect([rebuilt.camera, rebuilt.display.mode, rebuilt.renderer]).toEqual([camera, 'xray', {}]);
 });

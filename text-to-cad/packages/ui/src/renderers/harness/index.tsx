@@ -1,28 +1,39 @@
 import { createRoot } from 'react-dom/client';
 import { useState } from 'react';
-import { FileViewer } from '@text-to-cad/ui/file-viewer';
-import type { FileSource } from '@text-to-cad/ui/file-viewer';
-import { createCadClient } from '@text-to-cad/core/client';
-import { createTabStore, memoryTabRecord, useTabViewerState } from '@text-to-cad/ui/tab-store';
-import type { TabRecordStorage, TabStore } from '@text-to-cad/ui/tab-store';
-import { createStepRenderer } from '@text-to-cad/ui/renderers/step';
-import { createDxfRenderer } from '@text-to-cad/ui/renderers/dxf';
-import { createGlbRenderer } from '@text-to-cad/ui/renderers/glb';
-import { createMeshRenderer } from '@text-to-cad/ui/renderers/mesh';
-import { createRobotRenderer } from '@text-to-cad/ui/renderers/robot';
-import { createHarnessRenderer } from '@text-to-cad/ui/renderers/shell-harness';
-import type { ViewerHost } from '@text-to-cad/ui/host';
-import type { CadLiveController } from '@text-to-cad/ui/renderers/step';
-import type { ViewerCommands as CadCommands } from '@text-to-cad/ui/renderers/workspace';
+import { FileViewer } from '@cad/ui/file-viewer';
+import type { FileSource } from '@cad/ui/file-viewer';
+import { createCadClient, createHttpPromptFiles } from '@cad/core/client';
+import { createTabStore, memoryTabRecord, useTabViewerState } from '@cad/ui/tab-store';
+import type { TabRecordStorage, TabStore } from '@cad/ui/tab-store';
+import { createBoardRenderer } from '@cad/ui/renderers/board';
+import { createSchematicRenderer } from '@cad/ui/renderers/schematic';
+import { createDxfRenderer } from '@cad/ui/renderers/dxf';
+import { createGlbRenderer } from '@cad/ui/renderers/glb';
+import { createMeshRenderer } from '@cad/ui/renderers/mesh';
+import { createRobotRenderer } from '@cad/ui/renderers/robot';
+import { createXbfRenderer } from '@cad/ui/renderers/xbf';
+import { createHarnessRenderer } from '@cad/ui/renderers/shell-harness';
+import type { ViewerHost } from '@cad/ui/host';
+import type { LiveViewController } from '@cad/ui/renderers/xbf';
+import type { ViewerCommands as CadCommands } from '@cad/ui/renderers/workspace';
+// The module the built renderers publish their export view through (the CAD Viewer's ExportControls
+// provides it): the same built file, so this harness's provider is the one they reach.
+import { ExportContext } from '../../../dist/export/context.js';
 
 // The one file both panes open, by its absolute path, as a CAD Viewer names files: a fixture server
 // lists each of its files under `/models`, so `?file=arm.urdf` (for a test whose fixture is not the
 // default mesh) is `/models/arm.urdf`.
 const requested = new URLSearchParams(location.search).get('file') || 'part.stl';
 const file = requested.startsWith('/') ? requested : `/models/${requested}`;
+// The host's theme: dark, as the viewer opens, unless `?scheme=light` asks for the light one.
+const colorScheme = new URLSearchParams(location.search).get('scheme') === 'light' ? 'light' as const : 'dark' as const;
+const promptMessages: string[] = [];
 const captures: { file: string; size: number; type: string; references: unknown }[] = [];
 // What a renderer asked the host to open (a mesh a robot description names, say).
 const opened: string[] = [];
+// What the first pane's renderer handed Export, in order: what a host's Export menu would offer.
+const exportViews: unknown[] = [];
+const publishExportView = (view: unknown) => { exportViews.push(view); };
 // The tab store, as a host builds it: over memory by default (a test seeds it through
 // `window.__cadTabRecord`, so "reopen this file" is a real open against a stored record), or over
 // this page's sessionStorage (`?store=session`), so a reload of the page is a reload of the tab
@@ -66,20 +77,21 @@ function workspace(id: string, store: TabStore) {
     search: async () => ({ paths: [file], truncated: false })
   };
   const destination = { kind: (window as unknown as { __cadPromptDestination?: 'clipboard' }).__cadPromptDestination || 'composer' as const, available: true };
-  const host: ViewerHost = { files: source, navigation: { openFile(path) { opened.push(path); } }, environment: { colorScheme: 'dark', platform: keyboardPlatform },
-    clipboard: { writeText: async () => {}, readText: async () => '', writeImage: async () => {} },
+  const host: ViewerHost = { files: source, navigation: { openFile(path) { opened.push(path); } }, environment: { colorScheme, platform: keyboardPlatform },
+    clipboard: { writeText: async text => { promptMessages.push(await text); }, writeImage: async () => {} },
+    promptFiles: createHttpPromptFiles({ origin: `${location.origin}/${id}` }),
     promptContext: { getSnapshot: () => destination, subscribe: () => () => {}, deliver: async context => {
       const attachment = context.parts.find(part => part.kind === 'attachment');
       if (attachment?.kind === 'attachment') { const blob = await attachment.content; captures.push({ file, size: blob.size, type: blob.type, references: context.parts.filter(part => part.kind === 'reference').map(part => part.reference) }); }
       return { status: 'added', partIds: context.parts.map(part => part.id) };
     } }
   };
-  let controller: CadLiveController | null = null;
-  const live = { bind(next: CadLiveController) { controller = next; return () => { controller = null; }; } };
+  let controller: LiveViewController | null = null;
+  const live = { bind(next: LiveViewController) { controller = next; return () => { controller = null; }; } };
   // One live binding per pane: whichever renderer the file selects binds the mounted view.
   const services = { client, preferences: store.settings, commands, live };
   // `harness` is test scaffolding for the shell's own tools; it ships nowhere.
-  const renderers = [createStepRenderer(services), createDxfRenderer(services), createGlbRenderer(services), createMeshRenderer(services), createRobotRenderer(services), createHarnessRenderer(services)];
+  const renderers = [createBoardRenderer(services), createSchematicRenderer(services), createDxfRenderer(services), createGlbRenderer(services), createMeshRenderer(services), createRobotRenderer(services), createXbfRenderer(services), createHarnessRenderer(services)];
   return { client, source, host, renderers, commands, capture, selectReference, get controller() { return controller; } };
 }
 const a = workspace('one', tabStore), b = workspace('two', otherTabStore);
@@ -91,10 +103,10 @@ function App() {
   const { state: otherState, onStateChange: onOtherStateChange } = useTabViewerState(otherTabStore);
   const [second, setSecond] = useState(false);
   const [mounted, setMounted] = useState(true);
-  Object.assign(window, { cadHarness: { a, b, state, otherState, preferences, tabStore, record: tabStore.getSnapshot(), captures, opened, capture: a.capture, selectReference: a.selectReference, second: setSecond, mounted: setMounted } });
-  return <div style={{ display: 'flex', width: '1200px', height: '720px' }}>
+  Object.assign(window, { cadHarness: { a, b, state, otherState, preferences, tabStore, record: tabStore.getSnapshot(), captures, promptMessages, opened, exportViews, capture: a.capture, selectReference: a.selectReference, second: setSecond, mounted: setMounted } });
+  return <div className="dark" style={{ display: 'flex', width: '1200px', height: '720px' }}>
     <section data-testid="one" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-      {mounted && <FileViewer file={file} host={a.host} renderers={a.renderers} state={state} onStateChange={onStateChange} />}
+      {mounted && <ExportContext.Provider value={publishExportView}><FileViewer file={file} host={a.host} renderers={a.renderers} state={state} onStateChange={onStateChange} /></ExportContext.Provider>}
     </section>
     {second && <section data-testid="two" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
       <FileViewer file={file} host={b.host} renderers={b.renderers} state={otherState} onStateChange={onOtherStateChange} />

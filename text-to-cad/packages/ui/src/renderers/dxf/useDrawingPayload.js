@@ -1,5 +1,5 @@
 /**
- * The drawing on screen: `GET /__cad/drawing` for the file (asked again while
+ * The drawing on screen: `GET /api/v1/documents/dxf/<id>/drawing` for the file (asked again while
  * the server renders it: `client.drawing`), batched into paths once.
  *
  * The client never parses DXF. ezdxf does the reading on the server — text
@@ -8,8 +8,9 @@
  * is the whole of this renderer's input.
  */
 import { useEffect, useMemo, useState } from "react";
-import { DRAWING_SCHEMA_VERSION, prepareDrawing } from "@text-to-cad/core/lib/drawing2d/index.js";
+import { DRAWING_SCHEMA_VERSION, prepareDrawing } from "@cad/core/lib/drawing2d/index.js";
 import { failureAlert } from "../kit/status/loadAlerts.js";
+import { english } from "../../i18n/core.js";
 
 /** A payload from a cadgen that does not agree with this build about the shape. */
 class DrawingSchemaError extends Error {
@@ -29,7 +30,7 @@ class DrawingSchemaError extends Error {
  * `updating` the next revision of the one shown, which stays until it arrives —
  * or, if that revision will not read, stays with the error beside it.
  *
- * @param {{ client: import("@text-to-cad/core/client").CadWorkspaceService, file: string, revision?: string }} options
+ * @param {{ client: import("@cad/core/client").CadWorkspaceService, file: string, revision?: string }} options
  * @returns {{ drawing: object|null, error: unknown, loading: boolean, updating: boolean }}
  */
 export function useDrawingPayload({ client, file, revision = "" }) {
@@ -71,20 +72,21 @@ export function useDrawingPayload({ client, file, revision = "" }) {
  *
  * @param {string} modelKey
  * @param {any} error
+ * @param {(key: string, params?: Record<string, unknown>) => string} [t]  the language it is said in
  */
-export function drawingLoadAlert(modelKey, error) {
+export function drawingLoadAlert(modelKey, error, t = english) {
   if (!error) {
     return null;
   }
   if (error instanceof DrawingSchemaError || error?.name === "DrawingSchemaError") {
     return {
-      severity: "error", kind: "version", summary: "Version mismatch",
-      title: "This app and cadgen disagree about drawings",
-      message: error.message,
-      recovery: "Update cadgen and the app together, then reload. They ship from one release for exactly this reason.",
+      severity: "error", kind: "version", summary: t("alert.schema.summary"),
+      title: t("alert.schema.title"),
+      message: t("alert.schema.message", { received: JSON.stringify(error.received), version: DRAWING_SCHEMA_VERSION }),
+      recovery: t("alert.schema.recovery"),
       details: `File: ${modelKey}\nOperation: drawing\n${error.message}`,
       reload: true
     };
   }
-  return failureAlert(modelKey, error?.message || error, error?.failure);
+  return failureAlert(modelKey, error?.message || error, error?.failure, false, t);
 }

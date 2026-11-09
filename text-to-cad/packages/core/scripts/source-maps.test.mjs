@@ -32,8 +32,8 @@ test('a compiled module loads with the map that sends it back to its source, wit
 });
 
 test('a module the build copied as it is loads as its source, line for line and column for column', () => {
-  const source = path.join(src, 'common/stepTopology.mjs');
-  const { code, map } = loadWithMap(path.join(dist, 'common/stepTopology.mjs'), dist, src);
+  const source = path.join(src, 'lib/pathUtils.mjs');
+  const { code, map } = loadWithMap(path.join(dist, 'lib/pathUtils.mjs'), dist, src);
   assert.equal(code, fs.readFileSync(source, 'utf8'));
   const lines = code.trimEnd().split('\n');
   const last = [lines.length - 1, lines.at(-1).length - 1];
@@ -44,7 +44,7 @@ test('a module the build copied as it is loads as its source, line for line and 
 });
 
 test("a page's build fails when a chunk's map still ends in a package's compiled code", () => {
-  const plugin = packageSourceMaps(['@text-to-cad/core']);
+  const plugin = packageSourceMaps(['@cad/core']);
   plugin.configResolved({ root });
   const out = path.join(root, 'tmp-out');
   const chunk = sources => ({ type: 'chunk', fileName: 'assets/index-A.js', map: { sources } });
@@ -55,5 +55,5 @@ test("a page's build fails when a chunk's map still ends in a package's compiled
     { 'index-A.js': chunk([relative(path.join(src, 'client/crash.js')), relative(path.join(dist, 'logo.svg'))]) });
   assert.throws(() => plugin.generateBundle.handler.call({ error: fail }, { dir: out },
     { 'index-A.js': chunk([relative(path.join(dist, 'client/crash.js'))]) }),
-  /assets\/index-A\.js: @text-to-cad\/core\/dist\/client\/crash\.js/);
+  /assets\/index-A\.js: @cad\/core\/dist\/client\/crash\.js/);
 });

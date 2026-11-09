@@ -5,8 +5,8 @@ import {
   entrySourceFormat,
   fileExtensionFromPath,
   isMeshRenderFormat,
+  isPlotRenderFormat,
   meshAssetKeyForEntry,
-  normalizeRenderFormat,
   renderFormatFromPath,
   RENDER_FORMAT
 } from "./fileFormats.js";
@@ -22,6 +22,23 @@ test("entrySourceFormat maps manifest kinds to stable render formats", () => {
   assert.equal(entrySourceFormat({ kind: "urdf" }), RENDER_FORMAT.URDF);
   assert.equal(entrySourceFormat({ kind: "srdf" }), RENDER_FORMAT.SRDF);
   assert.equal(entrySourceFormat({ kind: "sdf" }), RENDER_FORMAT.SDF);
+  assert.equal(entrySourceFormat({ kind: "kicad_pcb" }), RENDER_FORMAT.KICAD_PCB);
+});
+
+test("a KiCad board is a plot: a CAD file with its own asset, not a mesh", () => {
+  for (const path of ["boards/blinky.kicad_pcb", "BLINKY.KICAD_PCB", "https://example.test/w/blinky.kicad_pcb?download=1#top"]) {
+    assert.equal(renderFormatFromPath(path), RENDER_FORMAT.KICAD_PCB, path);
+  }
+  assert.equal(isPlotRenderFormat(RENDER_FORMAT.KICAD_PCB), true);
+  assert.equal(isMeshRenderFormat(RENDER_FORMAT.KICAD_PCB), false);
+  assert.equal(meshAssetKeyForEntry({ kind: "kicad_pcb" }), RENDER_FORMAT.KICAD_PCB);
+  // The project beside a board is not drawn; its schematic is a plot of its own, every sheet a page.
+  for (const path of ["blinky.kicad_pro", "config.yml"]) {
+    assert.equal(renderFormatFromPath(path), "", path);
+  }
+  assert.equal(renderFormatFromPath("blinky.kicad_sch"), RENDER_FORMAT.KICAD_SCH);
+  assert.equal(isPlotRenderFormat(RENDER_FORMAT.KICAD_SCH), true);
+  assert.equal(isPlotRenderFormat(RENDER_FORMAT.DXF), false);
 });
 
 test("the mesh format predicate stays narrow", () => {
@@ -32,16 +49,7 @@ test("the mesh format predicate stays narrow", () => {
   assert.equal(isMeshRenderFormat(RENDER_FORMAT.URDF), false);
 });
 
-test("normalizeRenderFormat preserves tab-state format aliases and defaults", () => {
-  assert.equal(normalizeRenderFormat("stp"), RENDER_FORMAT.STEP);
-  assert.equal(normalizeRenderFormat("gltf"), RENDER_FORMAT.GLB);
-  assert.equal(normalizeRenderFormat("srdf"), RENDER_FORMAT.SRDF);
-  assert.equal(normalizeRenderFormat("3mf"), RENDER_FORMAT.THREE_MF);
-  assert.equal(normalizeRenderFormat("unknown"), RENDER_FORMAT.STEP);
-  assert.equal(normalizeRenderFormat("unknown", { defaultFormat: RENDER_FORMAT.DXF }), RENDER_FORMAT.DXF);
-});
-
-test("meshAssetKeyForEntry chooses native mesh keys and STEP GLB sidecars", () => {
+test("meshAssetKeyForEntry chooses a mesh file's own key, and glb for any other 3D entry", () => {
   assert.equal(meshAssetKeyForEntry({ kind: "stl" }), "stl");
   assert.equal(meshAssetKeyForEntry({ kind: "3mf" }), "3mf");
   assert.equal(meshAssetKeyForEntry({ kind: "glb" }), "glb");
@@ -51,9 +59,8 @@ test("meshAssetKeyForEntry chooses native mesh keys and STEP GLB sidecars", () =
 });
 
 test("every entry renders its own source format; nothing is package-baked", () => {
-  // A DXF's render asset is the .dxf itself — parsed and prism-meshed in the client
-  // (design/standalone-viewer.md Phase A) — and no kind is baked into a package any
-  // more, so the source format IS the asset format everywhere.
+  // A DXF's render asset is the .dxf itself — parsed and prism-meshed in the client — and no kind
+  // is baked into a package any more, so the source format IS the asset format everywhere.
   assert.equal(entrySourceFormat({ kind: "dxf" }), RENDER_FORMAT.DXF);
   assert.equal(entrySourceFormat({ kind: "part" }), RENDER_FORMAT.STEP);
   assert.equal(entrySourceFormat({ kind: "stl" }), RENDER_FORMAT.STL);

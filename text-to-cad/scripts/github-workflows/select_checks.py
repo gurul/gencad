@@ -11,9 +11,10 @@ packages/core (which every runtime and app is built from) run everything too.
 The light contracts -- every policy test but HEAVY_POLICY, and the skill suites in
 LIGHT_SKILL_TESTS: tests that need nothing but Python's standard library, Node and the
 repository's text -- run on every change, first and with nothing installed, so a path only
-they read needs no rule beyond saying so. The rest -- the cadgen suite, the skill suites that
-drive the CAD kernel, the policy tests that load cadgen or its built runtime, and each job --
-run only on the paths that reach them.
+they read needs no rule beyond saying so. The rest -- the packages' suites (the library's, the
+server's and the shim's: the cadgen jobs), the skill suites that drive the CAD kernel, the policy
+tests that load the packages or their built runtime, and each job -- run only on the paths that
+reach them.
 
 Selection is by path, never by diff content: a comment in a module selects what the
 module's code would.
@@ -21,13 +22,14 @@ module's code would.
 Outputs (GITHUB_OUTPUT), one flag per job and the test paths the narrowed jobs take:
 
     cadgen  cadgen_tests          cadgen (Linux), cadgen (Windows)
+    fea                           fea (the stress study's suite, with netgen and CalculiX installed)
     core_js                       core-js
-    web  web_ui  web_client  web_viewer
+    web  web_ui  web_client
     mcp
     api
     skills  light_policy  light_tests  skills_policy  skills_tests  skills_runtime
     docs
-    packaging
+    packaging  web_viewer         packaging, and its steps that drive the bundled viewer
     full
     record                        the artifact name recording what this run tests
 
@@ -54,10 +56,12 @@ from typing import Callable, Iterable
 
 ROOT = Path(__file__).resolve().parents[2]
 
-CADGEN_SUITE = "tests/python/packages/cadgen"
+# The three packages' suites, one folder each under it: the library's (cad), the server's
+# (cad_server) and the shim's (cad_mcp). The cadgen jobs run them all.
+CADGEN_SUITE = "tests/python/packages"
 POLICY_SUITE = "tests/python/global"
 SKILL_SUITES = "tests/python/skills"
-FLAGS = ("core_js", "web_ui", "web_client", "web_viewer", "mcp", "api", "docs", "packaging")
+FLAGS = ("core_js", "web_ui", "web_client", "web_viewer", "mcp", "api", "docs", "packaging", "kicad", "fea")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -100,26 +104,21 @@ NOTHING = select()
 # phase runs with nothing installed, so one that is not fails there until it is listed here
 # with a rule for what it reads.
 HEAVY_POLICY = {
-    "test_cache_root_sync.py",              # cadgen's cache paths against core's tessellation cache
     "test_cli_stream_contract.py",          # cadgen CLIs, run
-    "test_node_builder_bundles.py",         # the emitted Node builders (scripts/bundle)
-    "test_sidecar_and_package_layering.py",  # cadgen's import layering, imported
-    "test_snapshot_viewer_theme_parity.py",  # cadgen's snapshot against core's view settings
     "test_viewer_renders_emitted_dxf.py",   # a DXF cadgen emits, through the kernel
 }
 # Skill suites that need nothing installed: they read their skill's files.
 LIGHT_SKILL_TESTS = (
-    f"{SKILL_SUITES}/gcode",
+    f"{SKILL_SUITES}/print3d",
     f"{SKILL_SUITES}/sendcutsend",
-    f"{SKILL_SUITES}/step-parts",
 )
-# The skill suites that drive cadgen's CLIs, and so read everything cadgen reads.
-CADGEN_SKILL_SUITES = (f"{SKILL_SUITES}/cad", f"{SKILL_SUITES}/dxf")
 
-# Whatever runs cadgen: its suites on both platforms, the skill suites that drive it, the
-# policy tests that load it, the viewer gates that serve and build through it, the wheel.
+# Whatever runs the packages: their suites on both platforms (the engine's, the viewer backend's
+# and the CAD app server's among them), the policy tests that load them, the viewer gates that
+# serve and draw through them, the wheels. A skill's commands are the server's, and the light
+# contracts that check what a skill documents run on every change.
 CADGEN_CONSUMERS = select(
-    flags=["web_viewer", "packaging"], cadgen=[CADGEN_SUITE], skills=CADGEN_SKILL_SUITES,
+    flags=["web_viewer", "packaging"], cadgen=[CADGEN_SUITE],
     policy=[f"{POLICY_SUITE}/{name}" for name in sorted(HEAVY_POLICY)],
 )
 
@@ -143,28 +142,32 @@ def _test_file(suite: str, whole: str | None = None) -> Callable[[str], Select]:
     return choose
 
 
-# The CAD Viewer's backend and the CAD app's server are leaves of cadgen: outside them and the
-# commands that start them, nothing in cadgen imports either, except viewer.recents (the state
+# The CAD Viewer's backend and the CAD app's server are leaves of the server: outside them and
+# the commands that start them, nothing in it imports either, except viewer.recents (the state
 # directory's one definition) -- tests/python/global/test_viewer_and_mcp_boundary.py holds
-# that. So a change confined to one of them reaches only the cadgen tests that import or
+# that. So a change confined to one of them reaches only the package tests that import or
 # start it, which name it (or a support module that does), and the tests that read or import
-# all of cadgen at once; and, for the viewer, the gates that serve the bundled client. The
-# skill suites and the heavy policy tests reach neither.
-CADGEN_SRC = "packages/cadgen/src/cadgen"
-VIEWER_CODE = (f"{CADGEN_SRC}/viewer/**", f"{CADGEN_SRC}/cli/viewer.py", f"{CADGEN_SRC}/cli/viewer_stop.py")
-MCP_CODE = (f"{CADGEN_SRC}/mcp/**", f"{CADGEN_SRC}/cli/mcp.py")
-VIEWER_SHARED = (f"{CADGEN_SRC}/viewer/__init__.py", f"{CADGEN_SRC}/viewer/recents.py")
-_NAMES_VIEWER = r"cadgen\.viewer|cadgen\.mcp|cli\.viewer|cli\.mcp|[\"'](?:viewer|mcp)[\"' ]"
-_NAMES_MCP = r"cadgen\.mcp|cli\.mcp|[\"']mcp[\"' ]"
-# A test that reads every cadgen source, or imports modules it computes -- every command in
+# all of the packages at once; and, for the viewer, the gates that serve the bundled client. The
+# skill suites and the heavy policy tests reach neither. The shim (cad-mcp) is a leaf too:
+# nothing imports it but its own suite and the tests that name it.
+LIBRARY_SRC = "packages/cad/src/cad"
+SERVER_SRC = "packages/cad-server/src/cad_server"
+VIEWER_CODE = (f"{SERVER_SRC}/viewer/**", f"{SERVER_SRC}/cli/viewer.py")
+MCP_CODE = (f"{SERVER_SRC}/mcp/**",)
+VIEWER_SHARED = (f"{SERVER_SRC}/viewer/__init__.py", f"{SERVER_SRC}/viewer/recents.py")
+SHIM_CODE = ("packages/cad-mcp/**",)
+_NAMES_VIEWER = r"cad_server\.viewer|cad_server\.mcp|cli\.viewer|cli\.mcp|[\"'](?:viewer|mcp)[\"' ]"
+_NAMES_MCP = r"cad_server\.mcp|cli\.mcp|[\"']mcp[\"' ]"
+_NAMES_SHIM = r"\bcad_mcp\b"
+# A test that reads every package source, or imports modules it computes -- every command in
 # the registry, say -- reaches both.
 _READS_ALL = (r"_COMMANDS|walk_packages|iter_modules|r?glob\(\s*[\"'](?:\*\*/)?\*\.py[\"']"
               r"|import_module\(\s*(?![\"'])|__import__\(\s*(?![\"'])")
 
 
 def _cadgen_tests_naming(names: str, directories: tuple[str, ...]) -> list[str]:
-    """The cadgen tests a change to a leaf can reach: those in `directories`, and those whose
-    text names it, names a support module that does, or reads all of cadgen."""
+    """The package tests a change to a leaf can reach: those in `directories`, and those whose
+    text names it, names a support module that does, or reads all of the packages."""
     support = [path.stem for path in sorted((ROOT / "tests/python/support").glob("*.py"))
                if re.search(names, path.read_text(encoding="utf-8", errors="replace"))]
     pattern = re.compile("|".join([names, _READS_ALL] + [rf"\b{re.escape(stem)}\b" for stem in support]))
@@ -178,12 +181,60 @@ def _cadgen_tests_naming(names: str, directories: tuple[str, ...]) -> list[str]:
 
 
 def _viewer_change(path: str) -> Select:
-    return select(flags=["web_viewer", "packaging"], cadgen=_cadgen_tests_naming(_NAMES_VIEWER, ("viewer", "mcp")))
+    return select(flags=["web_viewer", "packaging"],
+                  cadgen=_cadgen_tests_naming(_NAMES_VIEWER, ("cad_server/viewer", "cad_server/mcp")))
 
 
 def _mcp_change(path: str) -> Select:
-    return select(flags=["packaging"], cadgen=_cadgen_tests_naming(_NAMES_MCP, ("mcp",)))
+    return select(flags=["packaging"], cadgen=_cadgen_tests_naming(_NAMES_MCP, ("cad_server/mcp",)))
 
+
+def _shim_change(path: str) -> Select:
+    return select(flags=["packaging"], cadgen=_cadgen_tests_naming(_NAMES_SHIM, ("cad_mcp",)))
+
+
+# The engine (cad.engine, and the server's half, cad_server.engine) is no leaf: every build,
+# export and snapshot a skill runs is its, the viewer serves every STEP and .xbf through it
+# (``cad_server.viewer.xbf``), the CAD app's views open them through the viewer's routes, and the
+# library's root names are its. A change to it reaches whatever the packages reach.
+ENGINE_CODE = (f"{LIBRARY_SRC}/engine/**", f"{SERVER_SRC}/engine/**")
+# Native KiCad boards and schematics: the library's readers, their flat stills, their document types
+# (cad.kicad_pcb, cad.kicad_sch) and the kicad integration (kicode's kicad-cli found and run, by the one helper
+# for external programs: DRC, ERC, the exports), and the server's commands and the environment of cad[kicad]
+# it runs them in, `cad run kicad-cli` among them (cad run and the integrations table it reads). Each also reaches what its package reaches (the rules below); the KiCad job, which makes
+# that environment, runs on these, its own suite and runner, and a full run.
+KICAD_CODE = (f"{LIBRARY_SRC}/engine/formats/kicad/**", f"{LIBRARY_SRC}/engine/render/board.py",
+              f"{LIBRARY_SRC}/engine/render/schematic.py",
+              f"{LIBRARY_SRC}/kicad_pcb/**", f"{LIBRARY_SRC}/kicad_sch/**", f"{LIBRARY_SRC}/kicad/**",
+              f"{LIBRARY_SRC}/_internal/programs.py",
+              f"{SERVER_SRC}/_internal/integration_env.py", f"{SERVER_SRC}/_internal/boards.py",
+              f"{SERVER_SRC}/cli/document_types.py", f"{SERVER_SRC}/cli/run.py",
+              f"{LIBRARY_SRC}/_internal/integrations.py",
+              f"{SERVER_SRC}/cli/kicad_pcb.py", f"{SERVER_SRC}/cli/kicad_sch.py",
+              # The library's project pins kicode, the integration itself. Selection is by path: any
+              # change to the file runs the job.
+              "packages/cad/pyproject.toml")
+KICAD_SUITE = "tests/python/packages/kicad"
+# The stress study (cad <type> solve): its operation and orchestration, the netgen and calculix integrations, its
+# result type, the library's extras (netgen's and ccx's pins among them), and the server's command and the environment
+# of cad[build123d,calculix,netgen] it runs a study in. Each also reaches what its package reaches; the fea job, which
+# installs netgen and ccx, runs on these, its own suite and runner, and a full run.
+FEA_CODE = (f"{LIBRARY_SRC}/_internal/fea/**", f"{LIBRARY_SRC}/calculix/**", f"{LIBRARY_SRC}/netgen/**",
+            f"{LIBRARY_SRC}/results.py", f"{LIBRARY_SRC}/_internal/document_type.py",
+            f"{LIBRARY_SRC}/_internal/operation.py", "packages/cad/pyproject.toml",
+            f"{SERVER_SRC}/cli/document_types.py", f"{SERVER_SRC}/_internal/integration_env.py")
+# What a study reads a document, finds CalculiX and writes its results through, of the engine's and shared modules:
+# the pictures are the engine's stills of a GLB (its reader and the snapshot).
+FEA_SHARED = (f"{LIBRARY_SRC}/engine/document.py", f"{LIBRARY_SRC}/engine/refs.py",
+              f"{LIBRARY_SRC}/engine/kernel/bounds.py", f"{LIBRARY_SRC}/engine/executables.py",
+              f"{LIBRARY_SRC}/engine/export/glb.py", f"{LIBRARY_SRC}/engine/build.py",
+              f"{LIBRARY_SRC}/engine/formats/glb.py", f"{LIBRARY_SRC}/engine/snapshot.py",
+              f"{LIBRARY_SRC}/_internal/atomic_replace.py", f"{LIBRARY_SRC}/_internal/programs.py",
+              f"{SERVER_SRC}/_internal/cli_from_function.py")
+FEA_SUITE = "tests/python/packages/fea"
+# The packages' projects, and the alias distribution (a one-file project, a pin of the library).
+PACKAGE_PROJECTS = ("packages/cad", "packages/cad-server", "packages/cad-mcp")
+ALIAS_PROJECTS = ("packages/aliases/cadgen",)
 
 _MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 
@@ -215,10 +266,15 @@ class Rule:
 RULES: tuple[Rule, ...] = (
     # Prose inside a code tree is read by the policy contracts alone (the package boundary
     # law, documented commands), never by a build or a test of the code beside it. The one
-    # exception, cadgen's README, is the wheel's long description.
-    Rule(("packages/cadgen/README.md", "packages/cadgen/LICENSE"), select(flags=["packaging"]), final=True),
+    # exception, each distribution's README, is its wheel's long description.
+    Rule((*(f"{project}/{name}" for project in PACKAGE_PROJECTS for name in ("README.md", "LICENSE")),
+          *(f"{project}/README.md" for project in ALIAS_PROJECTS)), select(flags=["packaging"]), final=True),
     Rule(("apps/web/**/*.md",), select(flags=["web_client"]), final=True),  # its links must resolve
     Rule(("packages/**/*.md", "apps/**/*.md"), NOTHING, final=True),
+
+    # The installer rehearsals: workflows of their own, dispatched by hand or by a push to main that
+    # changes the installer; a light contract reads their triggers and no test.yml job runs them.
+    Rule((".github/workflows/install-windows.yml", ".github/workflows/install-linux.yml"), NOTHING, final=True),
 
     # Shared by every job, or the selection itself: everything runs.
     Rule((
@@ -232,12 +288,24 @@ RULES: tuple[Rule, ...] = (
         "scripts/build/**",              # core's and ui's library build
     ), EVERYTHING),
 
-    # cadgen, and the runtime bundle it executes. The viewer's backend and the CAD app's
-    # server reach only what names them (above).
+    # The packages, and the runtime bundle the server executes. The viewer's backend, the CAD
+    # app's server and the shim reach only what names them (above). KiCad's code reaches the KiCad
+    # job too, beside what its package reaches.
+    Rule(KICAD_CODE, select(flags=["kicad"])),
     Rule(VIEWER_SHARED, CADGEN_CONSUMERS, final=True),
     Rule(VIEWER_CODE, _viewer_change, final=True),
     Rule(MCP_CODE, _mcp_change, final=True),
-    Rule(("packages/cadgen/**", "scripts/bundle/**"), CADGEN_CONSUMERS),
+    Rule(SHIM_CODE, _shim_change, final=True),
+    # The engine and shared modules a stress study reads a document, finds CalculiX and writes its result through:
+    # a change there runs the solves too. Before the engine's final rule, which adds the rest.
+    Rule(FEA_SHARED, select(flags=["fea"])),
+    Rule(ENGINE_CODE, CADGEN_CONSUMERS, final=True),
+    Rule(tuple(f"{project}/**" for project in PACKAGE_PROJECTS + ALIAS_PROJECTS) + ("scripts/bundle/**",),
+         CADGEN_CONSUMERS),
+    # The stress study's code runs what its package runs, and the fea job, which installs netgen and CalculiX.
+    Rule(FEA_CODE, select(flags=["fea"])),
+    Rule((f"{LIBRARY_SRC}/_internal/fea/**", f"{LIBRARY_SRC}/calculix/**", f"{LIBRARY_SRC}/netgen/**"),
+         select(skills=[f"{SKILL_SUITES}/fea"])),
 
     # The shared UI and the apps. The snapshot runtime is built from core alone, so ui
     # reaches the two hosts and the wheel, not cadgen's suites.
@@ -249,30 +317,28 @@ RULES: tuple[Rule, ...] = (
     # check-dependencies.mjs walks every app's source and runs in core-js, the cheapest job
     # that has it.
     Rule(("apps/docs/src/**",), select(flags=["core_js"])),
-    # The DXF suite renders ui's DXF fixture, and holds every JS file in packages/ to having
-    # no second layer-intent table; cadgen's suite globs packages/ for vendored node runtimes.
-    Rule(("packages/ui/src/renderers/dxf/__fixtures__/**",), select(skills=[f"{SKILL_SUITES}/dxf/test_snapshot_render.py"])),
-    Rule(("packages/ui/**/*.js",), select(skills=[f"{SKILL_SUITES}/dxf/test_drawing_checks.py"])),
-    Rule(("packages/ui/**/node_runtime.py",), select(cadgen=[f"{CADGEN_SUITE}/test_node_resolve_bootstrap.py"])),
-    Rule(("tests/browser/**", "tests/fixtures/cad/**"), select(flags=["web_viewer"])),
+    # The robot renderer's browser fixtures are the payloads cadgen resolves for its descriptions:
+    # the payload suite asserts they are current.
+    Rule(("packages/ui/src/renderers/robot/__fixtures__/**",),
+         select(cadgen=[f"{CADGEN_SUITE}/cad_server/test_robot_payload.py"])),
+    # The board renderer's fixture is the test board's plot payload: the plot suite asserts it is current.
+    Rule(("packages/ui/src/renderers/board/__fixtures__/**",),
+         select(cadgen=[f"{CADGEN_SUITE}/cad/test_pcb_plot.py"])),
+    Rule(("tests/browser/**",), select(flags=["web_viewer", "packaging"])),
 
-    # Tests: a test file runs itself.
+    # Tests: a test file runs itself. The KiCad suite is its job's alone (test-kicad.sh, with KiCad
+    # installed), never the package jobs'.
+    Rule((f"{KICAD_SUITE}/**", "scripts/test/test-kicad.sh"), select(flags=["kicad"]), final=True),
+    Rule((f"{FEA_SUITE}/**", "scripts/test/test-fea.sh", "tests/python/support/fea_fixtures.py"), select(flags=["fea"]),
+         final=True),
     Rule((f"{CADGEN_SUITE}/**",), _test_file(CADGEN_SUITE, whole=CADGEN_SUITE)),
     Rule((f"{POLICY_SUITE}/**",), _test_file(POLICY_SUITE, whole=POLICY_SUITE)),
     Rule((f"{SKILL_SUITES}/**",), _test_file(SKILL_SUITES)),
 
-    # Skills. Their prose and metadata are read by the policy contracts (light, always) and by
-    # the tests that run what a skill documents; scripts by their skill's suite.
+    # Skills. Their prose and metadata are read by the policy contracts (light, always): the
+    # commands a skill documents among them; scripts by their skill's suite, each a light one.
     Rule(("skills/**",), NOTHING),
-    Rule(("skills/cad/**",), select(skills=[f"{SKILL_SUITES}/cad/test_documented_models.py",
-                                            f"{SKILL_SUITES}/cad/test_documented_project.py"])),
-    Rule(("skills/cad/references/snapshot-review.md",), select(cadgen=[f"{CADGEN_SUITE}/test_snapshot_requests.py"])),
-    Rule(("skills/dxf/**",), select(skills=[f"{SKILL_SUITES}/dxf/test_documented_commands.py"])),
-    Rule(("skills/dfam-check/**",), select(skills=[f"{SKILL_SUITES}/dfam-check"])),
-    Rule(("skills/dfm/**",), select(skills=[f"{SKILL_SUITES}/dfm"])),
-    # Files that must never appear here: the test that refuses one runs when one does.
-    Rule(("skills/**/node_runtime.py",), select(cadgen=[f"{CADGEN_SUITE}/test_node_resolve_bootstrap.py"])),
-    Rule(("skills/*/scripts/packages/**",), policy("test_node_builder_bundles.py")),
+    Rule(("skills/fea/**",), select(skills=[f"{SKILL_SUITES}/fea"])),
 
     # The test runners and the gates each one feeds.
     Rule(("scripts/test/test-python.sh",), select(cadgen=[CADGEN_SUITE], skills=[SKILL_SUITES])),
@@ -280,10 +346,14 @@ RULES: tuple[Rule, ...] = (
     Rule(("scripts/test/test-js.sh", "scripts/test/check-*.mjs"), select(flags=["core_js", "web_ui", "web_client", "mcp"])),
     Rule(("scripts/test/test-api.sh",), select(flags=["api"])),
     Rule(("scripts/test/test-docs.sh", "scripts/brand/**"), select(flags=["docs"])),
-    Rule(("scripts/test/test-viewer-launch.sh", "scripts/test/test-viewer-browser.sh"), select(flags=["web_viewer"])),
+    Rule(("scripts/test/test-viewer-launch.sh", "scripts/test/test-viewer-browser.sh"),
+         select(flags=["web_viewer", "packaging"])),
     Rule(("scripts/test/test-installed.sh",), select(flags=["packaging"])),
     Rule(("scripts/test/test.sh",), NOTHING),  # chains the runners for a local run; CI calls them itself
-    Rule(("scripts/bench/viewer-memory/**",), select(flags=["core_js"])),
+
+    # The one-line installer: its tests read both scripts, and the docs site serves copies of them.
+    Rule(("scripts/install/install.sh", "scripts/install/install.ps1"),
+         select(flags=["docs"], cadgen=[f"{CADGEN_SUITE}/cad_server/test_setup.py"])),
 
     # What builds and checks the wheel: bundle.sh stamps metadata with sync-version.mjs.
     Rule((
@@ -293,13 +363,16 @@ RULES: tuple[Rule, ...] = (
 
     # Read by the policy contracts alone (light, always) -- or by nothing a test runs: the
     # release scripts and workflows the contracts pin, the plugin manifests, configs and
-    # root prose, the deploy, and the sample models no test may read.
+    # root prose, the deploy, the manual bake of the look's environment (its image is
+    # the library's), the manual benchmarks and their inputs (a light test reads their pure
+    # helpers), and the sample models no test may read.
     Rule((
         "scripts/release/**", "scripts/install/**", "scripts/github-workflows/deploy-vercel-app.sh",
-        "scripts/git-hooks/**", "scripts/bench/cadgen-performance/**", "scripts/README.md",
+        "scripts/look/**",
+        "scripts/git-hooks/**", "scripts/bench/**", "scripts/README.md",
         ".github/workflows/release-publish.yml", ".github/workflows/release-prepare.yml",
         ".github/workflows/deploy-docs.yml", ".github/workflows/deploy-api.yml",
-        ".github/dependabot.yml", ".github/release.yml", ".githooks/**",
+        ".github/dependabot.yml", ".github/release.yml", ".github/FUNDING.yml", ".githooks/**",
         ".claude-plugin/**", ".codex-plugin/**", ".cursor-plugin/**", "gemini-extension.json",
         "*.mcp.json", "plugin.json", "mcp.json", "skills.sh.json",
         "README.md", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md", "LICENSE", "docs/**",
@@ -308,11 +381,6 @@ RULES: tuple[Rule, ...] = (
     ), NOTHING),
 )
 
-
-# Rules for files that must not exist: they match nothing until someone adds one.
-ABSENT_ON_PURPOSE = frozenset({
-    "skills/**/node_runtime.py", "skills/*/scripts/packages/**", "packages/ui/**/node_runtime.py",
-})
 
 
 def compile_glob(pattern: str) -> re.Pattern[str]:
@@ -403,7 +471,7 @@ def outputs(chosen: Select, *, changed: bool = True) -> dict[str, str]:
     result.update({
         "cadgen": bool(cadgen),
         "cadgen_tests": " ".join(cadgen),
-        "web": result["web_ui"] or result["web_client"] or result["web_viewer"],
+        "web": result["web_ui"] or result["web_client"],
         "skills": changed,
         "light_policy": " ".join(light_policy()) if changed else "",
         "light_tests": " ".join(LIGHT_SKILL_TESTS) if changed else "",

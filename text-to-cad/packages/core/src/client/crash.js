@@ -1,10 +1,13 @@
 /**
- * A page's crash, as cadgen's telemetry takes one (`cadgen/analytics.py`: `signature`, and the server
+ * A page's crash, as cadgen's telemetry takes one (`cad_server/analytics.py`: `signature`, and the server
  * checks it again): the error's type, whether the page went on, and its innermost frames, oldest first --
  * each a script file of the page's, a function, a line and a column. Never the error's message, a value,
  * or a URL: a frame names its script by the file's own name (`fileOf`), and anything else as `<?>`.
  * A frame in one of the page's own chunks also names that chunk's debug id (`chunk_id`), which its build
  * stamped on the chunk and on its source map: with it, PostHog finds the map the release uploaded.
+ * A crash none of whose frames is in a script of the page's is no crash of the page's: a script the browser
+ * runs in it that it never shipped threw it -- an extension's (a wallet's `Object.connect`), an automation's
+ * (`UtilityScript.evaluate`) -- and the receiver drops those older pages send (`apps/api`'s `NEVER_OURS`).
  *
  * A host reports through `createCrashReporter`, which sends each distinct crash once per page and only
  * a few in all: a page failing in a loop sends one report, not one a frame.
@@ -56,8 +59,8 @@ const CANCELLED = 'AbortError';
 /**
  * @param {unknown} error
  * @param {{ handled?: boolean, fileOf?: (url: string) => string }} [options]
- * @returns {import('./types.js').CadPageCrash | null} `null` for what is no error (a value thrown) or a
- * cancellation (an `AbortError`).
+ * @returns {import('./types.js').CadPageCrash | null} `null` for what is no error (a value thrown), a
+ * cancellation (an `AbortError`), or a crash in none of the page's scripts (every frame `<?>`).
  */
 export function crashOf(error, { handled = false, fileOf = scriptFileOf } = {}) {
   const stack = /** @type {{ stack?: unknown }} */ (error ?? {}).stack;
@@ -83,11 +86,13 @@ export function crashOf(error, { handled = false, fileOf = scriptFileOf } = {}) 
       ...(chunk ? { chunk_id: chunk } : {}),
     });
   }
+  const kept = frames.reverse().slice(-MAX_FRAMES);
+  if (kept.length && kept.every(frame => frame.file === '<?>')) return null;
   return {
     where: 'page',
     type: typeof name === 'string' && TYPE.test(name) ? name : '<?>',
     handled: Boolean(handled),
-    frames: frames.reverse().slice(-MAX_FRAMES),
+    frames: kept,
   };
 }
 

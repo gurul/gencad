@@ -1,15 +1,14 @@
 ---
 name: engineering-drawing
-description: Make an engineering drawing of a part as a PDF - orthographic views with hidden lines and centre marks, real dimensions, hole callouts, notes and a title block on ISO sheets, all projected from the part's geometry so the drawing follows the model. Use when the user asks for a drawing, a dimensioned sheet, shop or manufacturing drawings, a print, or "2D views of this part".
+description: Make an engineering drawing of a part as a PDF - orthographic views with hidden lines and centre marks, real dimensions, hole callouts, notes and a title block on ISO sheets, all projected from the part's geometry so the drawing follows the model. Use when the user asks for a drawing, a dimensioned sheet, shop or manufacturing drawings, a print, or "2D views of this part". Not for DXF cut layouts or flat patterns.
 license: MIT
+metadata:
+  repository: earthtojake/text-to-cad
 ---
 
 # Engineering drawing
 
-Provenance: maintained in [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad).
-Use the installed local skill files as the runtime source of truth.
-
-An engineering drawing is a DOCUMENT derived from a part. `cadgen.eng_drawing`
+An engineering drawing is a DOCUMENT derived from a part. `cad.eng_drawing`
 projects views from the part's geometry, places dimensions between points ON
 that geometry, finds centre marks on it, and lays the result out on an ISO
 sheet with a frame and a title block. Change the model, rerun the drawing
@@ -19,25 +18,29 @@ you chose to override a value.
 
 **The output is one PDF.** That is what a shop receives and what every
 operating system opens. No DXF is written, nothing is paired or linked, and
-there is no CLI: the script is the interface. `$dxf` makes cut layouts and flat
-patterns, which are toolpaths, not documents; the two are different jobs.
+there is no CLI: the script is the interface. Cut layouts and flat patterns are
+toolpaths, not documents, and a different job.
 
 ## Setup
 
-Run cadgen through [uv](https://docs.astral.sh/uv/), so this skill's commands share
-one installation, and its warm build daemon, with the CAD app's server:
+Run the `cad` command (`~/.local/bin/cad` where it is not on your PATH; `cad.exe` on Windows). If
+it is missing, install text-to-cad, outside a sandbox or with its permission:
 
-- `cadgen` below means `uvx --no-config --managed-python --python 3.13 --from cadgen==0.7.21 cadgen`
-- `python` below means `uvx --no-config --managed-python --python 3.13 --from cadgen==0.7.21 python`
+```bash
+curl -fsSL https://texttocad.dev/install.sh | sh
+```
 
-The first run downloads that installation; later runs reuse it.
+On Windows, in PowerShell: `irm https://www.texttocad.dev/install.ps1 | iex`. If the CAD app was
+only just added, its server may still be starting: try again for up to a minute first. `cad doctor
+--check` explains any other failure, changing nothing; `cad doctor` repairs what it reports.
 
 ## Workflow
 
-1. Get the part. `cadgen.read_step(Path(__file__).parent / "../STEP/part.step")`
-   reads the artifact a `@step` model wrote (run `python <model>.py` first); a
-   live build123d shape works just as well. The drawing documents geometry, it
-   does not build it.
+1. Get the part. Call the model: `enclosure()`, imported from the model's script,
+   is built by text-to-cad's server (a replay when the server already holds it), and
+   its `.shape` is the part. For a part with no model, read its file: `step.read` for a
+   STEP, `xbf.read` for an xbf, anchored on `Path(__file__).parent`. Any build123d
+   shape works. The drawing documents geometry, it does not build it.
 2. Write `<name>_drawing.py` beside the model, from
    [the template](references/sheet-api.md#template). Import the model facts the
    dimensions reference (hole pitch, overall size, wall) from the model module
@@ -60,7 +63,7 @@ The first run downloads that installation; later runs reuse it.
    wider than the sheet's note column is refused, and `notes=` takes a LIST
    (`notes="BREAK EDGES"` is a sequence of eleven characters, so it is refused
    too).
-5. Run `python <name>_drawing.py`. It prints the PDF it wrote, and **anything
+5. Run `cad run <name>_drawing.py`. It prints the PDF it wrote, and **anything
    it noticed while drawing** — read those first:
    - *"measures blank paper"*: the dimension's model points do not land on the
      view's geometry. Almost always the part was built from a corner and the
@@ -117,7 +120,8 @@ The script raises rather than writing a wrong or missing document:
   `angle()` legs that are collinear or zero-length, a non-finite `at=` or
   `offset=`.
 - A missing renderer. The PDF is the drawing, so no matplotlib is a failure,
-  not a skipped half. A failed render leaves no file behind.
+  not a skipped half. A failed render leaves no file
+  it wrote; an earlier PDF stays byte for byte.
 - `out=` missing or not naming a `.pdf`, at import time.
 
 ## Limits to state in the handoff

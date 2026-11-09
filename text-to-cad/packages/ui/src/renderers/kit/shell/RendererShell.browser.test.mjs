@@ -1,15 +1,13 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
-import { build } from 'esbuild';
+import { harnessBundle } from '../../harness/bundle.mjs';
 import { chromium } from 'playwright';
 import { PNG } from 'pngjs';
 import * as THREE from 'three';
-import { interactiveCameraFrameForBounds } from '../../../../dist/renderers/kit/camera/viewportCameraFit.js';
+import { fitRoom, interactiveCameraFrameForBounds } from '../../../../dist/renderers/kit/camera/viewportCameraFit.js';
 import { DEFAULT_VIEW_DIRECTION, WORLD_UP } from '../../../../dist/renderers/kit/camera/viewportCameraKit.js';
 import { CAD_DEFAULT_VERTICAL_FOV_DEGREES } from '../../../../dist/renderers/kit/camera/cameraLens.js';
 
@@ -29,18 +27,15 @@ const HARNESS_SIZE = '<style>#root > div { width: 800px !important; height: 500p
 // One harness bundle and one browser for the file; every test serves its own files and opens its
 // own page. (A browser's first WebGL page pays for compiling the viewer's shaders; later pages
 // reuse them.)
-let temporary, bundle, compiledCss, browser;
+let bundle, compiledCss, browser;
 before(async () => {
-  temporary = await mkdtemp(join(tmpdir(), 'text-to-cad-shell-browser-'));
-  await build({ entryPoints: [fileURLToPath(new URL('../../harness/index.tsx', import.meta.url))], outfile: join(temporary, 'harness.js'), bundle: true, format: 'esm', platform: 'browser', conditions: ['production'], jsx: 'automatic', loader: { '.webp': 'dataurl', '.avif': 'dataurl', '.woff2': 'dataurl', '.svg': 'dataurl' } });
-  bundle = await readFile(join(temporary, 'harness.js'));
+  ({ bundle } = await harnessBundle());
   compiledCss = await readFile(new URL('../../../../dist/styles.css', import.meta.url));
   browser = await chromium.launch({ headless: true, args: (process.platform === 'darwin' && process.env.CAD_TEST_SWIFTSHADER !== '1')
     ? ['--use-angle=metal'] : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 });
 after(async () => {
   await browser?.close();
-  if (temporary) await rm(temporary, { recursive: true, force: true });
 });
 
 /**
@@ -55,8 +50,8 @@ async function serve(t, route = () => false) {
     if (url.pathname === '/harness.js') { response.setHeader('Content-Type', 'text/javascript'); response.end(bundle); }
     else if (url.pathname === '/styles.css') { response.setHeader('Content-Type', 'text/css'); response.end(compiledCss); }
     else if (route(url, root, response)) return;
-    else if (url.pathname.endsWith('/__cad/catalog')) { response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ entries: [] })); }
-    else if (url.pathname.endsWith('/__cad/server')) { response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ backend: 'cadgen' })); }
+    else if (url.pathname.endsWith('/api/v1/documents')) { response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ documents: ([]).map(entry => ({ entry, revision: entry.hash })) })); }
+    else if (url.pathname.endsWith('/api/v1/server')) { response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ backend: 'cadgen' })); }
     else if (/\.(woff2|ttf)$/.test(url.pathname)) { response.statusCode = 404; response.end(); }
     else { response.setHeader('Content-Type', 'text/html'); response.end(`<!doctype html><html><head><title>Host title</title><link rel="stylesheet" href="/styles.css">${HARNESS_SIZE}</head><body><div id="root"></div><script type="module" src="/harness.js"></script></body></html>`); }
   });
@@ -82,18 +77,102 @@ const settle = page => page.evaluate(() => new Promise(resolve => requestAnimati
 // temporary harness.
 const mesh = 'solid triangle\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 20 0 0\nvertex 0 20 0\nendloop\nendfacet\nendsolid triangle\n';
 
+test('a phone\'s tools centre on the viewport as space runs out, and what does not fit is More\'s', async (t) => {
+  const origin = await serve(t);
+  const { page, errors } = await newPage(t);
+  await page.goto(`${origin}/?file=panel.harness`);
+  const pane = page.getByTestId('one');
+  await pane.getByRole('group', { name: 'Interaction tools' }).waitFor();
+  for (const width of [599, 390, 320, 240, 600, 599]) {
+    await page.locator('#root > div').evaluate((element, width) => element.style.setProperty('width', `${width}px`, 'important'), width);
+    await page.waitForFunction(width => {
+      const pane = document.querySelector('[data-testid="one"]');
+      const viewport = pane.querySelector('[data-cad-canvas]');
+      const strip = pane.querySelector('[aria-label="Interaction tools"]');
+      const column = pane.querySelector('[data-cad-tool-groups]');
+      if (!viewport || !strip || !column) return false;
+      const view = viewport.getBoundingClientRect(), tools = strip.getBoundingClientRect();
+      const mobile = width < 600;
+      if (Math.abs(view.width - width) > 1 || column.hasAttribute('data-mobile') !== mobile) return false;
+      const expected = view.left + Math.max(8, (view.width - tools.width) / 2);
+      return Math.abs(tools.left - expected) < 1 && tools.right <= view.right - 7;
+    }, width);
+  }
+  await pane.getByRole('button', { name: 'More tools', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Preview', exact: true }).waitFor();
+  assert.deepEqual(errors, []);
+});
+
+// ONE FRAME (`kit/shell/ViewFrame.jsx`), over a 3D view (the harness) and a flat one (a drawing with
+// layers): toggling the view's panel leaves the strip's centre on the view's centre, the picture is
+// drawn in what the panel leaves, centred on it, and on a phone the strip is centred with no panel.
+const LAYERED = JSON.parse(await readFile(new URL('../../dxf/__fixtures__/layered.drawing.json', import.meta.url), 'utf8'));
+const drawingRoute = (url, root, response) => {
+  if (url.pathname.endsWith('/drawing')) { response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify(LAYERED)); return true; }
+  if (!url.pathname.endsWith('/api/v1/documents')) return false;
+  response.setHeader('Content-Type', 'application/json');
+  response.end(JSON.stringify({ id: 'layered.dxf', kind: 'dxf', api: '/api/v1/documents/dxf/layered.dxf',
+    documents: [{ entry: { kind: 'dxf', file: '/models/layered.dxf', url: '/layered.dxf', hash: `${root}-layered`, bytes: 4096 }, revision: `${root}-layered` }] }));
+  return true;
+};
+for (const [what, file, route] of [['a 3D view', 'panel.harness', undefined], ['a flat view', 'layered.dxf', drawingRoute]]) {
+  test(`${what}: the strip stays at the view's centre as the panel opens and shuts, the picture is centred in what the panel leaves, and a phone has no panel`, async (t) => {
+    const origin = await serve(t, route);
+    const { page, errors } = await newPage(t);
+    await page.addInitScript(() => { window.Worker = undefined; });
+    await page.goto(`${origin}/?file=${file}`);
+    const pane = page.getByTestId('one');
+    const strip = pane.getByRole('group', { name: 'Interaction tools' });
+    await strip.waitFor();
+    // The strip's centre against the view's, the canvas's box against the stage's, the panel's width.
+    const measure = () => page.evaluate(() => {
+      const pane = document.querySelector('[data-testid="one"]');
+      const box = element => element?.getBoundingClientRect() ?? null;
+      const view = box(pane.querySelector('[data-slot="cad-file-view"]')), stage = box(pane.querySelector('[data-cad-canvas]'));
+      const tools = box(pane.querySelector('[aria-label="Interaction tools"]'));
+      const canvas = [...pane.querySelectorAll('[data-cad-canvas] canvas')].map(box).sort((a, b) => b.width * b.height - a.width * a.height)[0];
+      const panel = pane.querySelector('aside[data-flat-panel]');
+      return { view: view.left + view.width / 2, strip: tools.left + tools.width / 2, stage: stage.left + stage.width / 2, stageWidth: stage.width,
+        canvas: canvas.left + canvas.width / 2, canvasWidth: canvas.width, panel: panel && !panel.hidden ? box(panel).width : 0 };
+    });
+    // Opened from its pill (the 800px view starts it collapsed), then shut again from its own button.
+    const shut = await measure();
+    await pane.getByRole('button', { name: 'Show panel', exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('[data-testid="one"] aside[data-flat-panel]')?.hidden);
+    await settle(page);
+    const open = await measure();
+    await pane.getByRole('button', { name: 'Hide panel', exact: true }).click();
+    await settle(page);
+    const again = await measure();
+    assert.ok(open.panel > 0 && shut.panel === 0, `the panel opens and shuts: ${shut.panel} -> ${open.panel}`);
+    for (const [state, at] of [['shut', shut], ['open', open], ['shut again', again]]) {
+      assert.ok(Math.abs(at.strip - at.view) <= 1, `${state}, the strip is at the view's centre: ${at.strip} of ${at.view}`);
+      assert.ok(Math.abs(at.canvas - at.stage) <= 1 && Math.abs(at.canvasWidth - at.stageWidth) <= 1, `${state}, the picture fills the stage, centred on it: ${JSON.stringify(at)}`);
+    }
+    assert.ok(Math.abs(open.stageWidth - (shut.stageWidth - open.panel)) <= 1, 'the open panel takes its width out of the canvas');
+    // A phone: no panel, no pill, the strip centred in the view.
+    await page.locator('#root > div').evaluate(element => element.style.setProperty('width', '390px', 'important'));
+    await page.waitForFunction(() => document.querySelector('[data-testid="one"] [data-cad-tool-groups]')?.hasAttribute('data-mobile'));
+    await settle(page);
+    const phone = await measure();
+    assert.ok(Math.abs(phone.strip - phone.view) <= 1, `on a phone the strip is at the view's centre: ${phone.strip} of ${phone.view}`);
+    assert.equal(await pane.locator('[data-flat-panel], [data-flat-panel-pill]').count(), 0, 'a phone has no panel');
+    assert.deepEqual(errors, []);
+  });
+}
+
 test('a shell renderer restores isolated view state on a remount', async (t) => {
   const requests = [];
   const catalogFiles = [];
   const origin = await serve(t, (url, root, response) => {
     requests.push(url.pathname);
-    if (url.pathname.endsWith('/__cad/catalog')) {
+    if (url.pathname.endsWith('/api/v1/documents')) {
       // The catalog holds the files on screen: asked for one by its absolute path, it lists it.
       response.setHeader('Content-Type', 'application/json');
-      catalogFiles.push({ root, file: url.searchParams.get('file') });
-      const entries = url.searchParams.get('file') === '/models/part.stl'
+      catalogFiles.push({ root, file: url.searchParams.get('path') });
+      const entries = url.searchParams.get('path') === '/models/part.stl'
         ? [{ kind: 'stl', file: '/models/part.stl', url: '/mesh.stl', hash: root, bytes: mesh.length }] : [];
-      response.end(JSON.stringify({ entries }));
+      response.end(JSON.stringify({ documents: entries.map(entry => ({ entry, revision: entry.hash })) }));
       return true;
     }
     if (url.pathname.endsWith('/mesh.stl')) { response.end(mesh); return true; }
@@ -106,22 +185,30 @@ test('a shell renderer restores isolated view state on a remount', async (t) => 
     // A Retina quality switch resizes the drawing buffer. Every such clear
     // must be followed by its replacement draw in the SAME task, even while
     // shader preparation is asynchronous. Canvas identity alone cannot catch it.
+    // A view of the GPU device is handed its frame (`transferFromImageBitmap`) at the end of the
+    // frame's task: that is its redraw.
     const draws = new WeakMap();
+    const drew = canvas => draws.set(canvas, (draws.get(canvas) || 0) + 1);
     window.cadBufferClears = [];
     for (const name of ['drawElements', 'drawArrays', 'drawElementsInstanced', 'drawArraysInstanced']) {
       const original = WebGL2RenderingContext.prototype[name];
       WebGL2RenderingContext.prototype[name] = function (...args) {
-        draws.set(this.canvas, (draws.get(this.canvas) || 0) + 1);
+        drew(this.canvas);
         return original.apply(this, args);
       };
     }
+    const transfer = ImageBitmapRenderingContext.prototype.transferFromImageBitmap;
+    ImageBitmapRenderingContext.prototype.transferFromImageBitmap = function (...args) {
+      drew(this.canvas);
+      return transfer.apply(this, args);
+    };
     for (const name of ['width', 'height']) {
       const property = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, name);
       Object.defineProperty(HTMLCanvasElement.prototype, name, { ...property, set(value) {
         property.set.call(this, value);
         if (this !== window.cadHarnessView?.canvas) return;
         const before = draws.get(this) || 0;
-        queueMicrotask(() => window.cadBufferClears.push({ name, redrawn: (draws.get(this) || 0) > before }));
+        queueMicrotask(() => queueMicrotask(() => window.cadBufferClears.push({ name, redrawn: (draws.get(this) || 0) > before })));
       } });
     }
 
@@ -131,10 +218,15 @@ test('a shell renderer restores isolated view state on a remount', async (t) => 
   });
   await page.goto(`${origin}/`);
   const first = page.getByTestId('one');
-  // Display's settings are a dropdown from its button at the navbar's right end (`DisplayPopover.jsx`),
-  // portaled out of the pane: a file never opens with it, and it is not a tool.
-  const displayButton = pane => pane.locator('[data-view-controls]').getByRole('button', { name: 'Display', exact: true });
-  const display = page.locator('[data-display-popover]');
+  // Display is a menu from its tile at the strip's end, the modes and the Grid switch
+  // (`DisplayPopover.jsx`), portaled out of the pane: a file never opens with it, and it is not a tool.
+  // A pane narrower than a phone's breakpoint (each of two side by side) has a phone's strip: the
+  // view's controls are rows of its More menu, Projection and Preview items, Display's and the zoom's
+  // choices opened under their rows in More itself (a phone has no room beside More for a submenu).
+  const displayButton = pane => pane.locator('[data-cad-toolbar] [data-view-controls]').getByRole('button', { name: /^Display mode: / });
+  const moreButton = pane => pane.locator('[data-cad-toolbar] [data-strip-more]');
+  const moreMenu = page.getByRole('menu', { name: 'More tools', exact: true });
+  const display = moreMenu.getByRole('group', { name: 'Display', exact: true });
   const cameraZoom = id => page.evaluate(pane => window.cadHarness[pane].controller?.readState().camera?.zoom ?? null, id);
   await displayButton(first).waitFor().catch(async (error) => { throw new Error(`${error.message}; page errors: ${errors.join('; ')}; body: ${await page.locator("body").innerText()}; requests: ${requests.join(", ")}`); });
   await page.waitForFunction(() => Object.keys(window.cadHarness.state.renderers || {}).length > 0);
@@ -153,7 +245,8 @@ test('a shell renderer restores isolated view state on a remount', async (t) => 
   // ISOLATED: a sibling renderer over the same file opens at its own framing, and the first
   // pane keeps the camera it was given.
   await page.evaluate(() => window.cadHarness.second(true));
-  await displayButton(page.getByTestId('two')).waitFor();
+  await moreButton(page.getByTestId('two')).waitFor();
+  assert.equal(await displayButton(page.getByTestId('two')).count(), 0, 'a phone-wide pane has no Display tile');
   await page.waitForFunction(() => window.cadHarness.b.controller?.readState().loading === false);
   assert.equal(await cameraZoom('b'), 1, 'a sibling renderer opens at its own framing');
   assert.ok(requests.includes('/two/mesh.stl'));
@@ -162,21 +255,49 @@ test('a shell renderer restores isolated view state on a remount', async (t) => 
   // observer and camera event publish before taking the saved snapshot.
   await settle(page);
 
-  // The file goes with its Display settings open.
-  await displayButton(first).click();
+  // The file goes with its Display choices open, from More (the first pane is phone-wide now too):
+  // Display's row opens the modes under it, then Grid, which toggles and leaves them open.
+  await moreButton(first).click();
+  assert.deepEqual(await moreMenu.getByRole('menuitem').evaluateAll(items => items.map(item => `${item.textContent.trim()}:${item.getAttribute('aria-haspopup') || (item.hasAttribute('aria-expanded') ? 'opens' : 'item')}`)),
+    ['Projection:item', 'Display:opens', 'Zoom:opens', 'Preview:item'], 'the view\'s controls are More\'s rows: Projection switches, Display and Zoom open their choices under them');
+  await moreMenu.getByRole('menuitem', { name: 'Display', exact: true }).click();
   await display.waitFor();
+  // One menu, every row of it on screen: nothing is placed beside More, where a phone has no room.
+  assert.equal(await page.getByRole('menu').count(), 1, 'More alone');
+  assert.deepEqual(await moreMenu.locator('[role^=menuitem]').evaluateAll(items => items.filter(item => {
+    const box = item.getBoundingClientRect();
+    return box.left < 0 || box.top < 0 || box.right > window.innerWidth || box.bottom > window.innerHeight;
+  }).map(item => item.textContent.trim())), [], 'every row on screen');
+  assert.deepEqual(await display.getByRole('menuitemradio').allInnerTexts(), ['Solid'], 'an STL of one mesh: Solid alone');
+  assert.equal(await display.getByRole('menuitem').count(), 0, 'no settings page');
+  await display.getByRole('menuitemcheckbox', { name: 'Grid', exact: true }).click();
+  assert.equal(await display.getByRole('menuitemcheckbox', { name: 'Grid', exact: true }).getAttribute('aria-checked'), 'true');
+  await page.waitForFunction(() => window.cadHarness.a.controller.readState().display.grid === true);
+  assert.equal(await display.count(), 1, 'ticking Grid leaves the menu open');
   await page.evaluate(() => window.cadHarness.mounted(false));
-  await display.waitFor({ state: 'detached' });
+  await display.waitFor({ state: 'detached' }).catch(async (error) => {
+    const left = await page.evaluate(() => ({
+      open: [...document.querySelectorAll('[role=menu]')].map(node => ({ settings: node.getAttribute('aria-label'), state: node.getAttribute('data-state'),
+        pane: node.closest('[data-testid]')?.getAttribute('data-testid') ?? 'body' })),
+      viewerOne: Boolean(document.querySelector('[data-testid="one"] [data-viewer-layout]')),
+      layouts: [...document.querySelectorAll('[data-viewer-layout]')].map(node => `${node.closest('[data-testid]')?.getAttribute('data-testid')}:${node.getAttribute('data-viewer-layout')}`),
+      triggers: [...document.querySelectorAll('button[aria-label^="Display mode"]')].map(node => `${node.closest('[data-testid]')?.getAttribute('data-testid')}:${node.closest('[data-viewer-navbar]') ? 'navbar' : 'view'}:${node.getAttribute('aria-expanded')}`),
+    }));
+    throw new Error(`${error.message}; still on the page: ${JSON.stringify(left)}; page errors: ${errors.join('; ')}`);
+  });
   await first.locator('[data-slot="cad-file-view"]').waitFor({ state: 'detached' });
   // Unmount persists the display settings and the camera, under the file and the renderer.
   const before = await page.evaluate(() => window.cadHarness.state);
   assert.deepEqual(Object.keys(before.renderers), [JSON.stringify(['/models/part.stl', 'mesh'])], 'one record per file, keyed [absolute path, renderer id]');
-  for (const saved of Object.values(before.renderers)) assert.ok(Math.abs(saved.camera.zoom - 1.1) < 1e-6, `the camera is persisted: ${JSON.stringify(saved.camera)}`);
+  for (const saved of Object.values(before.renderers)) {
+    assert.ok(Math.abs(saved.camera.zoom - 1.1) < 1e-6, `the camera is persisted: ${JSON.stringify(saved.camera)}`);
+    assert.deepEqual([saved.display.mode, saved.display.grid], ['solid', true], 'and the display: its mode and the Grid switch');
+  }
   await page.evaluate(() => window.cadHarness.mounted(true));
   // Whether Display is open is transient, not file state.
-  await displayButton(first).waitFor();
-  assert.equal(await display.count(), 0, 'the remounted file opens with its Display settings shut');
-  assert.equal(await displayButton(first).getAttribute('aria-pressed'), 'false');
+  await moreButton(first).waitFor();
+  assert.equal(await display.count(), 0, 'the remounted file opens with its Display menu shut');
+  assert.deepEqual([await moreButton(first).getAttribute('aria-expanded'), await moreMenu.count()], ['false', 0], 'and More shut');
   // The pane remounts before the viewport adopts the mesh and publishes its restored
   // camera. Wait for the actual presented frame, not an arbitrary settling delay.
   await page.waitForFunction(() => {
@@ -210,11 +331,11 @@ test('a shell renderer restores isolated view state on a remount', async (t) => 
   assert.deepEqual(errors, []);
 });
 
-test('a viewport that goes loses its WebGL context and leaves no listener on the page, and a context recovery hands over to a fresh one', async (t) => {
+test('every view draws through the one GPU device: a view that goes leaves it and no listener on the page, and a lost device is recovered for the view on screen', async (t) => {
   const origin = await serve(t, (url, root, response) => {
-    if (url.pathname.endsWith('/__cad/catalog')) {
+    if (url.pathname.endsWith('/api/v1/documents')) {
       response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ entries: [{ kind: 'stl', file: '/models/part.stl', url: '/mesh.stl', hash: root, bytes: mesh.length }] }));
+      response.end(JSON.stringify({ documents: ([{ kind: 'stl', file: '/models/part.stl', url: '/mesh.stl', hash: root, bytes: mesh.length }]).map(entry => ({ entry, revision: entry.hash })) }));
       return true;
     }
     if (url.pathname.endsWith('/mesh.stl')) { response.end(mesh); return true; }
@@ -223,17 +344,19 @@ test('a viewport that goes loses its WebGL context and leaves no listener on the
   const { page, errors } = await newPage(t);
   await page.addInitScript(() => {
     window.Worker = undefined;
-    // Every WebGL context the page makes, held weakly, and the keydown listeners on the window and
-    // the document, counted as the DOM keeps them (one per listener and capture flag).
+    // Every WebGL context the page makes, on a canvas or off one, and the keydown listeners on the
+    // window and the document, counted as the DOM keeps them (one per listener and capture flag).
     const contexts = [];
-    const getContext = HTMLCanvasElement.prototype.getContext;
-    HTMLCanvasElement.prototype.getContext = function (type, ...rest) {
-      const context = getContext.call(this, type, ...rest);
-      if (context && /webgl/.test(type) && !contexts.some(ref => ref.deref() === context)) contexts.push(new WeakRef(context));
-      return context;
-    };
-    // Oldest first: lost, or collected (true); live (false).
-    window.cadContextsLost = () => contexts.map(ref => ref.deref()?.isContextLost() ?? true);
+    for (const Canvas of [HTMLCanvasElement, OffscreenCanvas]) {
+      const getContext = Canvas.prototype.getContext;
+      Canvas.prototype.getContext = function (type, ...rest) {
+        const context = getContext.call(this, type, ...rest);
+        if (context && /webgl/.test(type) && !contexts.includes(context)) contexts.push(context);
+        return context;
+      };
+    }
+    window.cadContexts = contexts;
+    window.cadContextsLost = () => contexts.map(context => context.isContextLost());
     const keydown = new Set(), ids = new WeakMap();
     let next = 0;
     const key = (target, listener, options) => {
@@ -255,42 +378,33 @@ test('a viewport that goes loses its WebGL context and leaves no listener on the
   const shown = () => page.waitForFunction(() => window.cadHarness?.a?.controller?.readState().loading === false
     && !!document.querySelector('[data-testid="one"] [aria-busy="false"] canvas'));
   const gone = () => page.waitForFunction(() => !document.querySelector('[data-testid="one"] canvas'));
-  // A teardown finishes after React has taken the view off the page, so the expected contexts are
-  // awaited before the state is read.
-  const state = async (expected) => {
-    await page.waitForFunction(lost => JSON.stringify(window.cadContextsLost()) === JSON.stringify(lost), expected).catch(() => {});
-    return page.evaluate(() => ({ contexts: window.cadContextsLost(), keydown: window.cadKeydownListeners() }));
-  };
+  const state = () => page.evaluate(() => ({ contexts: window.cadContextsLost(), views: window.__cadGpuDevice?.().views ?? null,
+    keydown: window.cadKeydownListeners() }));
   await shown();
   const keydown = await page.evaluate(() => window.cadKeydownListeners());
-  assert.deepEqual(await state([false]), { contexts: [false], keydown });
+  assert.deepEqual(await state(), { contexts: [false], views: 1, keydown }, 'one context, the device\'s, and one view of it');
 
-  // A file switch, or a library card pictured: the view goes and another comes. Every one that went
-  // has lost its context, the GPU memory with it, and the page keeps no listener of its controls.
+  // A file switch, or a library card pictured: the view goes and another comes. The next view draws
+  // through the same device (its buffers and programs kept), and the page keeps no listener of the
+  // controls that went.
   for (let remount = 1; remount <= 3; remount += 1) {
     await page.evaluate(() => window.cadHarness.mounted(false));
     await gone();
     await page.evaluate(() => window.cadHarness.mounted(true));
     await shown();
-    const contexts = [...Array(remount).fill(true), false];
-    assert.deepEqual(await state(contexts), { contexts, keydown },
-      `after remount ${remount}: the views that went have lost their contexts, and the page holds one view's listeners`);
+    assert.deepEqual(await state(), { contexts: [false], views: 1, keydown }, `after remount ${remount}`);
   }
 
-  // A context RECOVERY replaces the runtime under a view that stays: the next one draws in a
-  // context of its own, and the one it replaced goes as any other does, its listeners with it.
-  const recovered = page.evaluate(() => new Promise(resolve => {
-    const canvas = document.querySelector('[data-testid="one"] [aria-busy="false"] canvas');
-    const extension = canvas.getContext('webgl2').getExtension('WEBGL_lose_context');
-    canvas.addEventListener('webglcontextlost', () => setTimeout(() => { extension.restoreContext(); resolve(); }), { once: true });
+  // The device's context lost and restored: the view on screen draws again, in the same device, and
+  // is a viewer: the camera orbits under a drag.
+  await page.evaluate(() => new Promise(resolve => {
+    const extension = window.cadContexts[0].getExtension('WEBGL_lose_context');
+    window.cadContexts[0].canvas.addEventListener('webglcontextlost', () => setTimeout(() => { extension.restoreContext(); resolve(); }), { once: true });
     extension.loseContext();
   }));
-  await recovered;
-  await page.waitForFunction(() => window.cadContextsLost().length === 5);
+  await page.waitForFunction(() => !window.cadContexts[0].isContextLost());
   await shown();
-  assert.deepEqual(await state([true, true, true, true, false]), { contexts: [true, true, true, true, false], keydown },
-    'the recovered view draws in a fresh context, and the one it replaced is lost');
-  // And the fresh one is a viewer: the camera orbits under a drag.
+  assert.deepEqual(await state(), { contexts: [false], views: 1, keydown });
   const before = await page.evaluate(() => window.__cadCamera().position);
   const box = await page.getByTestId('one').locator('[aria-busy="false"] > div > canvas').first().boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -299,10 +413,10 @@ test('a viewport that goes loses its WebGL context and leaves no listener on the
   await page.mouse.up();
   await page.waitForFunction(start => window.__cadCamera().position.some((value, index) => Math.abs(value - start[index]) > 1e-3), before);
 
-  // The last view goes: every context is lost, and no test seam keeps a runtime on the window.
+  // The last view goes: the device holds none, and no test seam keeps a runtime on the window.
   await page.evaluate(() => window.cadHarness.mounted(false));
   await gone();
-  assert.deepEqual((await state([true, true, true, true, true])).contexts, [true, true, true, true, true]);
+  await page.waitForFunction(() => window.__cadGpuDevice?.().views === 0);
   assert.deepEqual(await page.evaluate(() => [typeof window.__cadCamera, typeof window.__cadStage]), ['undefined', 'undefined']);
   assert.deepEqual(errors, []);
 });
@@ -318,10 +432,10 @@ const widePlate = `solid plate\n${WIDE_TRIANGLES.map(triangle =>
 
 test('a file opens framed at 100% of its own ruler: the open fit is the fit, whatever lens it was taken under', async (t) => {
   const origin = await serve(t, (url, root, response) => {
-    if (url.pathname.endsWith('/__cad/catalog')) {
+    if (url.pathname.endsWith('/api/v1/documents')) {
       response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ entries: [
-        { kind: 'stl', file: '/models/plate.stl', url: '/plate.stl', hash: root, bytes: widePlate.length }] }));
+      response.end(JSON.stringify({ documents: ([
+        { kind: 'stl', file: '/models/plate.stl', url: '/plate.stl', hash: root, bytes: widePlate.length }]).map(entry => ({ entry, revision: entry.hash })) }));
       return true;
     }
     if (url.pathname.endsWith('/plate.stl')) { response.end(widePlate); return true; }
@@ -338,29 +452,32 @@ test('a file opens framed at 100% of its own ruler: the open fit is the fit, wha
   const opened = await page.evaluate(() => {
     const camera = window.__cadCamera();
     const canvas = document.querySelector('[data-testid="one"] [aria-busy] > div > canvas');
+    const strip = Number.parseFloat(getComputedStyle(canvas.closest('[data-slot=cad-file-view]')).getPropertyValue('--cad-tools-bottom')) || 0;
     return { projection: camera.projection, halfHeight: camera.halfHeight, zoomPercent: camera.zoomPercent,
-      bounds: camera.originalBounds, aspect: canvas.clientWidth / canvas.clientHeight };
+      bounds: camera.originalBounds, aspect: canvas.clientWidth / canvas.clientHeight, room: [strip, canvas.clientHeight] };
   });
   assert.equal(opened.projection, 'orthographic');
   // 100% means "framed as the file opens". It is a ruler the viewport computes independently
   // of the fit, so the two agreeing is the whole claim: a fit taken under the opening
   // PERSPECTIVE lens and then converted to orthographic used to land near 89% of it.
   assert.equal(Math.round(opened.zoomPercent), 100, `opened at ${opened.zoomPercent}% of its own ruler`);
-  // And it is the half-height the fit mathematics gives for this box at the REAL canvas aspect.
+  // And it is the half-height the fit mathematics gives for this box at the REAL canvas aspect, in the
+  // room the strip leaves under it.
   const expected = interactiveCameraFrameForBounds(THREE, {
     camera: Object.assign(new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 1000), { fov: CAD_DEFAULT_VERTICAL_FOV_DEGREES }),
     controls: { target: new THREE.Vector3() }, bounds: opened.bounds, frameAspect: opened.aspect,
-    minRadius: 0, viewDirection: DEFAULT_VIEW_DIRECTION, viewUp: WORLD_UP,
+    minRadius: 0, viewDirection: DEFAULT_VIEW_DIRECTION, viewUp: WORLD_UP, room: fitRoom(...opened.room),
   }).halfHeight;
   assert.ok(Math.abs(opened.halfHeight - expected) / expected < 0.01,
     `framed at the fit for this aspect: ${opened.halfHeight} vs ${expected}`);
 
-  // Home resets the complete view; cube faces keep the current zoom and target.
+  // Zoom to fit frames the model again; cube faces keep the current zoom and target.
   const canvas = pane.locator('[aria-busy] > div > canvas').first();
   // The share of the drawn frame that is the model: read the middle/upper canvas region,
-  // clear of the bottom prompt action and the viewport controls at the right edge.
+  // clear of the bottom prompt action and the viewport controls at the right edge, with the strip
+  // (the view's controls, over the top centre) hidden: the canvas's own pixels.
   const inkFraction = async () => {
-    const png = PNG.sync.read(await canvas.screenshot());
+    const png = PNG.sync.read(await canvas.screenshot({ style: '[data-cad-tool-groups] { visibility: hidden !important; }' }));
     const background = [png.data[0], png.data[1], png.data[2]];
     const columns = Math.floor(png.width * 0.8);
     const rows = Math.floor(png.height * 0.8);
@@ -397,7 +514,8 @@ test('a file opens framed at 100% of its own ruler: the open fit is the fit, wha
   const snapped = await page.evaluate(() => window.__cadCamera());
   snapped.target.forEach((value, index) => assert.ok(Math.abs(value - beforeSnap.target[index]) < 1e-8));
   assert.equal(snapped.zoom, beforeSnap.zoom);
-  assert.equal(await pane.getByRole('button', { name: 'Home', exact: true }).count(), 0);
+  // There is no Home, in the cube or beside it: Zoom to fit brings a view back.
+  assert.equal(await pane.getByRole('button', { name: 'Home', exact: true }).count(), 0, 'no Home in the view');
   await page.evaluate(() => window.cadHarness.a.controller.resetCamera());
   const recovered = await settleInk(ink => ink > 0.05, 'Zoom to Fit frames the plate after panning away');
   assert.ok(recovered > lost * 5);
@@ -448,7 +566,9 @@ test('a scene that arrives in place is framed when whole', async (t) => {
   // whole yet: the viewport adopts what arrived (it is drawn, larger) but does NOT re-frame,
   // so the triangle runs off the canvas. When the scene says it is whole, it is framed again.
   const opened = await waitForFrame(frame => frame.painted > 500 && frame.atEdge === 0, 'showed the framed triangle');
-  const pose = () => page.evaluate(() => { const c = window.__cadCamera(); return [c.position, c.target, c.zoom]; });
+  // The pose: where the camera looks from (its direction), at, and its zoom. How far back an
+  // orthographic eye stands is no part of the picture (`kit/camera/orthographicEye.js`).
+  const pose = () => page.evaluate(() => { const c = window.__cadCamera(); const d = c.position.map((v, i) => v - c.target[i]); const l = Math.hypot(...d); return [d.map(v => v / l), c.target, c.zoom]; });
   // The opened camera once it is at rest: the same over several frames running.
   await page.waitForFunction(() => new Promise(resolve => {
     let still = 0, last = null;
@@ -488,7 +608,8 @@ test('a view turned with the arrow keys while a scene arrives is kept when it is
   const pane = page.getByTestId('one');
   const canvas = pane.locator('[aria-busy="false"] > div > canvas').first();
   await canvas.waitFor();
-  const pose = () => page.evaluate(() => { const c = window.__cadCamera(); return [...c.position, ...c.target, c.zoom]; });
+  // Where the camera looks from (its direction), at, and its zoom (`kit/camera/orthographicEye.js`).
+  const pose = () => page.evaluate(() => { const c = window.__cadCamera(); const d = c.position.map((v, i) => v - c.target[i]); const l = Math.hypot(...d); return [...d.map(v => v / l), ...c.target, c.zoom]; });
   // The camera at rest: the same over several frames running.
   const atRest = () => page.waitForFunction(() => new Promise(resolve => {
     let still = 0, last = null;
@@ -575,20 +696,33 @@ test('a renderer says more about its load than a download: finding the file, edi
   assert.equal(await overlay.count(), 0, 'a plain load covers nothing');
   assert.equal(await card.count(), 0, 'and raises nothing');
 
-  // THE CUBE IS THE BOTTOM-LEFT CORNER'S, far enough off the bottom that its axes stay inside the
-  // view, and the tool stack stops above it. The view's controls, Display then Preview, are the
-  // navbar's last. The right of the view is Quick Edit's, and the bottom middle the host's (a
-  // composer, on some) and preview's playbar.
+  // THE CUBE IS THE BOTTOM-RIGHT CORNER'S, far enough off the bottom that its axes stay inside the
+  // view, and the tool stack stops above it. The view's controls, Projection, Display then Preview,
+  // end the strip after its rule; the navbar holds none of them. The right of the view is Quick
+  // Edit's, and the bottom middle the host's (a composer, on some).
   const frameBox = await canvasElement.boundingBox();
   const cubeBox = await pane.getByLabel('View cube', { exact: true }).boundingBox();
   const stackBox = await pane.locator('[data-cad-tool-groups]').boundingBox();
   const offBottom = frameBox.y + frameBox.height - cubeBox.y - cubeBox.height;
-  assert.ok(offBottom >= 6 && offBottom < 16, `the view cube sits just off the bottom-left corner: ${offBottom}px`);
-  assert.ok(cubeBox.x < frameBox.x + 20, 'the view cube stays against the left edge');
+  // Its box 8px off the bottom and 2px from the right edge, so its axes stay inside the view.
+  assert.ok(Math.abs(offBottom - 8) < 0.5, `the view cube sits 8px off the bottom: ${offBottom}px`);
+  const offRight = frameBox.x + frameBox.width - cubeBox.x - cubeBox.width;
+  assert.ok(Math.abs(offRight - 2) < 0.5, `the view cube stays 2px from the right edge: ${offRight}px`);
   assert.ok(stackBox.y + stackBox.height <= cubeBox.y, 'the tool stack stops above the cube');
-  assert.deepEqual(await pane.locator('[data-viewer-navbar] > div button').evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label'))),
-    ['Display', 'Preview'], 'Display then Preview, at the navbar\'s right end');
-  assert.equal(await pane.locator('[data-cad-toolbar]').getByRole('button', { name: 'Display', exact: true }).count(), 0, 'nothing of Display on the strip');
+  assert.deepEqual(await pane.locator('[data-cad-toolbar] [data-view-controls] button').evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label'))),
+    ['Projection: Orthographic', 'Display mode: Solid', 'Preview'], 'Projection, Display then Preview at the strip\'s end');
+  // The corner is the cube's alone: where a ViewCube's house would stand, over its box's top-left corner, a press
+  // reaches what it reaches over the bare canvas.
+  const hitAt = (x, y) => page.evaluate(([x, y]) => {
+    const hit = document.elementFromPoint(x, y);
+    return hit ? `${hit.tagName}${hit.closest('button, [role=button]') ? ' (a control)' : ''}` : null;
+  }, [x, y]);
+  const bare = await hitAt(frameBox.x + 40, frameBox.y + frameBox.height / 2);
+  for (const [x, y] of [[cubeBox.x - 4, cubeBox.y - 4], [cubeBox.x - 4, cubeBox.y + 6], [cubeBox.x + 6, cubeBox.y - 10]]) {
+    assert.equal(await hitAt(x, y), bare, `nothing stands at the cube's upper-left: (${x}, ${y})`);
+  }
+  assert.equal(await pane.locator('[data-cad-toolbar] [data-strip-rule] + [data-view-controls]').count(), 1, 'after the strip\'s rule');
+  assert.equal(await pane.locator('[data-viewer-navbar] [data-view-controls] button').count(), 0, 'nothing of the view in the navbar');
 
   // FINDING: the wait before the file is even located covers the viewport, and says
   // so as such rather than as a phase of reading it.
@@ -605,11 +739,13 @@ test('a renderer says more about its load than a download: finding the file, edi
   assert.equal(await card.count(), 0);
   await updating.waitFor();
   assert.match(await updating.innerText(), /Updating model/);
+  // The strip is the top centre's, and the status sits under it, centred on it.
   const updateBox = await updating.boundingBox();
   const toolsBox = await pane.getByRole('group', { name: 'Interaction tools' }).boundingBox();
-  const middleY = box => box.y + box.height / 2;
-  assert.ok(Math.abs(middleY(updateBox) - middleY(toolsBox)) < 1,
-    `model update status is vertically centred with the tool strip: ${JSON.stringify({ updateBox, toolsBox })}`);
+  const middleX = box => box.x + box.width / 2;
+  assert.ok(Math.abs(middleX(toolsBox) - middleX(frameBox)) < 1, `the tool strip is at the top centre: ${JSON.stringify({ toolsBox, frameBox })}`);
+  assert.ok(updateBox.y >= toolsBox.y + toolsBox.height && Math.abs(middleX(updateBox) - middleX(toolsBox)) < 1,
+    `model update status sits under the tool strip, centred on it: ${JSON.stringify({ updateBox, toolsBox })}`);
 
   // THE BUILD ENDING ENDS IT: the saved file is on screen, so the wait is over.
   await stage('idle');
@@ -689,8 +825,9 @@ test('a renderer says more about its load than a download: finding the file, edi
   await quickEdit.waitFor();
   await quickEdit.evaluate(node => Promise.all(node.getAnimations().map(animation => animation.finished)));
   const opened = await quickEdit.boundingBox();
-  assert.ok(opened.x + opened.width > frameBox.x + frameBox.width - 20 && opened.y < frameBox.y + 20,
-    `Quick Edit takes the top-right corner: ${JSON.stringify([opened, frameBox])}`);
+  // Its corner is the view's top-right, 8px in, whatever the strip's width: the two may overlap.
+  assert.ok(opened.x + opened.width > frameBox.x + frameBox.width - 20 && Math.abs(opened.y - frameBox.y - 8) <= 1,
+    `Quick Edit takes the view's top-right corner: ${JSON.stringify([opened, frameBox])}`);
   assert.equal(Math.round(opened.width), 240);
   const note = quickEdit.getByRole('textbox', { name: 'Describe your changes', exact: true });
   const noteHeight = (await note.boundingBox()).height;
@@ -698,18 +835,42 @@ test('a renderer says more about its load than a download: finding the file, edi
   const grip = { x: corner.x + corner.width / 2, y: corner.y + corner.height / 2 };
   await page.mouse.move(grip.x, grip.y);
   await page.mouse.down();
-  await page.mouse.move(grip.x - 30, grip.y + 60, { steps: 2 });
+  // Wider by 30px in all: the strip's column (its zoom readout too) leaves an 800px view's box ~38px to grow.
+  await page.mouse.move(grip.x - 15, grip.y + 60, { steps: 2 });
   await settle(page);
   const midway = (await quickEdit.boundingBox()).width;
-  assert.ok(Math.abs(midway - opened.width - 30) <= 1, `mid-drag, the box is where its corner is: ${opened.width} -> ${midway}`);
-  await page.mouse.move(grip.x - 60, grip.y + 120, { steps: 2 });
+  assert.ok(Math.abs(midway - opened.width - 15) <= 1, `mid-drag, the box is where its corner is: ${opened.width} -> ${midway}`);
+  await page.mouse.move(grip.x - 30, grip.y + 120, { steps: 2 });
   await page.mouse.up();
   const resized = await quickEdit.boundingBox();
-  assert.ok(Math.abs(resized.width - opened.width - 60) <= 1, `dragged out 60px: ${opened.width} -> ${resized.width}`);
+  assert.ok(Math.abs(resized.width - opened.width - 30) <= 1, `dragged out 30px: ${opened.width} -> ${resized.width}`);
   const noteResized = (await note.boundingBox()).height;
   assert.ok(noteResized > 160 && Math.abs(noteResized - noteHeight - 120) <= 1, `and its note 120px down: ${noteHeight} -> ${noteResized}`);
   assert.ok(Math.abs(resized.x + resized.width - opened.x - opened.width) < 1, 'still hanging from the same corner');
   await quickEdit.getByRole('button', { name: 'Close Quick Edit', exact: true }).click();
   await quickEdit.waitFor({ state: 'detached' });
+  assert.deepEqual(errors, []);
+});
+
+test('an alert the model survives is drawn on the canvas, beside the docked panel and its tree', async (t) => {
+  const origin = await serve(t);
+  const { page, errors } = await newPage(t);
+  await page.addInitScript(() => { window.Worker = undefined; });
+  await page.goto(`${origin}/?file=panel.harness`);
+  const pane = page.getByTestId('one');
+  // The tree is the view's panel's, opened from its pill (the 800px view starts it collapsed), made as wide as it goes.
+  await pane.getByRole('button', { name: 'Show panel', exact: true }).click();
+  await pane.locator('[data-flat-panel]').getByRole('tab', { name: 'Harness tree', exact: true }).click();
+  const tree = pane.locator('[data-flat-panel]');
+  await pane.getByRole('separator', { name: 'Resize panel', exact: true }).press('End');
+  // A failed update keeps the model, and with it the tools: the card stands on the canvas, the panel docked beside it untouched.
+  await pane.locator('[data-harness-stage="failed"]').click();
+  const card = pane.getByRole('alert');
+  await card.waitFor();
+  const [over, beside] = [await card.boundingBox(), await tree.boundingBox()];
+  assert.ok(over.x >= beside.x + beside.width - 1, `the card is the canvas's, right of the panel: ${JSON.stringify({ over, beside })}`);
+  const drawn = await page.evaluate(({ x, y }) => Boolean(document.elementFromPoint(x, y)?.closest('[role="alert"]')),
+    { x: over.x + over.width / 2, y: over.y + over.height / 2 });
+  assert.ok(drawn, 'the card is drawn where it stands');
   assert.deepEqual(errors, []);
 });

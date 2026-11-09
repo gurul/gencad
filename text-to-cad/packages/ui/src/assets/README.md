@@ -9,23 +9,24 @@ the viewer runtime.
 quality 70, 4:4:4: about 510 KB).
 It preserves the playground's default two-second contraction and twenty-second
 orbit, using the brand blue (`#62b7ec`) and studio lighting. `loading-still.webp`
-is the fully expanded reference pose. The viewer displays both at 96 × 96.
+is the fully expanded reference pose. The viewer displays both at 80 × 80
+(`kit/status/LoadingIndicator.js`).
 
 The animation is decorative. Existing loading state, status labels and measured
 progress still control the overlay. The still image shows when the system
 prefers reduced motion, when the document is hidden, or when the icon's
 `reducedMotion` prop is set — the viewer passes the host's
-`environment.reducedMotion` (the desktop's Reduce motion setting). No additional
+`environment.reducedMotion` (the host's Reduce motion setting). No additional
 WebGL context or animation loop runs in the application.
 
 Both images were rendered once from that pinned source commit, so later changes
-to the PR do not change the brand. Viewer and desktop builds consume these
+to the PR do not change the brand. Both apps' builds consume these
 checked-in images and need neither Git access nor rendering tools.
 
 # Wordmarks
 
-`logo-texttocad.svg` (the home page's wordmark), `logo-cad.svg` (the version
-menu's) and `logo-c.svg` (the navbar's home button) are copies of the docs site's
-`public/brand/` marks of the same names, which `scripts/brand/generate-logos.mjs` draws, so
-every app draws the same marks from this package. Refresh them with
+`logo-c.svg` (the navbar's logo, over the home and over a document alike, which opens the app
+menu) and `logo-cad.svg` (copied with the set; nothing in the viewer draws it yet) are copies of
+the docs site's committed `public/brand/` marks of the same names, so every app draws the same marks from this package (the TEXTTOCAD wordmark stays the
+docs site's: nothing in the viewer draws it). Refresh them with
 `node scripts/brand/export-logos.mjs` rather than editing them by hand.
