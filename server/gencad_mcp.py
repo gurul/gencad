@@ -148,7 +148,13 @@ def run_freecad(script_path, timeout_s=600, extra_env=None):
     out = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
     # freecadcmd is chatty; keep the tail, which is where builds print results
     if len(out) > 20000:
-        out = "...(truncated)...\n" + out[-20000:]
+        tail = out[-20000:]
+        prefix = "...(truncated)...\n"
+        # Exit 0 does not establish success for freecadcmd. Preserve its
+        # failure signal even if the diagnostic itself fell outside the tail.
+        if FREECAD_EXCEPTION in out and FREECAD_EXCEPTION not in tail:
+            prefix += FREECAD_EXCEPTION + " (in truncated output)\n"
+        out = prefix + tail
     return proc.returncode, out
 
 
