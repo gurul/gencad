@@ -1,10 +1,10 @@
-import { isMissingFileError } from "@text-to-cad/core/client";
+import { isMissingFileError } from "@cad/core/client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { selectRenderer } from "../registry.js";
 import type { FileMetadata, FileSource, PreparedRenderer, RendererRegistration } from "../types.js";
 
 type ReadyDocument = { status: "ready"; file: FileMetadata; renderer: RendererRegistration; prepared: PreparedRenderer };
-export type LoadedDocument = ReadyDocument | { status: "empty" } | { status: "loading" } | { status: "error"; message: string; missing: boolean };
+export type LoadedDocument = ReadyDocument | { status: "empty" } | { status: "loading" } | { status: "error"; message: string; missing: boolean; error: unknown };
 
 export function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 
@@ -40,7 +40,7 @@ export function useFileDocument(path: string | null, source: FileSource, rendere
         owned = prepared;
         setResult({ key, document: { status: "ready", file: metadata, renderer, prepared } });
       } catch (error) {
-        if (!signal.aborted) setResult({ key, document: { status: "error", message: errorMessage(error), missing: isMissingFileError(error) } });
+        if (!signal.aborted) setResult({ key, document: { status: "error", message: errorMessage(error), missing: isMissingFileError(error), error } });
       }
     })();
     return () => { controller.abort(); owned?.dispose?.(); };

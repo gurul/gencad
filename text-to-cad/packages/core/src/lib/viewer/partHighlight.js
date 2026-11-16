@@ -1,11 +1,11 @@
-// Shared selection/hover highlight helpers used by both `applyPartVisualState`
-// implementations (common/cadScene.js for headless renders, and
-// lib/viewer/partVisualState.js for the interactive viewer) so the two paths
-// stay visually identical.
+// The selection/hover highlight every scene lights a part with (`sceneHighlight.js`, a robot's
+// scene), in the viewer and on the parity page alike.
 
 const PART_OCCLUSION_GHOST_RENDER_ORDER = 30;
-const PART_OCCLUSION_GHOST_OPACITY = 0.9;
-const PART_OCCLUSION_GHOST_COVERAGE = 0.6;
+// A plain blend, not a dither: an ordered dither's pattern read as grain on
+// the hidden surface. This is the dither's old mean (0.9 opacity over 60% of
+// the pixels).
+const PART_OCCLUSION_GHOST_OPACITY = 0.54;
 
 // How far the highlighted surface is pulled toward the highlight color. A blend
 // (rather than a full replace) keeps the part recognizable while still shifting
@@ -18,10 +18,9 @@ export const PART_HOVER_HIGHLIGHT_BLEND = 0.35;
 // Hover is a transient "this is what you would pick" affordance; selection is
 // persistent state that several parts can hold at once. Both are visible at the
 // same time — you hover one part while others stay selected — so they differ in
-// hue, and hover stays subordinate: weaker edges, weaker glow, and no occlusion
-// ghost. Ghosting on hover would strobe as the cursor sweeps an assembly and
-// would allocate a ghost mesh for every part the cursor touches.
-export const PART_HOVER_EDGE_EMPHASIS = 0.55;
+// hue, and hover stays subordinate: weaker glow, and no occlusion ghost. Ghosting
+// on hover would strobe as the cursor sweeps an assembly and would allocate a
+// ghost mesh for every part the cursor touches.
 export const PART_SELECTED_EMISSIVE_INTENSITY = 0.12;
 export const PART_HOVER_EMISSIVE_INTENSITY = 0.05;
 
@@ -40,29 +39,13 @@ export function partHighlightSurfaceColor(THREE, baseColor, highlightColor, blen
   return baseColor.clone().lerp(highlightColor, amount);
 }
 
-// Ordered (Bayer) 8x8 dither computed arithmetically rather than from a lookup
-// table: bitwise operators and array constructors are GLSL ES 3.00 only, and
-// this shader is injected into three's built-in GLSL ES 1.00 material source.
-const BAYER_DITHER_GLSL = /* glsl */`
-uniform float cadGhostCoverage;
-
-float cadGhostBayer2(vec2 a) {
-  a = floor(a);
-  return fract(dot(a, vec2(0.5, a.y * 0.75)));
-}
-
-float cadGhostBayer4(vec2 a) {
-  return cadGhostBayer2(0.5 * a) * 0.25 + cadGhostBayer2(a);
-}
-
-float cadGhostBayer8(vec2 a) {
-  return cadGhostBayer4(0.5 * a) * 0.25 + cadGhostBayer2(a);
-}
-`;
+// The stencil value a ghost marks the pixels it has drawn with: past the 1-251
+// an annotation's once-only strokes cycle through (`annotation.js`), and drawn
+// after the section caps, which leave the stencil 0 (`sectionCaps.js`).
+const PART_OCCLUSION_GHOST_STENCIL = 255;
 
 export function createPartOcclusionGhostMaterial(THREE, {
   color = null,
-  coverage = PART_OCCLUSION_GHOST_COVERAGE,
   opacity = PART_OCCLUSION_GHOST_OPACITY
 } = {}) {
   // A built-in material (rather than a from-scratch ShaderMaterial) so the ghost
@@ -84,21 +67,17 @@ export function createPartOcclusionGhostMaterial(THREE, {
     side: THREE.FrontSide,
     // The ghost is a UI affordance, not lit geometry: skip tone mapping so it
     // lands on the theme's highlight color instead of an ACES-rolled version.
-    toneMapped: false
+    toneMapped: false,
+    // Once per pixel: where hidden layers stack (a ring's inner and outer walls,
+    // several selected parts) the ghost blends once, so it is one even tint
+    // rather than darker wherever more of the part is behind something.
+    stencilWrite: true,
+    stencilRef: PART_OCCLUSION_GHOST_STENCIL,
+    stencilFunc: THREE.NotEqualStencilFunc,
+    stencilFail: THREE.KeepStencilOp,
+    stencilZFail: THREE.KeepStencilOp,
+    stencilZPass: THREE.ReplaceStencilOp
   });
-  const coverageUniform = { value: clamp(Number(coverage), 0, 1) };
-  material.userData.cadGhostCoverageUniform = coverageUniform;
-  material.onBeforeCompile = (shader) => {
-    shader.uniforms.cadGhostCoverage = coverageUniform;
-    shader.fragmentShader = shader.fragmentShader.replace(
-      "void main() {",
-      `${BAYER_DITHER_GLSL}
-void main() {
-  if (cadGhostCoverage <= cadGhostBayer8(gl_FragCoord.xy)) discard;
-`
-    );
-  };
-  material.customProgramCacheKey = () => "cadPartOcclusionGhost";
   return material;
 }
 

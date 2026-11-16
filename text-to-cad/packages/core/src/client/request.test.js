@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { requestViewerJson } from "./request.js";
-import { createCadClient } from "./client.js";
+import { isEngineGone, isEngineRefused, requestViewerJson } from "./request.js";
 
-const url = "/__cad/artifact?file=part.step";
+const url = "/api/v1/artifact?file=part.step";
 
 test("transport failure retains context and never claims compilation failed", async (t) => {
   t.mock.method(globalThis, "fetch", async () => { throw new TypeError("Failed to fetch"); });
@@ -22,6 +21,8 @@ test("HTTP failures preserve response status and structured server diagnostics",
     assert.equal(error.failure.kind, "http");
     assert.equal(error.failure.status, 503);
     assert.equal(error.failure.detail, "Worker unavailable");
+    // The answer rides along: the API's `hint`, a missing document's `state`.
+    assert.deepEqual(error.failure.payload, { error: { message: "Worker unavailable" } });
     return true;
   });
 });
@@ -108,22 +109,15 @@ test("a bounded GET is bounded by the server's silence: a long answer that keeps
   });
 });
 
-test("artifact requests preserve security header, GET/POST semantics and recover normally", async (t) => {
-  globalThis.window = {};
-  t.after(() => { delete globalThis.window; });
-  const calls = [];
-  const mock = t.mock.method(globalThis, "fetch", async (requestUrl, options) => {
-    calls.push([requestUrl, options]);
-    return Response.json({ state: "compiled", ok: true });
-  });
-  const client = createCadClient({ pollIntervalMs: 0 });
-  t.after(() => client.dispose());
-  assert.equal((await client.requestArtifactStatus("parts/one two.step")).state, "compiled");
-  assert.equal((await client.requestArtifact("parts/one two.step")).state, "compiled");
-  assert.equal(calls[0][1].method, "GET");
-  assert.equal(calls[1][1].headers["x-cadgen-viewer"], "1");
-  assert.equal(calls[1][1].method, "POST");
-  assert.equal(new URL(calls[1][0], "http://local").searchParams.has("force"), false);
-  mock.mock.mockImplementation(async () => { throw new TypeError("Failed to fetch"); });
-  await assert.rejects(client.requestArtifactStatus("part.step"), (error) => error.failure.operation === "status");
+test("an engine gone is nothing answering, or an engine that does not know this page's token", async () => {
+  const failed = (reply) => requestViewerJson(url, {}, "catalog", { fetch: reply }).catch((error) => error);
+  assert.equal(isEngineGone(await failed(async () => { throw new TypeError("Failed to fetch"); })), true);
+  const refused = async () => new Response(JSON.stringify({ error: "engine token required" }), { status: 403 });
+  assert.equal(isEngineGone(await failed(refused)), true);
+  // The second is told apart: an engine runs, and refuses the page's token.
+  assert.equal(isEngineRefused(await failed(refused)), true);
+  assert.equal(isEngineRefused(await failed(async () => { throw new TypeError("Failed to fetch"); })), false);
+  const other = async () => new Response(JSON.stringify({ error: "Host is not a local name" }), { status: 403 });
+  assert.equal(isEngineGone(await failed(other)), false);
+  assert.equal(isEngineGone(new Error("Failed to fetch")), false);
 });

@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { createHttpAttachmentStore, type CadClient } from '@text-to-cad/core/client';
-import { unavailablePromptContext } from '@text-to-cad/core/prompt';
-import { CadViewer, createCadFileActions, createCadFileSource, normalizePath } from '@text-to-cad/ui/cad-viewer';
-import type { AppSetting, ViewerFeatures } from '@text-to-cad/ui/file-viewer';
-import type { ViewerHost, ViewerLinks } from '@text-to-cad/ui/host';
-import type { ModelLibrarySource } from '@text-to-cad/ui/library';
-import type { TabStore } from '@text-to-cad/ui/tab-store';
+import { createHttpPromptFiles, libraryRow, type CadClient } from '@cad/core/client';
+import { unavailablePromptContext } from '@cad/core/prompt';
+import { CadViewer, createCadFileActions, createCadFileSource, normalizePath } from '@cad/ui/cad-viewer';
+import type { AppSetting, ColorSchemeSetting, LanguageSetting } from '@cad/ui/file-viewer';
+import type { ViewerHost, ViewerLinks } from '@cad/ui/host';
+import type { ModelLibrarySource } from '@cad/ui/library';
+import type { TabStore } from '@cad/ui/tab-store';
 import type { Bridge } from './host/bridge';
 import { frameClipboard } from './host/clipboard';
 import type { LiveRegistry } from './host/live';
 import { createChatPromptContext, type ChatReach } from './host/prompt';
+import { translator } from '@cad/ui/i18n';
 import type { Launch } from './host/server';
+import { CardCorner } from './CardCorner';
 import type { ViewSync } from './host/sync';
 import { TUNNEL_ORIGIN } from './host/tunnel';
 
@@ -24,13 +26,18 @@ export interface ViewReporter {
 
 /**
  * One view: the shared CAD viewer over this host — the model a launch names, by its absolute path,
- * or with none, the home (the library, and Open). A view browses from its model's folder, shows
- * what is opened in place, and adds what it shows to the library. Everything differs by data —
- * what a Quick Edit can do in the chat, whether the view has a home — never by where the view is.
- * Codex's file handler (`surface: file`, `alone`) shows its file alone: the host's own file tree is
- * its navigation.
+ * or with none, the home (the library, and Open) — under the navbar (`chrome: "page"`): its logo and
+ * app menu, Back and Forward, the file's name and menus (its ⋯: Copy path, and Open in › Browser and
+ * the file manager), and at the right the host's update and Full size. A view browses from its model's folder, shows what is opened in place, and adds what it
+ * shows to the library. Everything differs by data — what a Quick Edit can do in the chat, whether
+ * the view has a home — never by where the view is.
+ *
+ * Codex's file handler (`surface: file`, `alone`) shows its file alone (`chrome: "bare"`): the host's
+ * own file tree is its navigation, so it has no navbar, no home and no file menu (no Open in › Browser); what the
+ * navbar would carry that it still has (the update notice, Full size where the host offers it) is its
+ * corner (`CardCorner`) at the viewport's top-right.
  */
-export default function ModelView({ launch, sequence, alone = false, bridge, client, tunnel, tabStore, live, links, colorScheme, platform, reporter, sync, chat, appSettings, features, update, fullSize }: {
+export default function ModelView({ launch, sequence, alone = false, bridge, client, tunnel, tabStore, live, links, colorScheme, theme, locale, language, platform, reporter, sync, chat, appSettings, update, fullSize, whatsNew, openInBrowser, engineOrigin }: {
   launch: Launch; sequence: number; bridge: Bridge; tabStore: TabStore; live: LiveRegistry; links: ViewerLinks;
   /**
    * The view shows the one file its host opened, and nothing else (Codex's file handler): no home,
@@ -40,21 +47,39 @@ export default function ModelView({ launch, sequence, alone = false, bridge, cli
   alone?: boolean;
   /** The CAD client over `cad_http`: the viewer's routes, the library, Open and Reveal among them. */
   client: CadClient;
-  /** Its fetch, for the attachments a copied prompt saves. */
+  /** Its fetch, for the files a Quick Edit makes. */
   tunnel: typeof fetch;
   colorScheme: 'light' | 'dark'; platform: string; reporter: ViewReporter;
+  /** The person's theme, the app menu's Theme rows. */
+  theme?: ColorSchemeSetting;
+  /** The language the view reads in, and the person's choice of it: the app menu's Language row. */
+  locale?: string;
+  language?: LanguageSetting;
   /** The view's one call each second: it carries what this view's client would otherwise poll for. */
   sync: ViewSync;
   /** What the chat takes from a Quick Edit: context for the next message, a message now, or neither (Copy Prompt alone). */
   chat: ChatReach;
-  /** This app's on/off settings, in the app menu: analytics and Quick edit. */
+  /** This app's on/off settings, in the app menu: analytics. */
   appSettings?: readonly AppSetting[];
-  /** The features the person left on (in the app menu): Quick edit. */
-  features?: ViewerFeatures;
-  /** The update button, first in the navbar and on the home, while this install is behind. */
+  /**
+   * While this install is behind: the navbar's update button, last among its controls (after Full size), over a file
+   * and on the home; in the file handler, the corner's notice under Full size.
+   */
   update?: ReactNode;
-  /** Inline, the card's way to full size, where the host can show it so: in the navbar, before the view's controls, and last on the home. */
+  /** What's new, where the view has the page to say it over (a tab): `CadViewerProps.whatsNew`. */
+  whatsNew?: { entry: string | null; onDismiss(): void };
+  /** Inline, the card's way to full size, where the host can show it so: in the navbar just before the update button; the corner's first in the file handler. */
   fullSize?: ReactNode;
+  /**
+   * Open a document's page (a file's path, a model's id) in the person's browser, where a launch carried
+   * a page: the file menu's Open in › Browser (`fileActions.perform.browser`). Never in the file handler.
+   */
+  openInBrowser?: (document: string) => void;
+  /**
+   * The engine's own HTTP origin (the launch's `engine`), where a launch named one: Copy link's
+   * address, `<origin>/<id>?token=<fresh link>`, the link asked for through the tunnel. Never the tunnel's.
+   */
+  engineOrigin?: string;
 }) {
   // Codex's file handler shows its file alone: the host's own file tree is its navigation, so it
   // has neither the home nor the explorer (a source that cannot list or search offers none).
@@ -63,36 +88,41 @@ export default function ModelView({ launch, sequence, alone = false, bridge, cli
     const { list, search, ...alone } = createCadFileSource(client);
     return homed ? { ...alone, list, search } : alone;
   }, [client, homed]);
-  // The view's own history, as a browser keeps a tab's: the files it showed, by absolute path, the
-  // agent's shows and the person's own moves alike. Back and Forward walk them; a move after a Back
-  // drops what was ahead, and showing what is already on screen adds nothing. The home ('') is no
-  // step: it is a bigger way to pick a recent file, so going there leaves the history where it
-  // stands, and a file picked there follows the one the view left.
+  // The view's own history, as a browser keeps a tab's: what it showed — files, by absolute path,
+  // and the home ('') — the agent's shows and the person's own moves alike. Back and Forward walk
+  // them; a move after a Back drops what was ahead, and showing what is already on screen adds
+  // nothing.
   const launched = () => normalizePath(launch.model || '');
-  const [history, setHistory] = useState(() => {
-    const first = launched();
-    return { entries: first ? [first] : [], index: first ? 0 : -1, home: !first };
-  });
-  const file = history.home ? '' : history.entries[history.index] ?? '';
+  const [history, setHistory] = useState(() => ({ entries: [launched()], index: 0 }));
+  const file = history.entries[history.index] ?? '';
   const navigate = useCallback((next: string) => setHistory(current => {
-    if (!next) return current.home ? current : { ...current, home: true };
-    if (current.entries[current.index] === next) return current.home ? { ...current, home: false } : current;
+    if (current.entries[current.index] === next) return current;
     const entries = [...current.entries.slice(0, current.index + 1), next].slice(-HISTORY_LIMIT);
-    return { entries, index: entries.length - 1, home: false };
+    return { entries, index: entries.length - 1 };
   }), []);
-  const back = useCallback(() => setHistory(current => current.index > 0 ? { ...current, index: current.index - 1, home: false } : current), []);
+  const back = useCallback(() => setHistory(current => current.index > 0 ? { ...current, index: current.index - 1 } : current), []);
   const forward = useCallback(() => setHistory(current =>
-    current.index < current.entries.length - 1 ? { ...current, index: current.index + 1, home: false } : current), []);
+    current.index < current.entries.length - 1 ? { ...current, index: current.index + 1 } : current), []);
   const showing = useRef(file);
   showing.current = file;
-  // A copied prompt's sketch is saved by the server, which is on this machine.
-  const attachments = useMemo(() => createHttpAttachmentStore({ origin: TUNNEL_ORIGIN, fetch: tunnel }), [tunnel]);
-  const chatContext = useMemo(() => chat.queue || chat.send ? createChatPromptContext(bridge, { reach: chat, attachments }) : null,
-    [chat.queue, chat.send, chat.sendImages, bridge, attachments]);
+  // A Quick Edit's views, annotation and pictures are made by the server, which is on this machine.
+  const promptFiles = useMemo(() => createHttpPromptFiles({ origin: TUNNEL_ORIGIN, fetch: tunnel }), [tunnel]);
+  // What the chat's port says to the person, in the view's language as it is when it speaks.
+  const sayRef = useRef(translator(locale));
+  sayRef.current = translator(locale);
+  const chatContext = useMemo(() => chat.queue || chat.send
+    ? createChatPromptContext(bridge, { reach: chat, t: (key, params) => sayRef.current(key, params) }) : null,
+    [chat.queue, chat.send, bridge]);
   useEffect(() => () => chatContext?.dispose(), [chatContext]);
   const promptContext = chatContext ?? unavailablePromptContext;
-  // The file menu: its path, and Reveal in the desktop's file manager (the server is on this machine).
-  const fileActions = useMemo(() => createCadFileActions({ platform, clipboard: frameClipboard, reveal: path => client.reveal(path) }), [platform, client]);
+  // The file menu: its path, Reveal in the desktop's file manager (the server is on this machine),
+  // and, in a view with a home, the document's page in the browser (Open in › Browser).
+  const fileActions = useMemo(() => {
+    // Open in's apps too, through the tunnel as Reveal is: the server opens them on this computer.
+    const actions = createCadFileActions({ platform, clipboard: frameClipboard, reveal: path => client.reveal(path), openIn: client,
+      ...(engineOrigin ? { link: { origin: engineOrigin, client } } : {}) });
+    return homed && openInBrowser ? { ...actions, perform: { ...actions.perform, browser: (entry: { path: string }) => openInBrowser(entry.path) } } : actions;
+  }, [platform, client, homed, openInBrowser, engineOrigin]);
 
   // The agent's show of a file is a step in the view's history, as a person's is.
   useEffect(() => { navigate(launched()); }, [launch, sequence]);
@@ -102,19 +132,21 @@ export default function ModelView({ launch, sequence, alone = false, bridge, cli
   }), [sync, client]);
   useEffect(() => { reporter.showing(file || null); }, [reporter, file]);
 
-  // Every other view has the home: the models opened before, from every view and the web viewer,
-  // and Open with the desktop's chooser where there is one. What it opens is shown in place.
-  // The home's first list came with its launch: the cards draw at once, and later reads ask.
+  // Every other view has the home: the models opened before, from every view and the web viewer.
+  // What it opens is shown in place.
+  // The home's first list came with its launch, its rows as `GET /api/v1/documents` lists them: the
+  // cards draw at once, each its picture read by its document's id, and later reads ask.
   const seeded = useRef(launch.recents ?? null);
   const library = useMemo<ModelLibrarySource | undefined>(() => homed ? {
     list: () => {
       const first = seeded.current;
       seeded.current = null;
-      return first ? Promise.resolve(first) : client.recents();
+      return first ? Promise.resolve(first.map(libraryRow)) : client.recents();
     },
     change: (action, entry) => client.changeRecents({ action, path: entry.path }),
-    thumbnail: name => client.thumbnail(name),
+    thumbnail: (model, scheme) => client.thumbnail(model, { scheme }),
     open: async entry => { navigate(normalizePath(entry.path)); },
+    // Open, with the desktop's chooser where this computer has one: what it picks is shown in place.
     ...(launch.pick ? { pick: async () => { const picked = await client.pick(); if (picked) navigate(normalizePath(picked)); } } : {}),
   } : undefined, [client, homed, launch.pick, navigate]);
   // Back and Forward, wherever the view can go elsewhere: not a file handler's, which shows its file alone.
@@ -122,15 +154,20 @@ export default function ModelView({ launch, sequence, alone = false, bridge, cli
     canGoBack: history.index > 0, canGoForward: history.index < history.entries.length - 1, back, forward,
   } : undefined, [homed, history, back, forward]);
   const host = useMemo<Omit<ViewerHost, 'navigation'>>(() => ({
-    files: source, fileActions, clipboard: frameClipboard, promptContext, attachments, links,
+    files: source, fileActions, clipboard: frameClipboard, promptContext, promptFiles, links,
     // A Quick Edit copied, queued or sent, counted by the CAD app's server for its telemetry.
-    usage: { used: feature => { if (feature === 'quickEdit') client.reportActivity({ quickEdit: true }); } },
-    environment: { colorScheme, platform },
-  }), [client, source, fileActions, promptContext, attachments, links, colorScheme, platform]);
+    usage: { used: feature => { if (feature === 'quickEdit') client.reportActivity({ quickEdit: true }); },
+      // The controls a person used, and how long a tool was up, counted by the shared viewer.
+      controls: counts => client.reportActivity({ controls: counts }) },
+    environment: { colorScheme, locale, platform },
+  }), [client, source, fileActions, promptContext, promptFiles, links, colorScheme, locale, platform]);
 
+  // The navbar carries the host's controls; the file handler, which has none, has its corner: the
+  // host's notice at the viewport's top-right, Quick Edit under it.
   // The file on screen joins the library every CAD view shares, with its picture.
-  return <CadViewer client={client} host={host} tabStore={tabStore} live={live} file={file} onShow={navigate}
+  return <CadViewer client={client} host={host} tabStore={tabStore} live={live} file={file} onShow={navigate} chrome={homed ? 'page' : 'bare'}
     onShown={path => { if (path) void client.changeRecents({ action: 'open', path }).catch(() => {}); }}
-    library={library} appSettings={appSettings} features={features} update={update} fullSize={fullSize} history={viewerHistory}
+    library={library} appSettings={appSettings} colorScheme={theme} language={language} history={viewerHistory} whatsNew={whatsNew}
+    {...homed ? { update, fullSize } : { notice: <CardCorner fullSize={fullSize} update={update} /> }}
     onThumbnail={(png, pictured) => client.keepThumbnail(png, pictured)} />;
 }

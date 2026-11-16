@@ -1,6 +1,8 @@
 # Scripts
 
-Durable repo commands, one folder per concern. Every file here is called by a
+Reusable contributor commands, one folder per concern. Keep asset authoring and
+one-off investigations in ignored `tmp/`, even when they have their own tests or
+documentation. Every file here is called by a
 GitHub Actions workflow, the pre-commit hook, a test, or a documented developer
 step; nothing else belongs here (one-off helpers go in `tmp/`).
 
@@ -16,7 +18,7 @@ step; nothing else belongs here (one-off helpers go in `tmp/`).
 
 ## Index
 
-`bundle/` — cadgen's packaged runtime (`packages/cadgen/src/cadgen/_runtime`).
+`bundle/` — the server's packaged runtime (`packages/cad-server/src/cad_server/_runtime`).
 None of it is committed: the directory is gitignored end to end and the wheel is
 where those files ship, so these scripts are what produces them.
 
@@ -26,71 +28,108 @@ where those files ship, so these scripts are what produces them.
   metadata (which IS committed) rather than writing it. `--clean` removes the
   `_runtime` tree first. Called by `test.yml`, `release-publish.yml`,
   `check-builds.sh`, the pre-commit hook.
-- `cadgen-runtime.sh` — builds the five runtime stages: `--node` (esbuilt Node
-  builders), `--browser` (snapshot browser bundle), `--viewer` (vite build of
-  `apps/web`), `--mcp` (vite build of `apps/mcp`, one `index.html`), `--native`
-  (the file tracer, zig-compiled for every platform; `--native-host` builds this
-  machine's only). `--print-outputs` lists the three directories a bundle always
-  produces; `--check` skips the viewer and MCP stages, which need the apps'
-  `node_modules` and which nothing in a checkout reads. Called by `bundle.sh`,
-  `check-builds.sh`, `test/test-installed.sh`, and `test/common.sh` when a test
-  runner finds a stage it needs missing; pinned by
-  `tests/python/global/test_node_builder_bundles.py` and
-  `test_js_runtime_reproducibility.py`. Call it directly only to debug one stage.
-- `lib/node_builders.sh`, `lib/snapshot_runtime.sh` — sourced by
-  `cadgen-runtime.sh`; esbuild the Node builders and the browser bundle with
-  `three`/`meshoptimizer` pinned from `package-lock.json`.
+- `cadgen-runtime.sh` — builds the three runtime stages: `--viewer` (vite build of
+  `apps/web`), `--mcp` (vite build of `apps/mcp`: `shell.html`, the shell a host keeps, and `app.js`,
+  the app it loads from the engine) and `--plugin` (a copy of
+  the root's plugin files and of every skill file git keeps, which the server writes the plugin
+  folder from), first removing any entry under `_runtime` that no stage builds, and saying so.
+  `--print-outputs` lists the directories a bundle always produces, `--print-plugin-files` the
+  plugin's files beside `skills/`; `--check` builds them and asserts each page stage's
+  pages (the viewer's `index.html`, the CAD app's `shell.html` and `app.js`) and the
+  `THIRD_PARTY_LICENSES.txt` its build writes
+  (`@cad/core/third-party-licenses`), and the plugin stage's every file, byte for byte.
+  Called by `bundle.sh` and `check-builds.sh`; pinned by `test_js_runtime_reproducibility.py`.
+  Call it directly only to debug one stage.
+- `lib/snapshot_runtime.sh [OUT_DIR]` — the OCCT parity bench's snapshot page,
+  never part of the wheel: esbuilds `@cad/core`'s headless render entry
+  with `three`/`meshoptimizer` pinned from `package-lock.json` into the ignored
+  `tmp/bench/snapshot-page` (or `OUT_DIR`). Run by `bench/occt_parity.py`.
 
 `test/` — test runners.
 
 - `test.sh` — `test-js.sh`, `test-api.sh`, `test-python.sh`, then `test-global.sh`: the
   whole tree on one machine, for a local run; `test.yml` calls the focused
   runners per job instead.
-- `test-js.sh [--select core|ui|web|mcp|all]` — builds the required shared exports,
-  checks dependency boundaries and runs the selected shared JS/UI/web suites.
-  Core includes the pure `bench/viewer-memory/` helper units; `mcp` runs the CAD
-  app's tests and builds it, since its one-file build is half its contract.
+- `test-js.sh [--select core|ui|ui-units|ui-browser|web|mcp|all]` — builds the required shared exports,
+  checks dependency boundaries, type-checks each selected workspace (`npm run
+  typecheck`: `tsc`, which neither Vite's builds nor the Node test runners do) and
+  runs its suite. `mcp` runs the CAD app's tests and builds it, since its one-file
+  build is half its contract. `ui-units` and `ui-browser` are the two halves of `ui`
+  (everything but the browser specs; the browser specs alone): CI's two `js-ui`
+  jobs run one each.
 - `test-python.sh [--keep-going] [--select GROUP] [--print-weights] [PATH...]`
-  — the cadgen package suite, then every skill's suite. Each test FILE runs in
-  its own interpreter against its own temporary store, `CADGEN_TEST_JOBS` at a
+  — the package suites (the library's, the server's and the shim's), then every skill's suite. Each test FILE runs in
+  its own interpreter with an engine daemon of its own, `CAD_TEST_JOBS` at a
   time (default: the core count; CI sets 4). `--keep-going` runs all suites and
   reports every failure. PATHs (repo-relative files or directories) narrow the
   run to the test files at or under them — CI passes what the change selected
-  — and a PATH that holds no test fails the run.
-  - `--select` picks one group: `cadgen` (the package suite, CAD Viewer backend
-    included), `viewer` (that backend alone, ~11 s), `skills` (every skill's
+  — and a PATH that holds no test fails the run. `CAD_TEST_SHARD=I/N` runs one
+  shard of each suite's files: CI splits a whole run over two jobs on Linux and
+  three on Windows.
+  - `--select` picks one group: `cadgen` (the package suites, CAD Viewer backend
+    included; CI's `packages` jobs), `viewer` (that backend alone, ~11 s), `skills` (every skill's
     suite), `all` (the default).
   - `--print-weights` prints one `WEIGHT<TAB>path<TAB>seconds` line per slow file
     on stdout (everything else a run says goes to stderr): the first thing to
     read when a run is slow.
 - `unittest_files.py` — the runner underneath, invoked by `common.sh`. Loads each
   test file under its full dotted path so an import failure names the file, and
-  runs the files `--jobs` at a time in their own interpreters. A file still
-  running after 15 minutes is hung: it prints every thread's stack and fails.
+  runs the files `--jobs` at a time, each in its own interpreter with an engine
+  directory of its own (`CAD_ENGINE_DIR`), and stops the daemon a file left
+  there after it; run one test file through it too, rather than
+  `python -m unittest`, which would build on your own daemon.
+  Each file's state, cache and `cad` command folders are its own too
+  (`CAD_STATE_DIR`, `CAD_CACHE_DIR`, `CAD_LAUNCHER_DIR`), and a document,
+  engine or installation record the run's server writes in your own state folder,
+  or your `cad` command written, fails the run, naming the test that was running
+  (what another installation of yours writes there meanwhile is listed, and fails nothing).
+  A file still running after 10 minutes is hung: it prints every thread's stack
+  and fails, and the run starts no further file. A line a minute names the files
+  still running.
 - `test-global.sh [PATH...]` — `tests/python/global`, the repo-wide policy
-  suite, narrowed to PATHs as `test-python.sh` is. Like `test-python.sh`, it
-  builds the `--node` and `--browser` runtime stages and this machine's file
-  tracer first when they are absent: the suites read them and a fresh clone has
-  none. `PYTHON_TEST_RUNTIME=0` skips that build for a selection that reads none
-  of it (the skills job's light phase); a test that does read it then fails on the
-  missing file.
+  suite, narrowed to PATHs as `test-python.sh` is.
 - `test-docs.sh` — `npm --prefix apps/docs run check`, then the animated brand
   marks' tests. Called by `test.yml`.
+- `test-kicad.sh` — native board DRC, every export, a STEP/mesh round trip and the board's and
+  schematic's edits (`kicad_pcb.edit`, `kicad_sch.edit`), through kicode's `kicad-cli` and KiPy in the environment of `cad[kicad]`, which it makes once
+  as the server does (in `tmp/kicad-suite`, naming its Python to the tests, `CAD_TEST_KICODE_PYTHON`):
+  `tests/python/packages/kicad`, each file with private engine, state and cache folders. Called by
+  `test.yml`'s `kicad` job; no KiCad install, footprint library or browser is needed.
+- `test-blender.sh` — `cad.blender.load` in the environment `cad run` makes for a script that imports
+  bpy (cad's blender integration: bpy 5.2.3 on Python 3.13, from PyPI the first time): one script that
+  imports cad, build123d and bpy builds a part, loads the GLBs the checkout's `cad` exported and ones
+  made by hand, plays the clips in both orders, and renders a Cycles and an EEVEE still. On CI a test
+  that skips fails the run (`PYTHON_TEST_NO_SKIPS`). `tests/python/packages/blender`, each file with private
+  engine, state and cache folders. Called by `test.yml`'s `blender` job; on Linux it needs X11's
+  client libraries and OpenGL from the system.
+- `test-floor.sh` — the library's, the server's and the shim's suites on the oldest Python the packages declare
+  (`requires-python`: 3.13, the one Blender's module is built for, so the one the library runs on in a
+  render script's environment). `PYTHON_BIN` names a Python of that line with `requirements-dev.txt`
+  installed; another is refused in one line. A call that Python's standard library lacks parses there
+  and fails only when it runs, so only running the suites holds the floor. Called by `test.yml`'s
+  `packages (Python 3.13 floor)` job, under Xvfb, on a full run: before a release ships, and nightly.
 - `test-api.sh` — `npm --prefix apps/api test`: the version feed's and the
-  telemetry receiver's tests, which need no install. Called by `test.yml` and
-  `deploy-api.yml`.
-- `test-installed.sh` — builds the wheel (or accepts `--wheel PATH` to test
-  the exact artifact already built), installs it into a scratch venv and
-  exercises cadgen from outside the repo, including `cadgen mcp` serving the
-  packaged CAD app over stdio. Called by `test.yml` and `release-publish.yml`.
-- `test-viewer-launch.sh` — launches `cadgen viewer` against the built client and
-  verifies reuse, cold STEP import, display derivation and browser drawing using
-  a tiny test-owned STEP. Called by `test.yml`.
+  telemetry receiver's tests, which need no install. Called by `test.yml` (`static`, on every
+  change) and `deploy-api.yml`.
+- `test-installed.sh` — builds the library's, the server's and the shim's wheels (or accepts
+  `--wheels DIR` to test the exact artifacts already built), installs them together into a
+  scratch venv and exercises them from outside the repo, including `cad-mcp` serving the
+  packaged CAD app over stdio and a manufacturing check of a built part for each process
+  (the checks' measuring modules, loaded from the wheel). Called by `test.yml` and
+  `release-publish.yml`.
+- `test-viewer-launch.sh` — launches `cad viewer` against the built client and
+  verifies reuse, the engine serving a tiny test-owned STEP and the bundled client
+  drawing it. Called by `test.yml`'s `viewer-e2e` job.
 - `test-viewer-browser.sh` — creates tiny inputs and owns its temporary project,
-  viewer and cache. Requires a bundled viewer and npm Playwright Chromium
+  engine daemon and viewer. Requires a bundled viewer and npm Playwright Chromium
   (`npx --no-install playwright install chromium`). Runs the format and camera
   gates, exactly what `test.yml` runs.
   `--only NAME` selects a gate; `--out DIR` retains screenshots.
+- `check-dependencies.mjs`, `check-kit-boundaries.mjs`, `check-ui-strings.mjs` (each with its
+  `.test.mjs`) — the JS workspaces' import graph, the renderer kit's format-blindness (and that
+  every renderer draws its chrome through the one frame, `kit/shell/ViewFrame.jsx`), and every
+  string the CAD Viewer and the CAD app show read through the locale files. Run by `test-js.sh`
+  (the first two also as `npm run check:boundaries`).
 - `common.sh`, `unittest_files.py` — shared runner pieces (interpreter
   resolution, path narrowing, fail-closed unittest loading, the per-file
   parallel run). Sourced by the runners.
@@ -100,28 +139,47 @@ where those files ship, so these scripts are what produces them.
 - `bump-version.sh major|minor|patch|X.Y.Z [--base REF] [--dry-run]` — makes a
   branch a release: sets `VERSION` past the one on `REF` (default `origin/main`,
   fetched first; it must already be merged into the branch) and stamps the
-  derived metadata and every cadgen pin (`sync-version.mjs`). Relative to `REF`,
+  derived metadata and every pin of the release's own (`sync-version.mjs`). Relative to `REF`,
   so a second run changes nothing. `--check-incremented-from REF` compares
   `VERSION` against a ref, for `check-version.sh`. Run by hand and by
   `release-prepare.yml`; see `CONTRIBUTING.md`, "Shipping a release".
 - `check-pr-version.sh HEAD_REPO` — on a pull request's merge commit, says what
   merging it releases: nothing when `VERSION` is unchanged against the target
   branch; otherwise the bump must come from a branch of this repository (never a
-  fork) and pass both the target's version and the latest tag. Called by
-  `test.yml` (Version Check).
-- `check-version.sh [--incremented-from REF]` — `VERSION` is valid semver, every
-  skill pins `cadgen==VERSION`, and (with the flag) `VERSION` is greater than the
-  one at `REF`. Called by `test.yml` (Version Check), `release-publish.yml`,
+  fork) and pass both the target's version and the latest tag, and a release that
+  installs itself (a patch below 1.0, a patch or minor from 1.0) may not add or change
+  a migration guide. Called by `test.yml` (`static`); see `CONTRIBUTING.md`,
+  "Which number a release bumps".
+- `pypi_release.py --project NAME --version X.Y.Z --built DIR --upload DIR --released DIR`
+  (or `--wait`) — what a release uploads to PyPI of one of its four projects
+  (`PROJECTS`: `cad`, `cad-server`, `cad-mcp`, `cadgen`, in the order they go up) and what its GitHub Release attaches: of
+  the run's files, that project's at the version; one PyPI does not hold goes to
+  `--upload`; one PyPI already holds (a resumed release) is not uploaded again, and
+  PyPI's own bytes, checked against the sha256 PyPI lists, go to `--released`; a
+  file PyPI holds that the run did not build fails it. `--wait` asks PyPI's simple
+  index until it lists the version (ten minutes at most). Called by
+  `release-publish.yml`'s `pypi` job, project by project.
+- `check-version.sh [--incremented-from REF]` — `VERSION` is valid semver, the four
+  `pyproject.toml`s are `VERSION` and pin the library at it, the one-line installer falls back
+  to `VERSION`, and (with the flag)
+  `VERSION` is greater than the one at `REF`. Called by `test.yml` (`static`), `release-publish.yml`,
   `publish-github-release.sh`.
 - `sync-version.mjs [--check]` — stamps the derived versions (package, plugin,
-  lockfile and `pyproject.toml` metadata, the cadgen pins) from `VERSION`. Called
-  by `bump-version.sh`, `bundle.sh`, `test.yml` (Version Check), `release-publish.yml`.
-- `check-wheel-contents.sh` — builds the wheel and asserts the Python modules and
-  `_runtime/{node,browser,viewer}` are inside it, with bytes identical to the
-  bundled source. The only gate on package data, which fails quietly. Called by
-  `test.yml` and `release-publish.yml`.
+  lockfile and `pyproject.toml` metadata, the `cad`, `cad-server` and `cad-mcp`
+  pins, and the one-line installer's fallback release) from
+  `VERSION`. Called by `bump-version.sh`, `bundle.sh`, `test.yml` (`static`), `release-publish.yml`.
+- `check-wheel-contents.sh` — builds the four wheels and asserts each carries its own
+  top-level packages alone (the alias none, and only the library at the release as
+  its requirement); that the library's and the shim's carry their Python modules, the
+  library's the engine's page and environment image; that the server's carries its modules,
+  the engine's README and `_runtime/{viewer,mcp,plugin}` with each page's third-party notice, and
+  nothing else at the top of `_runtime`, the runtime with bytes identical to the bundled
+  source, and its plugin the repository's own files and `skills/`, byte for byte
+  (`wheel_contents.py plugin`); and that no engine test golden ships. The only gate on package data, which fails
+  quietly. `CAD_KEEP_WHEEL=1` keeps the wheels in `CAD_WHEEL_OUT_DIR`. Called by `test.yml`
+  and `release-publish.yml`.
 - `plugin_zip.py --out PATH | --check` — builds the plugin ZIP OpenAI's plugin
-  submission portal takes (`cad/` holding `.codex-plugin/`, `skills/`,
+  submission portal takes (the archive's root holding `.codex-plugin/`, `skills/`,
   `LICENSE` and every file the manifest names, with the MCP config as the root
   `.mcp.json`) and checks it against the portal's documented package rules.
   Called by `release-publish.yml`; tested by
@@ -141,22 +199,41 @@ where those files ship, so these scripts are what produces them.
   `--publish`). Called by `release-publish.yml`; a local run on the merged release
   commit is the manual fallback.
 - `release-tags.sh` — sourced helpers for tag spelling (`v0.5.0`, and the bare
-  `0.4.x` releases before 0.5.0) and for comparing versions. Sourced by
+  `0.4.x` releases before 0.5.0) and for comparing versions, Semantic Versioning's
+  among them: the part a release bumps, the breaking part, and whether a device takes a
+  release by itself (`version_installs_itself`, the release check's copy of the server's
+  `auto_updates.takes`, which a test holds equal to it). Sourced by
   `bump-version.sh`, `check-pr-version.sh`, `publish-github-release.sh`,
   `release-publish.yml`.
+- `unavailable-versions.txt` — the versions no release can take (the PyPI project `cad`'s
+  earlier owner published them); `check-version.sh` and `bump-version.sh` refuse a `VERSION` on
+  it, and `CONTRIBUTING.md` lists the same ("Versions a release cannot take").
+- `sourcemaps.py collect --out DIR [--zip FILE]` — gathers the pages' source maps, each chunk
+  with its map under its debug id, for the PostHog upload and the GitHub Release. Called by
+  `release-publish.yml`.
+- `wheel_contents.py` — `check-wheel-contents.sh`'s Python half: the server wheel's runtime
+  against the bundled source, and its plugin against the repository's files.
 
 `github-workflows/` — scripts a workflow runs whole.
 
-- `select_checks.py [--paths PATH...]` — what a change can break: maps every
-  changed path through a table of the tests that read it (`RULES`) to the
-  `test.yml` jobs that run and the test files the narrowed jobs take, and names
-  the run's record, `tested-<tree>-<scope>`. A path no rule or `INERT` entry
-  names runs everything. `--paths` prints the selection for a list of paths.
-  Called by `test.yml`'s first job; held to the tree by
-  `tests/python/global/test_ci_workspace_selection.py`. See `CONTRIBUTING.md#ci`.
+- `select_checks.py [--paths PATH... | --light policy|skills]` — what a change can break: maps every
+  changed path through a short table of components (`RULES`: the packages, the UI, an app, a
+  suite, a test file itself) to the
+  `test.yml` jobs that run (one flag a job), the test files the narrowed jobs take and the
+  shards the packages' suites are split over, and names
+  the run's record, `tested-<tree>-<scope>`. A path no rule names runs
+  everything. `--paths` prints the selection for a list of paths; `--light` prints the
+  light contracts `static` runs on every change.
+  Called by `test.yml`'s first job and its `static` job; held to the tree by
+  `tests/python/global/test_ci_workspace_selection.py`. See `docs/contributing/testing.md`.
+- `ci_gate.py` — the one required check, `CI`: given every `test.yml` job's result
+  (`NEEDS`, the workflow's `toJSON(needs)`), fails when the selection did not run, a job
+  failed, or one was cancelled or timed out, unless a newer push superseded the pull
+  request's run. Called by `test.yml`'s last job; tested by
+  `tests/python/global/test_ci_workspace_selection.py`.
 - `tested_tree.py NAME...` — finds the successful `test.yml` run of this
   repository (never a fork's) that recorded one of the NAMEs: the run that
-  already tested a tree. Called by `select_checks.py` on a push, and by
+  already tested a tree. Called by `select_checks.py` on a push and on the nightly run, and by
   `release-publish.yml`'s gate, which tests the release commit itself when it
   finds none; tested by `tests/python/global/test_release_gate.py`.
 
@@ -166,20 +243,33 @@ where those files ship, so these scripts are what produces them.
   reaching into a repo root; then `bundle.sh --check` unless the workflow
   already bundled; then every path `cadgen-runtime.sh --print-outputs` names
   exists and holds no symlink. `--tree-only` stops after the tree rules, which
-  need no runtime, so Version Check runs them for every change.
+  need no runtime, so `static` runs them for every change.
   Called by `test.yml`, `release-publish.yml`, the pre-commit hook path. The
   no-symlink rule is load-bearing: Codex `plugin add` drops symlinks silently.
 - `deploy-vercel-app.sh` — deploys one Vercel project to production and verifies
-  its public URLs. Called by `deploy-docs.yml` only.
+  its public URLs. Called by `deploy-docs.yml` and `deploy-api.yml`.
 
-`install/` — local testing.
+`install/` — the one-line installer, and local testing.
+
+- `install.sh`, `install.ps1` — the one-line installer texttocad.dev serves (`curl -fsSL
+  https://texttocad.dev/install.sh | sh`; `irm https://www.texttocad.dev/install.ps1 | iex`): finds uv or
+  installs it with uv's own installer, resolves the newest release from the version feed (else the
+  release stamped into the script, `sync-version.mjs`; `--version` picks one), and runs that
+  release's `cad setup` through uvx (with `--uninstall`, `cad uninstall`), every other argument
+  passed on. The docs site copies both into its `public/` as it builds
+  (`apps/docs/scripts/install-scripts.mjs`), and `release-publish.yml` attaches them, with their
+  `SHA256SUMS`, to each GitHub Release. Their structure and behaviour are tested by
+  `tests/python/packages/cad_server/test_setup.py`; `.github/workflows/install-windows.yml` rehearses
+  `install.ps1` on a Windows runner, against this tree's wheel or, dispatched with `published`, the release
+  people install today, and `.github/workflows/install-linux.yml` `install.sh` on Linux, the same two ways.
 
 - `dev_install.py <host> [--uninstall] [--no-build] [--restart] [--wheel]` — installs this
   checkout into an agent app: the development plugin `text-to-cad@earthtojake-dev`
   for `claude` (which Cursor and Grok Build load too), `codex`, `cursor`, `grok`
   and `gemini` (skills copied, server run by `.venv`, serving a copy of the page
-  taken at install, assembled under `tmp/<host>-dev`), with the skills' launch
-  command rewritten to that same runtime; `--wheel` builds the checkout's wheel and
+  taken at install, assembled under `tmp/<host>-dev`), made the current installation the
+  skills' `cad` command runs, with the install command in their setup a note that it is a
+  development install; `--wheel` builds the checkout's wheel and
   runs both through `uvx --from <wheel>`; the server alone for `claude-desktop`. Refuses a host where another copy of the plugin, or this
   repository's skills installed loose, would load. Developer step in
   `CONTRIBUTING.md` ("Test In Agent Apps"); its assembly and loose-skill check are
@@ -188,30 +278,40 @@ where those files ship, so these scripts are what produces them.
 `git-hooks/pre-commit` — the body `.githooks/pre-commit` runs: `bundle.sh --check`
 when staged paths touch `packages`, `apps`, `skills` or `scripts/bundle`. It is
 kept now that nothing is committed, because the question it asks is still worth
-asking locally and is cheap once `tmp/`'s pinned esbuild toolchain exists: does
+asking locally and costs seconds (the shared packages, then two vite builds): does
 this edit still BUILD? It no longer has anything to say about the index.
 
 `build/library.mjs` — the esbuild library build `packages/core` and
 `packages/ui` share; each package's `scripts/build.mjs` calls it.
 
-`brand/` — the logo generators: `generate-logos.mjs` draws the brand SVGs and the
-models' profiles, `export-logos.mjs` exports every other logo file from them.
+`brand/` — `export-logos.mjs` exports app and plugin icons from the committed SVGs.
 Run by hand when the brand changes; ordinary builds use the committed files. See
 [the brand recipe](brand/README.md).
 
-`bench/` — manual edit, warm-build and viewer performance commands. See
-[benchmark usage](bench/cadgen-performance/README.md). Reports and profiler
-captures are local output under `tmp/`, never committed here. The drivers are
-manual; their `*.test.mjs` helper units run in `test-js.sh`.
+`look/` — `bake-environment.mjs` bakes the engine's look's reflection environment
+(`packages/cad/src/cad/engine/render/studio.hdr`, committed): core's neutral
+studio scene ray-cast into a small equirectangular Radiance image, which the viewer
+and the OCCT prototype both light an engine document's regular modes with. Run by
+hand when the studio or the look changes.
+
+`bench/` — manual measurements, never run in CI ([`bench/README.md`](bench/README.md)):
+`corpus_bench.py`, the corpus batch (the xbf engine's cold, no-op, edit, revert and
+restart builds of the models in `corpus.json`, then each document's whole mesh and a
+snapshot); and `occt_parity.py`, the viewer against
+OCCT, mode by mode. Their reports are local output under `tmp/`, never committed here;
+only their pure helpers are tested (`tests/python/global/test_bench_helpers.py`).
 
 ## CI
 
 | Workflow | Branches/events | Purpose |
 | -------- | --------------- | ------- |
-| `test.yml` | pushes to and PRs against `main` and `build-test`; manual dispatch; called by `release-publish.yml` | One job per thing that has to work, each run only when the change selects it (`select_checks.py`; `CONTRIBUTING.md#ci` documents the table): `Version Check` always (canonical version, derived metadata, cadgen pins, the tracked tree's rules; on a pull request, what merging it releases); the cadgen package suite on Linux and Windows; `core-js` (`@text-to-cad/core`), `web` (shared UI and the web app), `mcp`, skills and docs on Linux; `packaging` bundles from clean (nothing under `_runtime/` is committed, so this is where it comes from), checks the layout, inspects the wheel and runs the installed-mode tests. Each run records the tree it tested; a push whose tree its pull request already tested runs nothing again. Superseded PR runs are cancelled. |
+| `test.yml` | pushes to and PRs against `main` and `build-test`; nightly on `main`; manual dispatch; called by `release-publish.yml` | One job per thing that has to work, each run whole on its one flag, only when the change selects it (`select_checks.py`; `docs/contributing/testing.md#ci` lists the jobs): `static` always (the version check, the tracked tree's rules, the light contracts, the API's tests; on a pull request, what merging it releases); the package suites on Linux and Windows, in shards (`packages (Linux I/2)`, `packages (Windows I/3)`); `routing (macOS)`; `skills`; `js-core`, `js-ui`, `js-web`, `js-mcp`, `docs`; `fea`, `kicad`, `blender`; `packaging` bundles from clean (nothing under `_runtime/` is committed, so this is where it comes from), checks the layout, inspects the wheels and runs the installed-mode tests; `viewer-e2e` serves that bundle's viewer through the backend to the launch smoke test and the browser gates. A full run (a `VERSION` change, the nightly, a dispatch, `Publish Release`'s call) adds the release tier: the package suites on Python 3.13 and the installer rehearsals. `CI`, the one required check, fails when any job did. Each run records the tree it tested; a push whose tree its pull request already tested runs nothing again. Superseded PR runs are cancelled. |
 | `release-prepare.yml` (`Prepare Release`) | manual dispatch (`bump` or `set_version`; `target`, `dry_run`) | Opens a release pull request of what the target already has: `bump-version.sh` on `release/X.Y.Z`, pushed and opened with `PREPARE_RELEASE_TOKEN` so its checks run. It never merges: merging the pull request releases it. `target=build-test` rehearses. |
-| `release-publish.yml` (`Publish Release`) | pushes to `main` and `build-test` that change `VERSION` (a release pull request's merge); manual dispatch (resume the commit that last moved `VERSION`) | Gate (`VERSION` past the latest tag); the record of a run that tested that tree in full, or else every `test.yml` job on it; the checked OpenAI plugin ZIP (built first, from the untouched release commit) and plugin trees; bundle, wheel build, an `unzip -l` assertion that the shipping wheel carries `_runtime`, install test, distribution artifact; then — on `main` only — PyPI upload, a wait until PyPI's index lists the version, the plugin committed onto `latest` and `claude-plugin`, and after them the docs deploy and the `v<VERSION>` tag and GitHub Release carrying the wheel, sdist and plugin ZIP. On `build-test` it prints what it would have uploaded, pushed and tagged, and stops. |
+| `release-publish.yml` (`Publish Release`) | pushes to `main` and `build-test` that change `VERSION` (a release pull request's merge); manual dispatch (resume the commit that last moved `VERSION`) | Gate (`VERSION` past the latest tag); the record of a run that tested that tree in full, or else every `test.yml` job on it; the checked OpenAI plugin ZIP (built first, from the untouched release commit) and plugin trees; bundle, wheel build, an `unzip -l` assertion that the shipping wheel carries `_runtime`, install test, distribution artifact; then — on `main` only — PyPI upload (its own `pypi` job in the `release` environment, the only job that may mint a PyPI token; a file PyPI already holds is taken from PyPI, not uploaded again), a wait until PyPI's index lists the version, the plugin committed onto `latest` and `claude-plugin`, and after them the docs deploy and the `v<VERSION>` tag and GitHub Release carrying the wheel, sdist and plugin ZIP. On `build-test` it prints what it would have uploaded, pushed and tagged, and stops. |
 | `deploy-docs.yml` (`Deploy Docs`) | manual dispatch; called by `release-publish.yml` | Deploys the docs app to Vercel production from a ref (default `main`): configures Vercel Authentication for preview deployments only, runs `vercel pull/build/deploy --prod`, and verifies the public production URLs. |
+| `deploy-api.yml` (`Deploy API`) | pushes to `main` that change `apps/api`; manual dispatch | Deploys `api.texttocad.dev` (`apps/api`) to Vercel production after its tests (`test-api.sh`). It follows no release. |
+| `install-linux.yml` (`Linux installer rehearsal`) | called by `test.yml` (a full run; a change under `scripts/install`); manual dispatch | Runs `install.sh`, piped, on `ubuntu-latest` and in `python:3.12-slim-bookworm`, against this tree's wheel or, dispatched with `published`, the site's `install.sh` and PyPI; checks `cad --version` and `cad doctor`. |
+| `install-windows.yml` (`Windows installer rehearsal`) | called by `test.yml` (a full run; a change under `scripts/install`); manual dispatch | Runs `install.ps1` on a fresh Windows runner against the wheel the tree builds, or, dispatched with `published`, the site's `install.ps1` and PyPI. |
 
 `Prepare Release` opens a release pull request, or a pull request carries its own
 bump (`release/bump-version.sh`); merging either starts `Publish Release` (PyPI,

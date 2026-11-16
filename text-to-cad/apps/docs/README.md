@@ -1,26 +1,23 @@
 # Docs site
 
-The documentation website (Next.js) — texttocad.dev. A @text-to-cad/core CLIENT: the
+The documentation website (Next.js) — texttocad.dev. A @cad/core CLIENT: the
 hero and example scenes render real CAD models in the browser through the
 same shared runtime the viewer uses.
 
 **PURPOSE** — the public documentation and marketing site.
 
-**MAY DEPEND ON** — compiled `@text-to-cad/core` exports and this app's own
-npm dependencies. Never another app or the running cadgen Python service.
+**MAY DEPEND ON** — compiled `@cad/core` exports and this app's own
+npm dependencies. Never another app or the running CAD server.
 The root npm workspace and lockfile resolve dependencies; no source aliases
 or consumer-owned declarations are required.
 
 **DEPENDED ON BY** — nothing in the repo imports it. It is a website, not an install.
-`api.texttocad.dev`, which cadgen talks to, is its own project: [`apps/api`](../api/README.md).
+`api.texttocad.dev`, which the CAD server talks to, is its own project: [`apps/api`](../api/README.md).
 
-The package migration is a pure refactor: the site's UI, UX, functionality, content and static
-CAD showcases remain unchanged. Normal development, checks and deployment use
-existing static assets and do not start Python. Asset regeneration is still an
-explicit operation. The hero composes an explicit static HTTP resource provider
-from core for descriptors, surfaces and sidecars. It needs no FileViewer host,
-Electron services or Python backend; the resource-provider migration keeps its
-existing static asset URLs and rendering behavior.
+Normal development, checks and deployment use existing static assets and do not
+start Python; regenerating an asset is an explicit operation. The hero reads one
+static GLB with core's GLB path, the CAD Viewer's, and plays its clip with core's
+GLB animation runtime. It needs no FileViewer host or Python backend.
 
 Install from the repository root with `npm ci` (or the docs-only workspace
 filter), then `npm run build:docs`. `apps/docs/vercel.json` runs the root
@@ -33,7 +30,7 @@ local development.
 
 ```bash
 npm ci --workspace packages/core --workspace apps/docs
-npm run build --workspace @text-to-cad/core
+npm run build --workspace @cad/core
 npm --prefix apps/docs run check    # the CI gate: lint + typecheck + build
 ```
 
@@ -42,21 +39,19 @@ repository (default `main`; a release passes its own commit, and a past release
 is redeployed from its tag). The Vercel project's Root Directory setting (in
 Vercel, not this repo) must point at `apps/docs`.
 
-Hero STEP assets under `public/hero/` are a view of the tree behind the
-planetary gear STEP (`assembly.json` + each component's `.surf`) plus its
-schema-v9 sidecar with embedded animation, committed as PLAIN files (never LFS — Vercel serves them statically
-with no backend). Refresh them after rebuilding the model:
-
-```
-python models/assemblies/src/planetary_gear_assembly/planetary_gear_assembly.py
-node apps/docs/scripts/sync-hero-step-assets.mjs   # same CADGEN_CACHE_DIR as the build
-```
-
-The sync script asks cadgen for the tree by the STEP's bytes and exports a
-view of it, so it never restates a store path. The check script
-(`scripts/check-hero-step-assets.mjs`, part of `npm run check`) pins the surf
-container and sidecar contracts against @text-to-cad/core so a schema bump cannot
-silently break the hero render.
+The hero is one GLB, `public/hero/planetary.glb`: the planetary gear model
+(`models/assemblies/src/planetary_gear_assembly/`) exported from its document by
+`cad model export`, its parts, colours and its `meshCycle` motion, which the export bakes
+into a clip. It is committed as a PLAIN file (never LFS: Vercel serves it statically
+with no backend), one of the few CAD files Git holds
+(`tests/python/global/test_no_cad_assets_tracked.py` lists it, with a size cap). The page
+draws it in the hero's background as a faint technical drawing, each part's folds and outline
+with its hidden lines removed, and plays the clip slowed to a background's pace. The site and its
+checks read only that committed file;
+nothing in the docs app's build or `npm run check` reads the sample corpus. Refresh it
+by hand after changing the model: run its script, which prints its document id, then
+`cad model export <id> apps/docs/public/hero/planetary.glb`. Preserve the `meshCycle`
+clip and verify playback before committing the refreshed GLB.
 
 ## The shape of the app
 
@@ -64,28 +59,26 @@ silently break the hero render.
 src/app/         # routes
 src/components/  # site components incl. the CAD hero renderers
 src/lib/         # site utilities
-public/hero/     # showcase tree view + sidecar, plain files (never LFS)
-scripts/         # asset checks
+public/hero/     # the hero's GLB, a plain file (never LFS)
+scripts/         # loading-icon export and verification; the install scripts' copy into public/
 ```
 
 ## Brand and loading icon
 
-The header uses the blue CAD wordmark and favicons use C, both with soft relief shading. The homepage
-hero builds the TEXTTOCAD wordmark in with its animated SVG (sketch, extrude, cut, chamfer,
-render), and the repository README shows the same animated SVG. The header slides the CAD wordmark
-in at its left once the homepage's TEXTTOCAD has scrolled out of sight (a page without one shows it
-throughout), pushing right what follows it: a desktop's section links, a phone's burger. `/icon` plays each
+The header always shows the C mark (`public/brand/logo-c.svg`) and the name, text-to-cad, at its
+left, one link home, and favicons use C, both with soft relief shading.
+The homepage hero builds the TEXTTOCAD wordmark in with its animated SVG (sketch, extrude, cut,
+chamfer, render), and the repository README shows the same animated SVG. `/icon` plays each
 mark's build, with Replay, and provides downloadable C, CAD, TEXTTOCAD and stacked TEXT TO CAD
 SVGs, PNGs and animated SVGs, followed by the original animated loading-icon playground.
 `LogoBuild` (`src/components/logo-build.tsx`) shows a build: a plain `<img>`, since the animation
 is the SVG's own SMIL, inside a `<picture>` whose reduced-motion source is the static mark. The
 original mesh, animation and the shared UI loading assets stay unchanged.
 
-The vectors in `public/brand/` come from `node scripts/brand/generate-logos.mjs` and
-`node scripts/brand/animate-logos.mjs`; `node scripts/brand/export-logos.mjs` then
-refreshes the PNGs, favicons and every app's copy (run all three from the repository root). See [the brand recipe](../../scripts/brand/README.md)
-for the letters, projection and palette. These are checked-in assets; ordinary
-builds do not regenerate them.
+The source vectors are committed in `public/brand/`. After editing them, run
+`node scripts/brand/export-logos.mjs` from the repository root to refresh PNGs,
+favicons and app copies. See [the export instructions](../../scripts/brand/README.md).
+Artwork authoring stays local; ordinary builds use the committed assets.
 
 The loading-icon playground retains play/pause, speed, five palettes, drag to
 rotate, zoom, and PNG/GLB downloads. It starts paused for reduced motion.
@@ -117,54 +110,129 @@ actions use muted shades of the logo's pastel blue through shadcn semantic
 tokens: #2c7197 in light mode and #30779d in dark mode, with #f5fbff labels.
 Text contrast is 5.14:1 and 4.73:1 respectively; the solid darker hover shades
 also exceed 4.5:1. Focus rings use a deeper brand blue on white and the logo's
-pale highlight on charcoal. Every Copy is a plain icon button, one size with the buttons beside the install
-message that open it in an app, and each icon button has a tooltip. Install in Codex, the official listing, is
-the one blue button. Every button shows a pointer. Every section title
-shares one heading scale. Each title, a section's or an install's, links to its
-own anchor (`#install`, `#cursor`), as GitHub's headings do, so following it puts
-that address in the bar. The header lists Overview, Install, Skills and
-Contributing, the active link following the visible section; a phone's header has
-a burger that drops them down. The header shows the version as its release tag
-names it (`v<VERSION>`), on a phone 360px or wider too. Overview opens with Available for
-these agents, first so a phone shows it on load: the agents' logos scrolling as
-skills.sh's do, skills.sh's logo set in `public/agents/` with Grok's glyph from
-Lobe Icons (MIT) in the same tile, each tile blended into the page's background.
-A logo leads to its install. Then the plugin's description, which every manifest
-and the README's Overview say word for word (`test_plugin_manifests.py` holds
-them to one text). Install
-leads with the message to send to an agent, monospace like the commands, with buttons that open it
-in Claude Code (Claude Desktop), Codex or Cursor, prefilled and unsent, beside Copy; under it, one
-sentence says what text-to-cad sends and how to turn it off, with the privacy policy (`telemetryNote`:
-only what holds for every release that sends anything by default, since a copy that has not updated
-reads it too); then a sub-section per agent app, its update
-and remove commands folded under Update or reinstall; Codex leads with a button to its listing in
-Codex's plugin directory, its commands, update and remove folded under Manual install. Other Agents
-(the Skills CLI) for the rest, and Request Plugin, a new GitHub issue. Contributing closes the page. Install boxes and explanatory text fill the
-content width. Command text remains monospace.
+pale highlight on charcoal. Every Copy is a plain icon button, and each icon button has a tooltip.
+Every button shows a pointer. Every section title
+shares one heading scale. Each section title links to its
+own anchor (`#features`), as GitHub's headings do, so following it puts
+that address in the bar. The header is bare: at the left the C mark and "text-to-cad" set as a
+title (semibold), one link home, on every size and always shown; at the right the version as its
+release tag names it (`v<VERSION>`, on a phone 360px or wider) and GitHub with its star count, the
+two at one size and weight (text-sm, medium). It has no
+section links, no burger, no Discord link and no theme toggle: the site follows the system's light
+or dark theme, on load and as it changes (`layout.tsx`'s theme script sets the `.dark` class).
+
+The hero is the whole first screen under the header, at least the small viewport height less the
+header's (`min-h-[calc(100svh-3.5rem)]`), so the agents show above the fold on a phone too, and
+Features begin after the first scroll. On a short screen its gaps, the wordmark, the tagline and the
+agents' logos shrink with the height, so all of it still fits down to a 600-pixel-tall window.
+The text is centred across it and anchored high, under a gap that grows with the screen's height
+(at most 8rem), so a tall screen's spare height gathers between the install box and the agents,
+where the gear's corner turns. In it: the TEXTTOCAD wordmark at full size (up to
+800px), the tagline, then the two calls to action, the site's own outline Buttons at one neutral style (GitHub with a divider and its
+star count, Join Discord; `src/components/hero-section.tsx`, the links and the star count from
+`src/lib/github.ts`, which the header shares). Then the one-line install box, which is the page's
+Install and carries its stable address, `#install` (`src/components/install-box.tsx`: the ONE-LINE
+INSTALL label, a macOS / Linux | Windows toggle over `installCommands`, the command with Copy; a
+Windows browser has Windows preselected), with nothing under it: what the command does
+(`installSummary`) and the link to installing by hand, app by app, and updates, the repository's
+`docs/install.md` (`manualInstall`), are in the README's Quickstart and `/llms.txt`, not on the
+homepage. Behind them the planetary gear turns (`src/components/hero-gear.tsx`, drawn by
+`hero-gear-renderer.ts`): a faint line drawing seen from above at 45 degrees, its centre on the
+bottom-right corner of the space above the agents, so the right edge and the agents cut it off.
+Its ring's radius is a share of that space's height (on a phone, of its width: a corner arc behind
+the lower half), and never so large that its outline reaches the wordmark's or the tagline's
+corner (`data-gear-clear`). It fades out above the agents (`.hero-backdrop` in `globals.css`). It
+is decoration (hidden from assistive technology, never under the pointer or in
+the tab order), loads after the page has loaded and the browser is idle, so the text paints first,
+and not at all for Save-Data; it fades in, turns only while on screen in a visible tab, holds still
+for reduced motion, and draws at most 1.5 device pixels per CSS pixel. At the foot of the screen a
+small uppercase label, WORKS WITH THESE AGENTS, over the agents' logos (no section title): the logos,
+each with its name beneath, drifting sideways (resting under a mouse, a finger or the focus, and
+off screen) and moved by a trackpad's sideways swipe, Shift with the wheel, a drag, a swipe or the
+arrow keys, while a vertical wheel over it scrolls the page (`AgentCarousel`), skills.sh's logo set in `public/agents/` with Grok's glyph from Lobe
+Icons (MIT) in the same tile, each tile a luminance mask over the text colour, so its black square
+vanishes into the page (no blend mode: iOS Safari never blends a scroller's contents with the page). The logos are not
+links, and nothing follows them in the hero: under their names as much room as the label has over
+their glyphs, so the strip closes the first screen evenly. Then Features (below). The site has no
+Install section, no per-app install of its own and no telemetry note: the privacy policy, linked
+from the footer and from `/llms.txt`, says what is sent and how to turn it off. Contributing closes
+the page (`contributing`, the README's Contributing in substance): its intro, then each way to take
+part, bugs and plugin requests, questions and ideas, and code, skills and models, with
+its links. The footer links the privacy policy and the terms of service, then Made by @earthtojake.
+Explanatory
+text fill the content width. Command text remains monospace.
 
 The homepage and the repository README share their structure and are changed
-together: the plugin's description, the install message and what it sends,
-each install's commands (to install, update and remove it), the skills and
-Contributing. Both speak to whoever installs text-to-cad, a person or their agent,
-and the README says more: numbered steps to install it yourself and fuller notes
-under each install. The site has the
-hero and the agents carousel. The page's copy lives in `src/lib/content.ts`, which `/llms.txt`
+together: the install commands, what they
+do, the link to installing by hand, the features and Contributing. Updates are on
+`docs/install.md`, with each app's own commands, which both link, and the telemetry in full is
+the privacy policy. The site has the hero and the agents carousel. The page's copy lives in
+`src/lib/content.ts`, which `/llms.txt`
 (`src/app/llms.txt/route.ts`, the homepage as markdown for agents) renders too.
-`/install` redirects to the Install section (`/#install`, `next.config.ts`): the stable address
-of the full install instructions, which the CAD app's update button links to.
+`/install` redirects to the hero's install box (`/#install`, `next.config.ts`): the stable address
+of the install instructions.
 `tests/python/global/test_plugin_manifests.py` holds the description, the install
-message, what it sends and every install, update and remove command to one text. The unboxed wordmark and one prominent tagline
-sit above the independently framed CAD demo. “100% open source and free.” follows
-“Give your agent CAD superpowers.” in blue, using a lighter brand shade on dark
+commands, what they do and the link to installing by hand to one text, and holds the `#install`
+anchor to the hero. The unboxed
+wordmark and one prominent tagline, centred, sit above the two calls to action and the install box,
+over the turning gear. “100% open source and free.” follows
+“Design physical products with AI.” in blue, using a lighter brand shade on dark
 surfaces. The app owns
 its tokens and primitives in `src/app/globals.css` and `src/components/ui/`,
 without importing another app or the CAD UI package. Keep the palette aligned
 with `packages/ui/src/styles/tokens.css` when the viewer's base theme changes.
 
 
+## Features
+
+The homepage's Features are the README's, item for item and word for word (`features` and
+`featuresIntro` in `src/lib/content.ts`; `test_plugin_manifests.py` holds the two lists to one text,
+and every skill's folder to a feature that links it). Each feature is a tile
+(`src/components/feature-grid.tsx`): a line drawing of the file it makes over that file's name, in
+a caption bar, then its name, linking to the page that documents it, and what it does.
+The drawings (`src/components/feature-art.tsx`) are inline SVG in the site's tokens, so they follow
+the light and dark themes: the part in the foreground, construction in the muted ink, what the
+feature adds in the brand blue, a check's finding in the destructive red. Two parts run through
+them, the bracket the Parts tile's script models (and the drawing, the viewer, the flat pattern and
+the SendCutSend check show) and the housing the checks and the printer take. Each drawing draws itself
+in once, as its tile first scrolls into view (`features-reveal.tsx` and the `feature-*` rules in
+`globals.css`); the server's page has them drawn, so without scripts, for reduced motion, or for a tile
+already on screen, nothing moves. No image file: nothing to regenerate, nothing heavy.
+
+The grid is two columns from a tablet up and one on a phone, one tile per feature in `features`'s
+order (six: three rows of two). A new feature is an entry in `features` and in the README's list and
+a drawing in `feature-art.tsx`.
+
+## Social previews
+
+`public/social-preview-products.png` is the static share image, paired with
+`public/social-preview-products.mp4`: a 12-second, 1200×630 recording of the
+animated TEXTTOCAD SVG and the planetary GLB's existing `meshCycle` clip
+at half speed. The recording uses the real exported model at `public/hero/planetary.glb`.
+The composition uses a large animated wordmark, the byline “Design physical
+products with AI.”, the blue subtitle “100% open source and free.”, and an enlarged
+gear assembly. Both text blocks use the same font size. A smooth caret-led mask
+reveals the typeset lines at 60 fps, preserving kerning. The byline begins at
+2.35 seconds and finishes at 3.35; after a 0.2-second pause, the subtitle begins
+at 3.55 and finishes at 4.42. The caret fades between lines and disappears when
+finished. The gears fade and scale in over 0.65 seconds from the byline's start,
+during the SVG's build animation. `[[ texttocad.dev ]]` sits in the bottom-left
+corner at 25px, with the two text blocks raised to balance the space. It reveals
+from 4.62 to 5.22 seconds, 0.2 seconds after the subtitle finishes, with a matching
+caret. There are no format labels.
+It is made for link previews rather than captured from the homepage.
+
+`src/app/layout.tsx` declares the image fallback and the direct MP4 through
+Open Graph video metadata. Video playback depends on the receiving client;
+the X card remains a large-image card. Keep the MP4 below the repository's
+5 MiB file limit, use H.264/yuv420p with fast-start metadata, and preserve the
+image fallback. Rename preview assets when replacing them so social caches
+can fetch the new versions; update the structured-data image in `src/app/page.tsx`
+as well.
+
 ## api.texttocad.dev
 
-cadgen's version feed and its telemetry receiver are their own Vercel project:
+The version feed and the telemetry receiver are their own Vercel project:
 [`apps/api/README.md`](../api/README.md). This site's part is the privacy policy
 (`src/app/privacy-policy/page.tsx`), which describes every event the receiver passes
 on: a new field is a change to it in the same PR.

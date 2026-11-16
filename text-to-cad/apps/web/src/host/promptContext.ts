@@ -1,15 +1,24 @@
-import { createPromptDeliveryLedger, formatPromptContextText, validatePromptContext } from '@text-to-cad/core/prompt';
-import type { PromptContextPort, PromptDeliveryResult, PromptDestinationState } from '@text-to-cad/core/prompt';
+import { createPromptDeliveryLedger, formatPromptContextText, validatePromptContext } from '@cad/core/prompt';
+import type { PromptContextPort, PromptDeliveryResult, PromptDestinationState } from '@cad/core/prompt';
 import type { WebClipboard } from './clipboard';
+import { english } from '@cad/ui/i18n';
 
-/** Prepare portable clipboard content without claiming an external composer pasted it. */
-export function createWebPromptContext(clipboard: WebClipboard, supportsImages = typeof clipboard.writeImage === 'function'): PromptContextPort {
+/**
+ * Prepare portable clipboard content without claiming an external composer pasted it. What it says
+ * to the person (busy, a partial copy) is in `t`'s language, read as it speaks.
+ */
+export function createWebPromptContext(clipboard: WebClipboard, supportsImages = typeof clipboard.writeImage === 'function',
+  t: (key: string, params?: Record<string, unknown>) => string = english): PromptContextPort {
   const capabilities: NonNullable<PromptDestinationState['capabilities']> = {
     attachments: supportsImages ? 'png' : 'none', maxParts: 128, maxAttachmentBytes: 20 * 1024 * 1024,
     mixedTextAndImage: supportsImages && clipboard.writeContent ? 'representations' : 'unsupported',
   };
   const state: PromptDestinationState = Object.freeze({ kind: 'clipboard', available: true, capabilities });
-  const ledger = createPromptDeliveryLedger({ busyMessage: 'Wait for pending clipboard operations before copying more.' });
+  // The ledger's refusal while busy is said in the person's language as it is said, not when the port was made.
+  const BUSY = 'Wait for pending clipboard operations before copying more.';
+  const ledger = createPromptDeliveryLedger({ busyMessage: BUSY });
+  const said = (result: PromptDeliveryResult): PromptDeliveryResult =>
+    (result.status === 'failed' && result.message === BUSY ? { ...result, message: t('web.prompt.busy') } : result);
   return {
     getSnapshot: () => state,
     subscribe: () => () => {},
@@ -34,11 +43,11 @@ export function createWebPromptContext(clipboard: WebClipboard, supportsImages =
         // No await precedes this call: ClipboardItem can carry the pending Blob.
         if (image !== undefined && text !== undefined) {
           if (!clipboard.writeContent) throw new Error('This browser cannot copy text and an image together. Copy them separately.');
-          return clipboard.writeContent({ text, image }).then(() => ({ status: 'partial', partIds, message: 'Text and PNG copied as separate clipboard representations. Some apps paste only one; paste and check both before sending.' }));
+          return clipboard.writeContent({ text, image }).then(() => ({ status: 'partial', partIds, message: t('web.prompt.partial') }));
         }
         const write = image !== undefined ? clipboard.writeImage(image) : clipboard.writeText(text ?? '');
         return write.then(() => ({ status: 'copied', partIds }));
-      });
+      }).then(said);
     },
   };
 }

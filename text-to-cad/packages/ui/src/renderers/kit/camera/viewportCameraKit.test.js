@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  getKeyboardOrbitCommand,
   reframeReason,
   runtimeFramingBounds,
   VIEWING_MODE,
@@ -175,7 +176,7 @@ test("a progressive load whose box still grows fits again when the last componen
 });
 
 // The owner's call: "keeping the perspective and zoom level makes sense in every case". A
-// saved revision, a detail swap and another publish of the same geometry are all the same
+// saved revision and another publish of the same geometry are both the same
 // model, framed already; whatever its zero pose did, only the person's Zoom to fit re-frames it.
 test("a rebuild never re-frames, whether its zero pose grew, shrank or stayed", () => {
   const framedOn = { min: [0, 0, 0], max: [10, 4, 2] };
@@ -239,4 +240,12 @@ test('the lit cube face follows the camera direction, and the cube reads the cam
   assert.equal(runtime.viewPlaneScratch.axis, scratch.axis);
   assert.ok(Math.abs(front.z[1] - 1) < 1e-9, 'from the front, +Z points up the screen');
   assert.ok(Math.abs(side.x[2] - 1) < 1e-9, 'from the +X side, +X points at the viewer');
+});
+
+test("the arrow keys orbit and the letters reach nothing in the camera", () => {
+  assert.deepEqual(getKeyboardOrbitCommand({ key: "ArrowLeft" }), { direction: "left", keyId: "ArrowLeft" });
+  assert.deepEqual(getKeyboardOrbitCommand({ key: "ArrowDown" }), { direction: "down", keyId: "ArrowDown" });
+  for (const letter of ["w", "a", "s", "d", "W", "A", "S", "D"]) {
+    assert.equal(getKeyboardOrbitCommand({ key: letter, code: `Key${letter.toUpperCase()}` }), null);
+  }
 });
