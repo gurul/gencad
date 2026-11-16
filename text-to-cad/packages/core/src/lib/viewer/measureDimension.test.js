@@ -5,12 +5,16 @@ import { PerspectiveCamera } from "three";
 
 import {
   MEASURE_SERIES_COLORS,
+  dimensionLayoutHit,
+  dimensionLayoutTouchesBox,
   drawMeasureDimension,
   drawMeasureSnapChip,
   drawMeasureSnapMarker,
   drawPulsingEndRing,
   measureLabelText,
   measureSeriesColor,
+  measurementMark,
+  measurementMarkLayout,
   screenDimensionLayout,
   screenSpaceDimensionLayout
 } from "./measureDimension.js";
@@ -88,6 +92,34 @@ test("screenSpaceDimensionLayout projects endpoints and builds stable screen-spa
   assert.deepEqual(layout.rings[0], { x: 400, y: 300 });
   assert.ok(layout.rings[1].x > 400);
   assert.equal(layout.rings[1].y, 300);
+});
+
+test("a press is on a drawn dimension near its dimension line, a witness line or over its label, and nowhere else", () => {
+  const layout = screenSpaceDimensionLayout({ point: [0, 0, 0] }, { point: [1, 0, 0] }, null, makePerspectiveCamera(), makeRect());
+  const [start, end] = layout.dimensionLine;
+  const middle = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+  assert.equal(dimensionLayoutHit(layout, { x: middle.x, y: middle.y + 4 }), true);
+  assert.equal(dimensionLayoutHit(layout, layout.label), true);
+  assert.equal(dimensionLayoutHit(layout, layout.witnesses[0][1]), true);
+  assert.equal(dimensionLayoutHit(layout, { x: middle.x, y: middle.y + 60 }), false);
+  assert.equal(dimensionLayoutHit(null, middle), false);
+});
+
+test("a box takes a drawn dimension where it touches its lines, an arrowhead or its label, even in part", () => {
+  const layout = screenSpaceDimensionLayout({ point: [0, 0, 0] }, { point: [1, 0, 0] }, null, makePerspectiveCamera(), makeRect());
+  const [start, end] = layout.dimensionLine;
+  const around = (point, half) => ({ left: point.x - half, top: point.y - half, right: point.x + half, bottom: point.y + half });
+  // Across the middle of the dimension line, with neither end inside.
+  assert.equal(dimensionLayoutTouchesBox(layout, around({ x: (start.x + end.x) / 2, y: start.y }, 2)), true);
+  // The far end of a witness line, the tip of an arrowhead.
+  assert.equal(dimensionLayoutTouchesBox(layout, around(layout.witnesses[1][1], 1)), true);
+  assert.equal(dimensionLayoutTouchesBox(layout, around(layout.arrows[0].left, 0.5)), true);
+  // The label's chip reaches further than its middle.
+  assert.equal(dimensionLayoutTouchesBox(layout, around({ x: layout.label.x + 30, y: layout.label.y + 10 }, 1)), true);
+  // Well clear of all of it, on either side.
+  assert.equal(dimensionLayoutTouchesBox(layout, around({ x: (start.x + end.x) / 2, y: start.y + 80 }, 10)), false);
+  assert.equal(dimensionLayoutTouchesBox(layout, around({ x: (start.x + end.x) / 2, y: start.y - 80 }, 10)), false);
+  assert.equal(dimensionLayoutTouchesBox(null, around(start, 10)), false);
 });
 
 test("screenSpaceDimensionLayout returns null for invalid or unprojectable points", () => {
@@ -296,4 +328,16 @@ test("the series palette is large enough to keep a full panel distinguishable", 
   // The panel holds 20 measurements; the palette should cover most of a screen's
   // worth before it repeats.
   assert.ok(MEASURE_SERIES_COLORS.length >= 10, "palette is too small to tell measurements apart");
+});
+
+test("a taken measurement is a mark: its dimension's ends, its words, its colour; one layout either way", () => {
+  const item = { colorIndex: 1, pickA: { point: [0, 0, 0] }, pickB: { point: [3, 4, 0] },
+    measurement: { euclidean: 5, perpendicular: null, centerDistance: null, delta: [3, 4, 0], unit: "mm" } };
+  const mark = measurementMark(item);
+  assert.deepEqual(mark, { start: [0, 0, 0], end: [3, 4, 0], label: measureLabelText(item.measurement), color: MEASURE_SERIES_COLORS[1] });
+  const camera = makePerspectiveCamera();
+  const rect = { left: 0, top: 0, width: 400, height: 400 };
+  // The mark lays out exactly as the measurement it came from does.
+  assert.deepEqual(measurementMarkLayout(mark, camera, rect), screenSpaceDimensionLayout(item.pickA, item.pickB, item.measurement, camera, rect));
+  assert.equal(measurementMark({ pickA: { point: [0, 0, 0] } }), null, "no second end, no mark");
 });

@@ -7,9 +7,9 @@
  * filename beside it already does.
  *
  * The nine formats the CAD Viewer renders are the exception, and they are not
- * an exception to that rule: they go through the viewer's own `EntryIcon`, so
- * a `.stl` is the triangle it is made of and a `.step` is a solid cube,
- * everywhere either app lists files. `@text-to-cad/core`'s `fileFormats` decides
+ * an exception to that rule: they go through the viewer's own `EntryIcon`, one
+ * plain lucide `File` for every one of them (the name says which kind),
+ * everywhere either app lists files. `@cad/core`'s `fileFormats` decides
  * which nine those are — one authority, reachable from both apps.
  */
 import {
@@ -28,7 +28,7 @@ import {
   Table
 } from "lucide-react";
 import { createElement } from "react";
-import { renderFormatFromPath } from "@text-to-cad/core/lib/fileFormats.js";
+import { RENDER_FORMAT, fileExtensionFromPath, renderFormatFromPath } from "@cad/core/lib/fileFormats.js";
 
 import EntryIcon from "./EntryIcon.jsx";
 
@@ -134,7 +134,9 @@ export function fileIconFor(filePath) {
  *   line for a dense list (the explorer's).
  */
 export function FileIcon({ path, className, strokeWidth = 1.75 }) {
-  const renderFormat = renderFormatFromPath(path);
+  // An engine document (`.xbf`) is the engine's, never opened by its extension's renderer, but it
+  // is a CAD file all the same: a solid in a file, as a STEP is.
+  const renderFormat = renderFormatFromPath(path) || (fileExtensionFromPath(path) === ".xbf" ? RENDER_FORMAT.XBF : "");
   if (renderFormat) {
     // A file the CAD Viewer renders: its own per-format glyph, from the one
     // table every surface that lists files already reads.

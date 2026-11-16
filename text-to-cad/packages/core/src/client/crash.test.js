@@ -58,12 +58,13 @@ test("other engines' stacks are frames alone, and a host can name its own script
     ],
   });
   // A host's name for a script is taken only if it is a file's own name.
-  assert.equal(crashOf(firefox, { fileOf: () => '/Users/someone/x.js' }).frames[0].file, '<?>');
+  const named = { 'blob:https://sandbox.example/1d7f-4c2e': '/Users/someone/x.js', 'blob:https://sandbox.example/77aa-0b19': 'index-Bx3k2.js' };
+  assert.deepEqual(crashOf(firefox, { fileOf: url => named[url] ?? '<?>' }).frames.map(frame => frame.file), ['<?>', 'index-Bx3k2.js', '<?>']);
 });
 
 test("what is no error -- a value thrown, a cross-origin script's error -- is no crash, and a type that is no name is <?>", () => {
   for (const thrown of ['a secret string', 42, null, undefined, { message: 'secret' }]) assert.equal(crashOf(thrown), null);
-  assert.equal(crashOf(Object.assign(new Error('x'), { name: 'Error: secret part' })).type, '<?>');
+  assert.equal(crashOf(Object.assign(new Error('x'), { name: 'Error: secret part', stack: chromium.stack })).type, '<?>');
   // A cancellation the page asked for -- a view's feed aborting its request as the view unmounts -- is no crash.
   const controller = new AbortController();
   controller.abort();
@@ -74,6 +75,20 @@ test("what is no error -- a value thrown, a cross-origin script's error -- is no
   const frames = crashOf(deep).frames;
   assert.equal(frames.length, 30);
   assert.equal(frames.at(-1).function, 'f0', 'the innermost frame is kept');
+});
+
+test("a crash in none of the page's scripts is not the page's: an extension's or an automation's, never reported", () => {
+  // A wallet extension's script, rejecting with its own (minified) error class as it fails to connect; an agent's
+  // browser tool evaluating a predicate in the page.
+  const wallet = Object.assign(new Error('x'), { name: 'i', stack: 'i: Failed to connect\n    at Object.connect (chrome-extension://nkbihfbeogaeaoehlefnkodbefgpgknn/inpage.js:12:4822)' });
+  const automation = Object.assign(new SyntaxError('x'), { stack: ['SyntaxError: x', '    at predicate (eval at evaluate (:291:30), <anonymous>:1:8)',
+    '    at UtilityScript.evaluate (<anonymous>:291:30)', '    at UtilityScript.<anonymous> (<anonymous>:1:44)'].join('\n') });
+  for (const error of [wallet, automation]) assert.equal(crashOf(error), null, error.stack);
+  // One frame of the page's among them is the page's crash: the page called into what threw.
+  const called = Object.assign(new TypeError('x'), { stack: `${automation.stack}\n    at hg.vg (http://127.0.0.1:3245/assets/vendor-three-Cu8Rn7rr.js:4:200)` });
+  assert.deepEqual(crashOf(called).frames.map(frame => frame.file), ['vendor-three-Cu8Rn7rr.js', '<?>', '<?>', '<?>']);
+  // A stack with no frame at all says nothing of whose it is: reported, as ever.
+  assert.deepEqual(crashOf(Object.assign(new TypeError('Failed to fetch'), { stack: 'TypeError: Failed to fetch' })).frames, []);
 });
 
 test('a reporter sends each distinct crash once, a few in all, and never throws', () => {

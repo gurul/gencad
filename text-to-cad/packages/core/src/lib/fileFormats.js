@@ -1,45 +1,50 @@
+import { DOCUMENT_TYPE_REGISTRY } from "./documentTypes.generated.js";
+
+// The document types, from the library's registry (`cad.registry`, generated into
+// `documentTypes.generated.js`): each type's format is its `wire` spelling, the one the server's
+// API names it by (the id, but `3mf` for `threemf`).
+const TYPES = Object.freeze(Object.fromEntries(
+  DOCUMENT_TYPE_REGISTRY.documentTypes.map((type) => [type.id, type])
+));
+
 export const RENDER_FORMAT = Object.freeze({
-  STEP: "step",
-  STL: "stl",
-  THREE_MF: "3mf",
-  GLB: "glb",
-  DXF: "dxf",
-  URDF: "urdf",
-  SRDF: "srdf",
-  SDF: "sdf"
+  STEP: TYPES.step.wire,
+  STL: TYPES.stl.wire,
+  THREE_MF: TYPES.threemf.wire,
+  GLB: TYPES.glb.wire,
+  DXF: TYPES.dxf.wire,
+  URDF: TYPES.urdf.wire,
+  SRDF: TYPES.srdf.wire,
+  SDF: TYPES.sdf.wire,
+  // A cadgen engine document (`cad.engine`): served by the engine, drawn by its own renderer.
+  XBF: TYPES.xbf.wire,
+  KICAD_PCB: TYPES.kicad_pcb.wire,
+  // A KiCad schematic, drawn from its files as a board is, a sheet at a time (`packages/ui/src/renderers/schematic`).
+  KICAD_SCH: TYPES.kicad_sch.wire
 });
 
-export const MESH_RENDER_FORMATS = Object.freeze([
-  RENDER_FORMAT.STL,
-  RENDER_FORMAT.THREE_MF,
-  RENDER_FORMAT.GLB
-]);
+export const MESH_RENDER_FORMATS = Object.freeze(
+  DOCUMENT_TYPE_REGISTRY.documentTypes.filter((type) => type.view === "mesh").map((type) => type.wire)
+);
+
+// A file's format by its extension: every type's extensions but the engine's own document's, which
+// the engine serves as a document and no client reads by its extension; and `.gltf`, read as a GLB.
+const FORMAT_BY_EXTENSION = Object.freeze(Object.fromEntries([
+  ...DOCUMENT_TYPE_REGISTRY.documentTypes
+    .filter((type) => type.id !== "xbf")
+    .flatMap((type) => type.extensions.map((extension) => [extension.slice(1), type.wire])),
+  ["gltf", TYPES.glb.wire]
+]));
+
+// Formats the viewer shows as a PLOT: a KiCad board or schematic drawn from its files, as geometry per layer,
+// by its document's `plot` (`GET /api/v1/documents/kicad_pcb/<id>/plot`). Like a DXF, the render asset is the file itself; nothing bakes a mesh
+// for it.
+export const PLOT_RENDER_FORMATS = Object.freeze(
+  DOCUMENT_TYPE_REGISTRY.documentTypes.filter((type) => type.view === "plot").map((type) => type.wire)
+);
 
 export function normalizeFormat(value) {
   return String(value || "").trim().toLowerCase();
-}
-
-export function normalizeRenderFormat(value, { defaultFormat = RENDER_FORMAT.STEP } = {}) {
-  const normalized = normalizeFormat(value || defaultFormat);
-  if (normalized === "stp") {
-    return RENDER_FORMAT.STEP;
-  }
-  if (normalized === "gltf") {
-    return RENDER_FORMAT.GLB;
-  }
-  if (
-    normalized === RENDER_FORMAT.STEP ||
-    normalized === RENDER_FORMAT.STL ||
-    normalized === RENDER_FORMAT.THREE_MF ||
-    normalized === RENDER_FORMAT.GLB ||
-    normalized === RENDER_FORMAT.DXF ||
-    normalized === RENDER_FORMAT.URDF ||
-    normalized === RENDER_FORMAT.SRDF ||
-    normalized === RENDER_FORMAT.SDF
-  ) {
-    return normalized;
-  }
-  return defaultFormat;
 }
 
 export function entryKind(entry) {
@@ -48,39 +53,25 @@ export function entryKind(entry) {
 
 export function entrySourceFormat(entry) {
   const kind = entryKind(entry);
-  if (kind === RENDER_FORMAT.DXF) {
-    return RENDER_FORMAT.DXF;
-  }
-  if (kind === RENDER_FORMAT.STL) {
-    return RENDER_FORMAT.STL;
-  }
-  if (kind === RENDER_FORMAT.THREE_MF) {
-    return RENDER_FORMAT.THREE_MF;
-  }
-  if (kind === RENDER_FORMAT.GLB || kind === "gltf") {
-    return RENDER_FORMAT.GLB;
-  }
-  if (kind === RENDER_FORMAT.URDF) {
-    return RENDER_FORMAT.URDF;
-  }
-  if (kind === RENDER_FORMAT.SRDF) {
-    return RENDER_FORMAT.SRDF;
-  }
-  if (kind === RENDER_FORMAT.SDF) {
-    return RENDER_FORMAT.SDF;
-  }
-  return RENDER_FORMAT.STEP;
+  // A catalog kind is a format of its own but for the engine's documents, which open as STEP's do.
+  const format = FORMAT_BY_EXTENSION[kind];
+  return format && format !== RENDER_FORMAT.STEP ? format : RENDER_FORMAT.STEP;
 }
 
 export function isMeshRenderFormat(format) {
   return MESH_RENDER_FORMATS.includes(normalizeFormat(format));
 }
 
+export function isPlotRenderFormat(format) {
+  return PLOT_RENDER_FORMATS.includes(normalizeFormat(format));
+}
+
 export function meshAssetKeyForFormat(format) {
   const normalized = normalizeFormat(format);
   // A DXF's render asset is its own file (the server flattens it to a 2D payload;
-  // nothing bakes a mesh for it), so its key is itself, never a baked GLB relation.
-  return isMeshRenderFormat(normalized) || normalized === RENDER_FORMAT.DXF
+  // nothing bakes a mesh for it), and so is a plot's (the server draws the board from it),
+  // so their key is themselves, never a baked GLB relation.
+  return isMeshRenderFormat(normalized) || normalized === RENDER_FORMAT.DXF || isPlotRenderFormat(normalized)
     ? normalized
     : RENDER_FORMAT.GLB;
 }
@@ -109,46 +100,9 @@ export function fileExtensionFromPath(value, { baseUrl = "" } = {}) {
 }
 
 export function renderFormatFromExtension(extension) {
-  const normalized = normalizeFormat(extension).replace(/^\./, "");
-  if (normalized === "step" || normalized === "stp") {
-    return RENDER_FORMAT.STEP;
-  }
-  if (normalized === "stl") {
-    return RENDER_FORMAT.STL;
-  }
-  if (normalized === "3mf") {
-    return RENDER_FORMAT.THREE_MF;
-  }
-  if (normalized === "glb" || normalized === "gltf") {
-    return RENDER_FORMAT.GLB;
-  }
-  if (normalized === "dxf") {
-    return RENDER_FORMAT.DXF;
-  }
-  if (normalized === "urdf") {
-    return RENDER_FORMAT.URDF;
-  }
-  if (normalized === "srdf") {
-    return RENDER_FORMAT.SRDF;
-  }
-  if (normalized === "sdf") {
-    return RENDER_FORMAT.SDF;
-  }
-  return "";
+  return FORMAT_BY_EXTENSION[normalizeFormat(extension).replace(/^\./, "")] || "";
 }
 
 export function renderFormatFromPath(value, options = {}) {
   return renderFormatFromExtension(fileExtensionFromPath(value, options));
-}
-
-/**
- * Does this path name a file the CAD Viewer renders?
- *
- * The one authority on that question for the two apps that ask it. The shared
- * entry menu (`apps/web/src/client/shell/entry-menu.js`) offers `Copy
- * reference` only for a file a selector can point into, and "which formats
- * are CAD" must not become a list either app keeps of its own.
- */
-export function isCadFile(value, options = {}) {
-  return renderFormatFromPath(value, options) !== "";
 }

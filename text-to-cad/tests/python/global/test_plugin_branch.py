@@ -21,7 +21,7 @@ branch = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(branch)
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 64
-SERVERS = json.dumps({"mcpServers": {"cad": {"command": "uvx", "args": ["--from", "cadgen==1.0.0", "cadgen", "mcp"]}}})
+SERVERS = json.dumps({"mcpServers": {"cad": {"command": "uvx", "args": ["--from", "cad-mcp==1.0.0", "cad-mcp"]}}})
 
 
 def git(root: Path, *args: str) -> str:
@@ -38,13 +38,27 @@ class PluginTreeTests(unittest.TestCase):
         self.assertEqual({path for path in directory if path.startswith(".claude-plugin/")},
                          {".claude-plugin/plugin.json", ".claude-plugin/icon.png"})
         self.assertEqual({path for path in directory if path.startswith(".cursor-plugin/")}, {".cursor-plugin/plugin.json"})
-        # The latest copy adds what Claude Code's and Codex's marketplaces read, and the Agent Plugins standard's
-        # manifest and server config.
+        # The latest copy adds what Claude Code's and Codex's marketplaces read, Grok Build's manifest, and the
+        # Agent Plugins standard's manifest and server config.
         install, errors, _manifest = branch.build(REPO_ROOT, "latest")
         self.assertEqual(errors, [])
         self.assertEqual(set(install) - set(directory), {".claude-plugin/marketplace.json", ".codex-plugin/plugin.json",
                                                          ".codex-plugin/logo.png", "codex.mcp.json", "plugin.json",
-                                                         "mcp.json"})
+                                                         "mcp.json", ".grok-plugin/plugin.json"})
+
+    def test_claude_code_gets_cad_s_server_from_the_directory_s_copy_alone(self) -> None:
+        # Claude Code gets the skills alone from main and latest; the directory's copy, which claude.ai reviewed,
+        # keeps the manifest naming claude.mcp.json, and that server lists no tools when Claude Code starts it.
+        # Grok Build reads its own manifest before Claude's: it keeps the server everywhere it is installed from.
+        named = {}
+        for copy in ("latest", "directory"):
+            tree, errors, _manifest = branch.build(REPO_ROOT, copy)
+            self.assertEqual(errors, [])
+            manifests = {path: json.loads(tree[path][1]).get("mcpServers")
+                         for path in (".claude-plugin/plugin.json", ".grok-plugin/plugin.json") if path in tree}
+            named[copy] = manifests
+        self.assertEqual(named, {"latest": {".claude-plugin/plugin.json": None, ".grok-plugin/plugin.json": "./claude.mcp.json"},
+                                 "directory": {".claude-plugin/plugin.json": "./claude.mcp.json"}})
 
     def test_the_install_copy_lists_itself_as_the_plugin(self) -> None:
         # The catalog lists the plugin at the root of the branch it is read from, so a marketplace
@@ -81,7 +95,7 @@ class PluginTreeTests(unittest.TestCase):
         # claude.ai's directory follows claude-plugin and updates its copies. Every other installer
         # follows latest, where the configs keep main's channels but Cursor's: main's names the
         # Cursor Marketplace, which reads main, and a Cursor install by hand clones the branch.
-        # The server's environment is the plugin's say (cadgen's _internal/channel.py).
+        # The server's environment is the plugin's say (the server's _internal/channel.py).
         said = {}
         for copy in ("latest", "directory"):
             tree, errors, _manifest = branch.build(REPO_ROOT, copy)
@@ -90,17 +104,17 @@ class PluginTreeTests(unittest.TestCase):
                           for path in ("claude.mcp.json", "codex.mcp.json", "cursor.mcp.json", "mcp.json",
                                        "gemini-extension.json")
                           if path in tree}
-        gemini = {"CADGEN_INSTALL_CHANNEL": "gemini-github", "CADGEN_AUTO_UPDATED": "1"}
+        gemini = {"CAD_INSTALL_CHANNEL": "gemini-github"}
         self.assertEqual(said["latest"], {
-            "claude.mcp.json": {"CADGEN_INSTALL_CHANNEL": "claude-github"},
-            "codex.mcp.json": {"CADGEN_INSTALL_CHANNEL": "codex-github"},
-            "cursor.mcp.json": {"CADGEN_INSTALL_CHANNEL": "cursor-github"},
-            "mcp.json": {"CADGEN_INSTALL_CHANNEL": "agent-plugins"},
+            "claude.mcp.json": {"CAD_INSTALL_CHANNEL": "claude-github"},
+            "codex.mcp.json": {"CAD_INSTALL_CHANNEL": "codex-github"},
+            "cursor.mcp.json": {"CAD_INSTALL_CHANNEL": "cursor-github"},
+            "mcp.json": {"CAD_INSTALL_CHANNEL": "agent-plugins"},
             "gemini-extension.json": gemini,
         })
         self.assertEqual(said["directory"], {
-            "claude.mcp.json": {"CADGEN_INSTALL_CHANNEL": "claude-directory", "CADGEN_AUTO_UPDATED": "1"},
-            "cursor.mcp.json": {"CADGEN_INSTALL_CHANNEL": "cursor-github"},
+            "claude.mcp.json": {"CAD_INSTALL_CHANNEL": "claude-directory", "CAD_AUTO_UPDATED": "1"},
+            "cursor.mcp.json": {"CAD_INSTALL_CHANNEL": "cursor-github"},
             "gemini-extension.json": gemini,
         })
 

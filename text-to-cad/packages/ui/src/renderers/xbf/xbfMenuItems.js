@@ -1,0 +1,140 @@
+import { Fragment } from "react";
+import { english } from "../../i18n/core.js";
+import { useI18n } from "@cad/ui/i18n";
+import { menuEntry, referenceGroup, tangentGroup, zoomGroup } from "../kit/shell/viewMenu.js";
+
+// An engine document's menus, which read as the STEP renderer's did.
+//
+// The part menu: what can be done to one node of the model, wherever it was
+// asked for.
+//
+// It is ONE list (`assemblyPartMenuEntries`) with two presentations: the Features
+// tree renders it into its own context menu (`AssemblyPartMenuItems`), and the
+// viewport hands the same entries to the shell's viewport menu, which owns the
+// gesture, the anchor and the dismissal. Neither can drift from the other.
+//
+// Its last group is the model's framing, and it is the only zoom control the
+// viewer has left: a percentage readout and its menu used to sit in the panel
+// header, and nothing replaced them. Framing cannot contradict the active tool,
+// and every action here returns to Select first anyway (`partMenuActions`). Every item is said in
+// the language of the `t` the caller hands over (English unless it does).
+// The entries are the kit's (`kit/shell/viewMenu.js`), every view's menu's: the same words, ids and framing.
+const entry = (id, text, disabled, onSelect, separatorBefore = false) => menuEntry(id, text, { disabled, onSelect, separatorBefore });
+
+/**
+ * The framing group, identical wherever the menu was asked for: over a part, over a
+ * tree row, or over empty space. "Zoom to fit" frames the whole model from where the
+ * camera looks now — the one act the viewer calls `resetZoom` — and "Zoom to selection"
+ * frames what is selected, so it is off when nothing is (`menu.zoomSelectionAvailable`).
+ */
+function zoomEntries(menu, { disabled = false, actions = {}, t = english } = {}) {
+  const run = (action) => () => action?.(menu);
+  const [fit, selection] = zoomGroup({ onZoomFit: run(actions.onZoomFit), onZoomSelection: run(actions.onZoomSelection),
+    selectionAvailable: menu.zoomSelectionAvailable === true, disabled, t });
+  return [{ ...fit, separatorBefore: true }, selection];
+}
+
+/**
+ * Select tangent faces and Select tangent edges, where the descriptor names faces or edges to take the
+ * chains of (`tangentFaceIds`, `tangentEdgeIds`: the view's menu's, `xbfMenus.js`'s `xbfTangentSources`).
+ */
+function tangentEntries(menu, { disabled = false, actions = {}, t = english } = {}) {
+  return tangentGroup({ faces: menu.tangentFaceIds?.length > 0, edges: menu.tangentEdgeIds?.length > 0, disabled, t,
+    onFaces: () => actions.onSelectTangentFaces?.(menu), onEdges: () => actions.onSelectTangentEdges?.(menu) });
+}
+
+/**
+ * The entries of the part menu for the descriptor the workspace builds for a node
+ * (`assemblyNodeMenu` in `CadFileView`): `{ id, label, disabled, separatorBefore, onSelect }`.
+ *
+ * `actions` holds the handlers, each called with the descriptor. `disabled` disables every
+ * item at once, for a tree whose selection is blocked.
+ */
+/**
+ * The reference group that opens a menu about something with a reference: Copy Reference, off
+ * when there is nothing to copy. What goes to the agent goes through Quick Edit, which a pick opens.
+ */
+function referenceEntries(menu, { disabled = false, actions = {}, t = english } = {}) {
+  return referenceGroup({ copyText: menu.copyText, onCopy: () => actions.onCopyReference?.(menu), disabled, t });
+}
+
+export function assemblyPartMenuEntries(menu, { disabled = false, actions = {}, t = english } = {}) {
+  const run = (action) => () => action?.(menu);
+  const off = (flag) => disabled || flag === true;
+  const entries = referenceEntries(menu, { disabled, actions, t });
+  entries.push(entry("select", menu.selected === true ? t("menu.deselect") : t("tool.select"), off(menu.selectDisabled), run(actions.onSelect), true));
+  if (menu.showIsolate !== false) {
+    entries.push(entry("isolate", menu.focused === true ? t("tree.exitIsolate") : t("tree.isolate"), off(menu.isolateDisabled), run(actions.onIsolate)));
+  }
+  if (menu.showExitAllIsolate === true) {
+    entries.push(entry("exit-all-isolates", t("menu.exitAllIsolates"), off(menu.exitAllIsolateDisabled), run(actions.onExitAllIsolate)));
+  }
+  entries.push(...tangentEntries(menu, { disabled, actions, t }));
+  // One separator ahead of the visibility group, whichever of its items comes first.
+  let visibilitySeparator = true;
+  const visibility = (id, text, isDisabled, onSelect) => {
+    entries.push(entry(id, text, isDisabled, onSelect, visibilitySeparator));
+    visibilitySeparator = false;
+  };
+  if (menu.showHideOther !== false) visibility("hide-others", t("menu.hideOthers"), off(menu.hideOtherDisabled), run(actions.onHideOther));
+  if (menu.showHideAll === true) {
+    visibility("hide-all", String(menu.hideAllLabel || "").trim() || t("tree.showAll"), off(menu.hideAllDisabled), run(actions.onHideAll));
+  }
+  if (menu.showVisibility !== false) {
+    visibility("visibility", menu.hidden === true ? t("tree.reveal") : t("tree.hide"), off(menu.visibilityDisabled),
+      run(menu.hidden === true ? actions.onReveal : actions.onHide));
+  }
+  if (menu.showExpandCollapse === true) {
+    entries.push(entry("expand", t("menu.expand"), disabled || menu.expandSelectedDisabled !== false, run(actions.onExpandSelected), true));
+    entries.push(entry("collapse", t("menu.collapse"), disabled || menu.collapseSelectedDisabled !== false, run(actions.onCollapseSelected)));
+    entries.push(entry("expand-all", t("menu.expandAll"), disabled || menu.expandAllDisabled !== false, run(actions.onExpandAll)));
+    entries.push(entry("collapse-all", t("menu.collapseAll"), disabled || menu.collapseAllDisabled !== false, run(actions.onCollapseAll)));
+  }
+  entries.push(...zoomEntries(menu, { disabled, actions, t }));
+  return entries;
+}
+
+/**
+ * What a secondary tap on EMPTY space offers: Select tangent faces or edges while faces or edges are
+ * selected, the model as a whole (Show all, Expand all, Collapse all) and the framing group — which is why this menu always has something to
+ * show, and why somebody who has zoomed off the model can press anywhere to get it back.
+ * A lone part's model menu is also the menu over the part itself, so when the descriptor
+ * carries the whole part's reference (`menu.copyText`) it opens with the part menu's
+ * reference group.
+ */
+export function modelMenuEntries(menu, { actions = {}, t = english } = {}) {
+  const run = (action) => () => action?.(menu);
+  const entries = String(menu.copyText || "").trim() ? referenceEntries(menu, { actions, t }) : [];
+  // While faces or edges are selected, their tangent chains, the menu's pick group.
+  tangentEntries(menu, { actions, t }).forEach((item, at) => entries.push({ ...item, separatorBefore: at === 0 && entries.length > 0 }));
+  if (menu.showShowAll === true) {
+    entries.push({ id: "show-all", label: t("tree.showAll"), separatorBefore: entries.length > 0, onSelect: run(actions.onHideAll) });
+  }
+  if (menu.showExpandCollapse === true) {
+    entries.push({ id: "expand-all", label: t("menu.expandAll"), disabled: menu.expandAllDisabled === true,
+      separatorBefore: entries.length > 0, onSelect: run(actions.onExpandAll) });
+    entries.push({ id: "collapse-all", label: t("menu.collapseAll"), disabled: menu.collapseAllDisabled === true, onSelect: run(actions.onCollapseAll) });
+  }
+  const zoom = zoomEntries(menu, { actions, t });
+  // Nothing above it: the group opens the menu rather than following a separator.
+  if (!entries.length) zoom[0] = { ...zoom[0], separatorBefore: false };
+  entries.push(...zoom);
+  return entries;
+}
+
+/** The viewport's menu for whatever the workspace resolved under the press. */
+export function viewportMenuEntries(menu, options) {
+  if (!menu) return [];
+  return menu.global === true ? modelMenuEntries(menu, options) : assemblyPartMenuEntries(menu, options);
+}
+
+/** That same list as the items of a menu primitive (the Features tree's context menu). */
+export function AssemblyPartMenuItems({ menu, Item, Separator, itemClassName = "text-xs", disabled = false, actions = {} }) {
+  const { t } = useI18n();
+  return assemblyPartMenuEntries(menu, { disabled, actions, t }).map((item) => (
+    <Fragment key={item.id}>
+      {item.separatorBefore ? <Separator /> : null}
+      <Item className={itemClassName} disabled={item.disabled} onSelect={item.onSelect}>{item.label}</Item>
+    </Fragment>
+  ));
+}

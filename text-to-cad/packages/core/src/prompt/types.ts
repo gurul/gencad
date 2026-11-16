@@ -1,6 +1,8 @@
-/** Portable identity: a file by its absolute path; delivery addresses (HTTP/blob URLs) do not identify files. */
+/** Portable identity: a file by its absolute path, a model by its document id; delivery addresses (HTTP/blob URLs) do not identify files. */
 export type ResourceRef =
   | { kind: 'workspace-file'; path: string; revision?: string }
+  /** A document the engine holds by its id alone (a model's): `path` is the id, never a filesystem path. */
+  | { kind: 'cad-model'; path: string; revision?: string }
   | { kind: 'url'; url: string; revision?: string };
 /** Zero-based UTF-16 coordinates; text ranges have an exclusive end. */
 export interface TextPosition { line: number; character: number }
@@ -12,9 +14,12 @@ export interface PromptReference { resource: ResourceRef; target: ReferenceTarge
 export type PromptPart =
   | { id: string; kind: 'text'; text: string }
   | { id: string; kind: 'reference'; reference: PromptReference }
-  /** `label` says what it is in a word or two ("Sketch"), for a message that names it by path. */
-  | { id: string; kind: 'attachment'; name: string; mimeType: string; content: Blob | Promise<Blob>; about?: readonly string[]; label?: string };
-export interface PromptContext { schemaVersion: 1; operationId: string; parts: readonly PromptPart[] }
+  /** `label` says what it is in a word or two ("Annotation"), for a message that names it by path; `path`, where it is already saved. */
+  | { id: string; kind: 'attachment'; name: string; mimeType: string; content: Blob | PromiseLike<Blob>; about?: readonly string[]; label?: string; path?: string | PromiseLike<string>; inlineText?: string | PromiseLike<string | null> };
+/** The workspace the agent reading a message works in and the person's home, `/`-separated: how a message names each file (`displayPath`). */
+export interface PromptFolders { start?: string; home?: string }
+/** `folders`, where the host knows them: a message names its files by them; the parts keep the absolute paths. */
+export interface PromptContext { schemaVersion: 1; operationId: string; parts: readonly PromptPart[]; folders?: PromptFolders | PromiseLike<PromptFolders | null> }
 export interface PromptDestinationState {
   kind: 'composer' | 'clipboard' | 'unavailable';
   available: boolean;
@@ -44,6 +49,10 @@ export interface PromptContextPort {
   send?(context: PromptContext): Promise<PromptDeliveryResult>;
 }
 export interface PromptMessageOptions {
+  /** Complete inline representation, used instead of the attachment path when present. */
+  attachmentText?: (part: Extract<PromptPart, { kind: 'attachment' }>) => string | null | undefined;
   /** Where an attachment was saved, for one that travels as a file; nothing for one sent beside the text. */
   attachmentPath?: (part: Extract<PromptPart, { kind: 'attachment' }>) => string | null | undefined;
+  /** The folders the message names files by (`displayPath`); none, each by its absolute path. */
+  folders?: PromptFolders | null;
 }

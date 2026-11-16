@@ -23,25 +23,24 @@ boundaries, never preset names:
 | Surface style/color source, crossing opaque/transparent | Surface color, opacity within one transparency class |
 | Edge enable/visibility | Edge color |
 | Floor enable | Floor color, opacity, placement |
-| Clip enable/disable | Clip position and Flip after preparation |
+| Clip enable/disable | Clip position, Reverse and Part colours after preparation |
 | Appearance shader change | Projection, background, grid, axes, Explode |
 
 Both paths yield until the controls have painted, then apply the latest recipe.
 Only the preparation path loads resources and compiles shader variants. Live
 updates coalesce to the next frame and do not wait for an artificial debounce.
 
-The Clip and Explode tool buttons add neutral control panels. Editing a slider or
-number enables the effect; X or pressing the tool again resets and removes it.
-Clip uses original model bounds for its slider and the rendered plane, independent
-of pose and Explode. Its neutral endpoint is the maximum coordinate (minimum when
-flipped). It has one active axis and plane, exposed in its panel as a compact X/Y/Z
-dropdown and a single cut-amount slider. The slider starts neutral on the left and
+Explode and Clip are popovers from their strip tiles: the slider, the amount and Reset, and
+Clip's axis dropdown with Part colours and Reverse. Editing the slider enables the effect;
+Reset puts it back to neutral. Clip uses original model bounds for its slider and the rendered
+plane, independent of pose and Explode. Its neutral endpoint is the maximum coordinate
+(minimum when flipped). It has one active axis and plane. The slider starts neutral on the left and
 advances from maximum to minimum coordinate; a flipped cut (`invert`) reverses that direction. CLI coordinates, including zero, remain supported. Clip and Explode stay outside mode presets.
 
 ## Renderer and resources
 
-`kit/look/studioEnvironmentCache.js` keeps at most three reflection maps per
-viewport. `studioEnvironment.worker.js` generates PMREM in worker WebGL and
+`kit/look/studioEnvironmentCache.js` keeps at most three reflection maps per GPU device,
+shared by every viewport of the page (per viewport where there is no device). `studioEnvironment.worker.js` generates PMREM in worker WebGL and
 transfers half-float pixels; model geometry stays on the main renderer. Rotation
 and exposure reuse the map. Superseded work terminates the worker; completed
 maps are reused by key. Workers terminate after transferring their pixels, so inactive tabs do not
@@ -75,10 +74,23 @@ outside FileViewer retain their own scene setup lifecycle.
 ## Status placement
 
 `kit/status/ViewUpdateStatus.jsx` only takes `status`, `onRetry`, and
-`className`. It has no scene/store knowledge. RendererShell draws it centred at the top of the viewport,
-level with the tool strip, without changing scheduling. It appears after 150ms with “Updating view…” (or
+`className`. It has no scene/store knowledge. RendererShell draws it centred under the tool
+strip and the tool in hand's sub-toolbar, or at the top of the viewport in the strip's row
+where there is no strip (preview, a load), without changing scheduling. It appears after 150ms with “Updating view…” (or
 “Preparing section view…” for Clip), stays nonmodal, and never disables controls.
 Fast changes produce no spinner. Failures show a retry action.
+
+A job the engine runs behind the view -- a build rewriting the model on screen, a STEP's import
+before anything is on screen -- says where it is in the engine's one progress event
+(`kit/status/progressEvent.js`: `{kind, stage, job, outputs, detail, done, total, elapsedMs}`, the
+engine's `progress.py`). The page reads its `kind` and `stage` and nothing of the engine's words: the
+status line says `t("progress.<kind>.<stage>")` with the count where the stage has one ("Writing
+files 1/2…", `modelUpdateStatus` and `statusLine`), and the loading overlay says the same key with
+its fraction (`loadingState.js`), each in the view's language (`i18n/locales`, a key per stage of
+every kind, held to the engine's vocabulary by `tests/python/global/test_progress_vocabulary_sync.py`).
+A stage with no countable units says its stage alone; the page never times, guesses or invents a
+fraction. The page's own loading steps (`Finding file`, `Loading geometry`, …) keep their closed
+vocabulary beside it (`statusLabels.js`).
 
 Tests cover latest-request wins, cancellation back to the visible recipe,
 serialized reconciliation, failure/retry, capture readiness, disposal, and
