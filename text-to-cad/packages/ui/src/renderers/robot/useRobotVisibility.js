@@ -4,7 +4,11 @@ import { changeRobotVisibility } from "./visibility.js";
 
 const EMPTY = Object.freeze([]);
 
-/** Visibility is local to this file; reloads retain only part identities still present. */
+/**
+ * Which visuals are hidden: React state, since the Links rows draw it, scoped to this file. The
+ * `visibility` slice of the file's view restores it against the payload's revision, and a live
+ * reload keeps only the ids the loaded part list still has. The scene is told on every change.
+ */
 export function useRobotVisibility({ robot, scene, requestRender, stored }) {
   const [visibility, setVisibility] = useState(null);
   const restored = useMemo(() => {

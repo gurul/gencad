@@ -1,28 +1,28 @@
 import { describe, expect, it, vi } from 'vitest';
-import { encodeBase64 } from '@text-to-cad/core/client';
-import { createPromptContext, referencePart } from '@text-to-cad/core/prompt';
+import { encodeBase64 } from '@cad/core/client';
+import { createPromptContext, referencePart } from '@cad/core/prompt';
 import { createBridge, HostError, type ToolResult } from './bridge';
 import { frameClipboard } from './clipboard';
 import { chatReach, createChatPromptContext } from './prompt';
-import { createServer, type SyncReply, type SyncRequest, type ViewEvent } from './server';
-import { createViewSync, LOST_AFTER, NEWS_MS, SYNC_MS } from './sync';
-import {
-  createHttpTessellationCacheProvider, encodeComponentTessellation, tessellationPayloadFacts,
-} from '@text-to-cad/core/lib/surf/tessellationCache.js';
-import { createTunnelClient, createTunnelFetch, decodeBase64, TUNNEL_ORIGIN, TUNNEL_REPLY_MAX_BYTES } from './tunnel';
+import { createServer, ServerError, type SyncReply, type SyncRequest, type ViewEvent } from './server';
+import { createViewSync, LOST_AFTER, SYNC_MS } from './sync';
+import { createTunnelFetch, decodeBase64, TUNNEL_ORIGIN, TUNNEL_REPLY_MAX_BYTES } from './tunnel';
 
 /** A host frame: records what the page posts and answers with `respond`. */
 function fakeHost(respond: (message: any) => unknown) {
   const listeners = new Set<(event: MessageEvent) => void>();
   const posted: any[] = [];
-  const deliver = (data: unknown) => { for (const listener of [...listeners]) listener({ data } as MessageEvent); };
-  const host = {
+  const host: { postMessage(message: any): void } = {
     postMessage(message: any) {
       posted.push(message);
       if (message.id === undefined || message.method === undefined) return;
       const result = respond(message);
       if (result !== undefined) queueMicrotask(() => deliver({ jsonrpc: '2.0', id: message.id, result }));
     },
+  };
+  // What the host posts arrives from the host's window; `source` lets a test speak as another frame.
+  const deliver = (data: unknown, source: unknown = host) => {
+    for (const listener of [...listeners]) listener({ data, source } as MessageEvent);
   };
   const self = {
     addEventListener: (_type: string, listener: any) => listeners.add(listener),
@@ -38,12 +38,46 @@ describe('the MCP Apps bridge', () => {
     await bridge.initialize({ name: 'CAD', version: 'test' });
     expect(bridge.hostContext.theme).toBe('dark');
     expect(frame.posted.some(message => message.method === 'ui/notifications/initialized')).toBe(true);
-    frame.deliver({ jsonrpc: '2.0', method: 'ui/notifications/tool-result', params: { structuredContent: { launch: { page: 'home' } } } });
+    frame.deliver({ jsonrpc: '2.0', method: 'ui/notifications/tool-result', params: { structuredContent: { launch: { page: 'home' } }, _meta: { 'dev.texttocad/httpToken': 'session-capability' } } });
     const seen: ToolResult[] = [];
     bridge.onToolResult(result => seen.push(result));
     expect(seen[0].structuredContent).toEqual({ launch: { page: 'home' } });
+    expect(seen[0]._meta?.['dev.texttocad/httpToken']).toBe('session-capability');
     frame.deliver({ jsonrpc: '2.0', method: 'ui/notifications/host-context-changed', params: { theme: 'light' } });
     expect(bridge.hostContext.theme).toBe('light');
+  });
+
+  it('hears only the host: another frame can neither answer a request nor speak as the host', async () => {
+    const frame = fakeHost(() => undefined);
+    const bridge = createBridge(frame.host, frame.self as any);
+    const other = { postMessage() {} };
+    const seen: ToolResult[] = [];
+    bridge.onToolResult(result => seen.push(result));
+    frame.deliver({ jsonrpc: '2.0', method: 'ui/notifications/tool-result', params: { structuredContent: { launch: { page: 'forged' } } } }, other);
+    frame.deliver({ jsonrpc: '2.0', method: 'ui/notifications/host-context-changed', params: { theme: 'dark' } }, null);
+    expect(seen).toEqual([]);
+    expect(bridge.hostContext.theme).toBeUndefined();
+
+    const pending = bridge.callTool('cad_sync', { view: 'v' });
+    const call = frame.posted.find(message => message.method === 'tools/call');
+    frame.deliver({ jsonrpc: '2.0', id: call.id, result: { structuredContent: { from: 'other' } } }, other);
+    frame.deliver({ jsonrpc: '2.0', id: call.id, result: { structuredContent: { from: 'host' } } });
+    await expect(pending).resolves.toEqual({ structuredContent: { from: 'host' } });
+  });
+
+  it('numbers its requests from a random start, one apart', async () => {
+    const starts = new Set<number>();
+    for (let at = 0; at < 4; at += 1) {
+      const frame = fakeHost(() => ({}));
+      const bridge = createBridge(frame.host, frame.self as any);
+      await bridge.callTool('cad_sync', { view: 'v' });
+      await bridge.callTool('cad_sync', { view: 'v' });
+      const [first, second] = frame.posted.filter(message => message.method === 'tools/call').map(message => message.id);
+      expect(Number.isSafeInteger(first)).toBe(true);
+      expect(second).toBe(first + 1);
+      starts.add(first);
+    }
+    expect(starts.size).toBeGreaterThan(1);
   });
 
   it('cancels an aborted request with the host and rejects it', async () => {
@@ -96,7 +130,7 @@ describe('a view\'s one call each second', () => {
       const sync = createViewSync(server, { id: 'v1', surface: 'tab', model: () => '/p/a.step' }, {
         show: next => shown.push(next.model),
         capture: async () => { const png = captures.shift(); if (!png) throw new Error('nothing to capture'); return png; },
-        state: () => ({ model: '/p/a.step', selection: ['/p/a.step#o1.f2'] }),
+        state: () => ({ model: '/p/a.step', selection: ['/p/a.step#bracket/f:bracket.extrude1.3'] }),
       });
       sync.run(stop.signal);
       await vi.advanceTimersByTimeAsync(0);
@@ -107,7 +141,7 @@ describe('a view\'s one call each second', () => {
       expect(requests).toHaveLength(4);
       // What the view shows goes up once, and again only when it changes.
       expect(requests.map(request => Boolean(request.state))).toEqual([true, false, false, false]);
-      expect(requests[0]).toMatchObject({ view: 'v1', surface: 'tab', model: '/p/a.step', state: { selection: ['/p/a.step#o1.f2'] } });
+      expect(requests[0]).toMatchObject({ view: 'v1', surface: 'tab', model: '/p/a.step', state: { selection: ['/p/a.step#bracket/f:bracket.extrude1.3'] } });
       expect(shown).toEqual(['/p/b.step']);
       expect(replied).toEqual(expect.arrayContaining([
         { requestId: 'c1', png: encodeBase64(new Uint8Array([1, 2, 3])) },
@@ -158,14 +192,33 @@ describe('a view\'s one call each second', () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it('reads the catalog again only when its revision moves past the one applied, and carries a STEP\'s build feed', async () => {
+  // A server that answers, refusing the view (the host restarted it since the view opened), is not
+  // gone: the view says what it said, never to quit and reopen the host (#729).
+  it('says what the server answered when it refuses every sync', async () => {
+    vi.useFakeTimers();
+    try {
+      const refusal = 'This CAD view was opened before CAD restarted: close it and open CAD again.';
+      const server = { sync: vi.fn(async (): Promise<SyncReply> => { throw new ServerError(refusal); }), reply: async () => {} };
+      const said: [boolean, string | undefined][] = [];
+      const stop = new AbortController();
+      createViewSync(server, { id: 'v1', surface: 'tab', model: () => null }, {
+        show: () => {}, capture: async () => new Blob(), state: () => ({}),
+        connection: (connected, refused) => said.push([connected, refused]),
+      }).run(stop.signal);
+      await vi.advanceTimersByTimeAsync(7_000);
+      expect(said).toEqual([[false, refusal]]);
+      stop.abort();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('reads the catalog again only when its revision moves past the one applied', async () => {
     vi.useFakeTimers();
     try {
       const { server, requests } = syncing([
         { catalog: { revision: 'r1' } },
-        { catalog: { revision: 'r2' }, previews: [{ file: 'a.step', state: 'building', feedCursor: 'k1' }] as SyncReply['previews'] },
-        { catalog: { revision: 'r2' }, previews: [{ file: 'a.step', state: 'done', feedCursor: 'k2' }] as SyncReply['previews'] },
-        { catalog: { revision: 'r2' }, previews: [{ file: 'a.step', state: 'done', feedCursor: 'k2' }] as SyncReply['previews'] },
+        { catalog: { revision: 'r2' } },
+        { catalog: { revision: 'r2' } },
+        { catalog: { revision: 'r2' } },
       ]);
       let applied = 'r1';
       const refreshes: (string | null)[] = [];
@@ -174,51 +227,30 @@ describe('a view\'s one call each second', () => {
         { show() {}, capture: async () => new Blob(), state: () => ({}) });
       sync.watch({ file: () => '/p/a.step', revision: () => applied,
         refresh: async file => { refreshes.push(file); applied = 'r2'; } });
-      const feed: string[] = [];
-      sync.observePreview('a.step', preview => feed.push(String(preview.state)), () => {});
       sync.run(stop.signal);
       await vi.advanceTimersByTimeAsync(0);
-      expect(requests[0].watch).toEqual({ file: '/p/a.step', previews: ['a.step'] });
+      expect(requests[0].watch).toEqual({ file: '/p/a.step' });
       expect(refreshes).toEqual([]);
       await vi.advanceTimersByTimeAsync(SYNC_MS);
       expect(refreshes).toEqual(['/p/a.step']);
-      // A moving build is asked after sooner; a still one waits the second.
-      expect(feed).toEqual(['building']);
-      await vi.advanceTimersByTimeAsync(NEWS_MS);
-      expect(feed).toEqual(['building', 'done']);
-      await vi.advanceTimersByTimeAsync(NEWS_MS);
-      expect(feed).toEqual(['building', 'done', 'done']);
-      await vi.advanceTimersByTimeAsync(NEWS_MS);
+      await vi.advanceTimersByTimeAsync(2 * SYNC_MS);
       expect(requests).toHaveLength(4);
       expect(refreshes).toEqual(['/p/a.step']);
       stop.abort();
     } finally { vi.useRealTimers(); }
   });
+});
 
-  it('hands the view a failed build as news, and only a bare error as the feed failing', async () => {
-    vi.useFakeTimers();
-    try {
-      const { server } = syncing([
-        { previews: [{ file: 'a.step', epoch: 'e', revision: 3, state: 'failed', error: 'the model raised', feedCursor: 'k1' }] as SyncReply['previews'] },
-        { previews: [{ file: 'a.step', error: 'the daemon did not answer' }] as SyncReply['previews'] },
-      ]);
-      const stop = new AbortController();
-      const sync = createViewSync(server, { id: 'v1', surface: 'inline', model: () => '/p/a.step' },
-        { show() {}, capture: async () => new Blob(), state: () => ({}) });
-      sync.watch({ file: () => '/p/a.step', revision: () => 'r1', refresh: async () => {} });
-      const updates: string[] = [];
-      const lost: string[] = [];
-      sync.observePreview('a.step', preview => updates.push(`${preview.state}: ${preview.error}`),
-        error => lost.push(error instanceof Error ? error.message : String(error)));
-      sync.run(stop.signal);
-      await vi.advanceTimersByTimeAsync(0);
-      expect(updates).toEqual(['failed: the model raised']);
-      expect(lost).toEqual([]);
-      await vi.advanceTimersByTimeAsync(NEWS_MS);
-      expect(lost).toEqual(['the daemon did not answer']);
-      expect(updates).toEqual(['failed: the model raised']);
-      stop.abort();
-    } finally { vi.useRealTimers(); }
+describe('the page\'s own calls', () => {
+  it('carry the app capability: cad_sync and cad_capture_reply as `app`', async () => {
+    const calls: any[] = [];
+    const server = createServer({ callTool: async (name, args) => { calls.push({ name, args }); return { structuredContent: { events: [] } }; } }, 'app-capability');
+    await server.sync({ view: 'v', surface: 'tab', model: null });
+    await server.reply('r1', { png: 'iVBORw0KGgo=' });
+    expect(calls).toEqual([
+      { name: 'cad_sync', args: { view: 'v', surface: 'tab', model: null, app: 'app-capability' } },
+      { name: 'cad_capture_reply', args: { requestId: 'r1', png: 'iVBORw0KGgo=', app: 'app-capability' } },
+    ]);
   });
 });
 
@@ -230,16 +262,27 @@ describe('the fetch tunnel', () => {
         calls.push({ name, args });
         return { structuredContent: { status: args.method === 'HEAD' ? 200 : 201, headers: { 'content-type': 'application/json', 'content-length': '11' }, body: encodeBase64(new TextEncoder().encode('{"ok":true}')) } };
       },
-    });
+    }, 'app-capability');
     const tunnel = createTunnelFetch(server);
-    const posted = await tunnel(`${TUNNEL_ORIGIN}/__cad/surfaces?x=1`, { method: 'POST', headers: { 'x-cadgen-viewer': '1' }, body: '{"a":1}' });
-    expect(calls[0]).toMatchObject({ name: 'cad_http', args: { method: 'POST', url: `${TUNNEL_ORIGIN}/__cad/surfaces?x=1` } });
-    expect(calls[0].args.headers['x-cadgen-viewer']).toBe('1');
+    const posted = await tunnel(`${TUNNEL_ORIGIN}/api/v1/parts?x=1`, { method: 'POST', headers: { 'x-cad-viewer': '1' }, body: '{"a":1}' });
+    expect(calls[0]).toMatchObject({ name: 'cad_http', args: { method: 'POST', url: `${TUNNEL_ORIGIN}/api/v1/parts?x=1` } });
+    expect(calls[0].args.headers['x-cad-viewer']).toBe('1');
+    expect(calls[0].args.headers['x-cad-app']).toBe('app-capability');
     expect(new TextDecoder().decode(decodeBase64(calls[0].args.body))).toBe('{"a":1}');
     expect(posted.status).toBe(201);
     expect(await posted.json()).toEqual({ ok: true });
-    const head = await tunnel(`${TUNNEL_ORIGIN}/__cad/asset?file=a`, { method: 'HEAD' });
+    const head = await tunnel(`${TUNNEL_ORIGIN}/api/v1/local/files?path=a`, { method: 'HEAD' });
     expect([head.status, head.headers.get('content-length'), await head.text()]).toEqual([200, '11', '']);
+  });
+
+  it('keeps version reads from occupying a host call slot', async () => {
+    const calls: any[] = [];
+    const server = createServer({ callTool: async (_name, args) => {
+      calls.push(args);
+      return { structuredContent: { status: 200, headers: {}, body: '' } };
+    } }, 'app-capability');
+    await createTunnelFetch(server)(`${TUNNEL_ORIGIN}/api/v1/documents/part/version?after=v&wait=60`);
+    expect(new URL(calls[0].url).searchParams.get('wait')).toBe('0');
   });
 
   it('inflates a body the server gzipped for the trip, and refuses an encoding it cannot read', async () => {
@@ -249,36 +292,23 @@ describe('the fetch tunnel', () => {
     const server = createServer({
       callTool: async () => ({ structuredContent: { status: 200, encoding, body: encodeBase64(gzipped),
         headers: { 'content-type': 'application/json', 'content-length': String(json.length) } } }),
-    });
+    }, 'app-capability');
     const tunnel = createTunnelFetch(server);
-    const reply = await tunnel(`${TUNNEL_ORIGIN}/__cad/catalog`);
+    const reply = await tunnel(`${TUNNEL_ORIGIN}/api/v1/documents`);
     expect([reply.headers.get('content-length'), await reply.text()]).toEqual([String(json.length), json]);
     encoding = 'br';
-    await expect(tunnel(`${TUNNEL_ORIGIN}/__cad/catalog`)).rejects.toThrow(TypeError);
+    await expect(tunnel(`${TUNNEL_ORIGIN}/api/v1/documents`)).rejects.toThrow(TypeError);
   });
 
   it('turns a failed call into the TypeError fetch throws', async () => {
-    const tunnel = createTunnelFetch(createServer({ callTool: async () => ({ isError: true, content: [{ type: 'text', text: 'not this thread' }] }) }));
-    await expect(tunnel(`${TUNNEL_ORIGIN}/__cad/catalog`)).rejects.toThrow(TypeError);
-  });
-
-  it('gives the app a CAD client whose batched reads ask for no more than one reply carries', () => {
-    const client = createTunnelClient(createTunnelFetch(createServer({ callTool: async () => ({}) })));
-    const session = client.createRenderSession();
-    try {
-      expect(TUNNEL_REPLY_MAX_BYTES).toBe(4 * 1024 * 1024);
-      expect(session.tessellationCache.batchMaxBytes).toBe(TUNNEL_REPLY_MAX_BYTES);
-      expect(client.origin).toBe(TUNNEL_ORIGIN);
-    } finally {
-      session.dispose();
-      client.dispose();
-    }
+    const tunnel = createTunnelFetch(createServer({ callTool: async () => ({ isError: true, content: [{ type: 'text', text: 'not this thread' }] }) }, 'app-capability'));
+    await expect(tunnel(`${TUNNEL_ORIGIN}/api/v1/documents`)).rejects.toThrow(TypeError);
   });
 
   it('reads a body longer than one reply a part at a time, each within the bound and naming the body it continues, and hands over the whole', async () => {
     const bytes = pattern(3 * TUNNEL_REPLY_MAX_BYTES + 1000);
     const parted = servingInParts(bytes);
-    const reply = await createTunnelFetch(parted.server)(`${TUNNEL_ORIGIN}/__cad/asset?file=big.stl`);
+    const reply = await createTunnelFetch(parted.server)(`${TUNNEL_ORIGIN}/api/v1/local/files?path=big.stl`);
     expect([reply.status, reply.headers.get('content-length'), reply.headers.get('content-range')]).toEqual([200, String(bytes.length), null]);
     expect(same(new Uint8Array(await reply.arrayBuffer()), bytes)).toBe(true);
     expect(parted.ranges).toEqual([0, 1, 2, 3].map(part => `bytes=${part * TUNNEL_REPLY_MAX_BYTES}-${Math.min(bytes.length, (part + 1) * TUNNEL_REPLY_MAX_BYTES) - 1}`));
@@ -293,36 +323,9 @@ describe('the fetch tunnel', () => {
       servingInParts(bytes, { etag: first => (first ? '"rewritten"' : '"v1"') }),
       servingInParts(bytes, { offset: first => (first ? first + 1 : 0) }),
     ]) {
-      const reply = await createTunnelFetch(parted.server)(`${TUNNEL_ORIGIN}/__cad/asset?file=big.stl`);
+      const reply = await createTunnelFetch(parted.server)(`${TUNNEL_ORIGIN}/api/v1/local/files?path=big.stl`);
       await expect(reply.arrayBuffer()).rejects.toThrow(TypeError);
     }
-  });
-
-  it('verifies a tessellation read in parts as a whole one: put together it is the body, and a damaged part makes it a miss', async () => {
-    const vertices = 200_000;
-    const triangles = 50_000;
-    const bytes = encodeComponentTessellation({
-      positions: new Float32Array(3 * vertices).map((_, index) => index % 97),
-      normals: new Float32Array(3 * vertices).fill(1),
-      faceOrds: new Float32Array(vertices).fill(1),
-      indices: new Uint32Array(3 * triangles).map((_, index) => index % vertices),
-      sideOrds: new Uint32Array(3 * triangles).fill(1),
-      faceRanges: [{ ord: 1, indexStart: 0, indexCount: 3 * triangles }],
-      edges: [],
-      bounds: { min: [0, 0, 0], max: [96, 96, 96] },
-      scale: 166,
-    }, { surfaceInput: '1'.repeat(64), surfaceObject: 'a'.repeat(64), edgeClasses: [] });
-    expect(bytes.length).toBeGreaterThan(TUNNEL_REPLY_MAX_BYTES);
-    const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(byte => byte.toString(16).padStart(2, '0')).join('');
-    const row = { schemaVersion: 1, object: digest, ...tessellationPayloadFacts(bytes) };
-    const read = (parted: ReturnType<typeof servingInParts>) => createHttpTessellationCacheProvider({
-      origin: TUNNEL_ORIGIN, fetch: createTunnelFetch(parted.server), maxBatchBytes: TUNNEL_REPLY_MAX_BYTES,
-    }).getProbed(row, { maxBytes: row.byteLength });
-    const whole = await read(servingInParts(bytes, { etag: () => `"${digest}"` }));
-    expect(whole && same(whole, bytes)).toBe(true);
-    const damaged = servingInParts(bytes, { etag: () => `"${digest}"`, alter: (part, first) => (first === TUNNEL_REPLY_MAX_BYTES ? part.map(value => value ^ 1) : part) });
-    expect(await read(damaged)).toBeNull();
-    expect(damaged.ranges.length).toBe(2);
   });
 });
 
@@ -338,7 +341,7 @@ function same(a: Uint8Array, b: Uint8Array) {
 }
 
 /**
- * A server that answers a ranged GET as `cadgen mcp` does (`cadgen/mcp/tunnel.py`) for a body
+ * A server that answers a ranged GET as `cad-mcp` does (`cad_server/mcp/tunnel.py`) for a body
  * longer than the range: its part (206). `etag` names the body a part is of, `offset` moves where
  * a part starts, and `alter` changes a part's bytes.
  */
@@ -362,39 +365,42 @@ function servingInParts(bytes: Uint8Array, {
         'content-range': `bytes ${first}-${last}/${bytes.length}`, etag: etag(first),
       } } };
     },
-  });
+  }, 'app-capability');
   return { server, ranges, continues, sizes };
 }
 
 describe('a Quick Edit in the chat', () => {
   const file = referencePart({ resource: { kind: 'workspace-file', path: '/project/parts/a.step' }, target: { kind: 'whole-resource' } }, 'file');
-  const face = referencePart({ resource: { kind: 'workspace-file', path: '/project/parts/a.step' }, target: { kind: 'cad-selector', selectors: ['o1.f2'] } }, 'face');
-  const sketch = () => ({ id: 'sketch', kind: 'attachment' as const, name: 'a-sketch.png', label: 'Sketch', mimeType: 'image/png', about: ['file'],
-    content: new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: 'image/png' }) });
+  const face = referencePart({ resource: { kind: 'workspace-file', path: '/project/parts/a.step' }, target: { kind: 'cad-selector', selectors: ['base/f:base.extrude1.2'] } }, 'face');
+  const annotation = () => ({ id: 'annotation', kind: 'attachment' as const, name: 'a.annotation.json', label: 'Annotation', mimeType: 'application/json', about: ['file'],
+    content: { then: () => { throw new Error('JSON bytes must not be read for handoff'); } }, path: Promise.resolve('/tmp/p/a-1.annotation.json') });
+  // The snapshot packet: a file, never an image, always named by where it was made.
+  const snapshot = () => ({ id: 'snapshot', kind: 'attachment' as const, name: 'a.snapshot.json', label: 'Snapshot', mimeType: 'application/json', about: ['file'],
+    content: new Blob(['{}'], { type: 'application/json' }), path: Promise.resolve('/tmp/p/a-1.snapshot.json') });
   const edit = (...parts: any[]) => createPromptContext([{ id: 'text', kind: 'text', text: 'Round it.' }, file, ...parts]);
 
-  it('reaches what the host declared: a tab host queues whatever it declares, and a picture rides in a message only where it takes images', () => {
-    expect(chatReach({}, 'tabs')).toEqual({ queue: true, send: false, sendImages: false });
-    expect(chatReach({ message: { text: {} } }, 'inline')).toEqual({ queue: false, send: true, sendImages: false });
-    expect(chatReach({ updateModelContext: {}, message: { text: {}, image: {} } }, 'inline')).toEqual({ queue: true, send: true, sendImages: true });
+  it('reaches what the host declared: a tab host queues whatever it declares, and messages only need text', () => {
+    expect(chatReach({}, 'tabs')).toEqual({ queue: true, send: false });
+    expect(chatReach({ message: { text: {} } }, 'inline')).toEqual({ queue: false, send: true });
+    expect(chatReach({ updateModelContext: {}, message: { text: {}, image: {} } }, 'inline')).toEqual({ queue: true, send: true });
   });
 
-  it('queues into the composer as one titled message and its sketch, keeping what it queued until the host clears it', async () => {
+  it('queues into the composer as one titled message and its annotation, keeping what it queued until the host clears it', async () => {
     const updates: any[] = [];
     let context: (value: any) => void = () => {};
     const port = createChatPromptContext({
       hostContext: {},
       onHostContext: listener => { context = listener; return () => {}; },
       request: async (method: string, params: any) => { updates.push({ method, params }); return {}; },
-    } as any, { reach: { queue: true, send: false, sendImages: false } });
+    } as any, { reach: { queue: true, send: false } });
     expect([port.getSnapshot().kind, port.send]).toEqual(['composer', undefined]);
-    expect((await port.deliver(edit(face, sketch()))).status).toBe('added');
-    const [text, image] = updates[0].params.content;
+    expect((await port.deliver(edit(face, annotation()))).status).toBe('added');
+    const [text] = updates[0].params.content;
+    expect(updates[0].params.content).toHaveLength(1);
     expect(updates[0].method).toBe('ui/update-model-context');
-    expect(text).toEqual({ type: 'text', text: 'Round it.\n\nFile: /project/parts/a.step\nReferences:\n/project/parts/a.step#o1.f2', _meta: { 'openai/title': 'Quick edit · a.step' } });
-    expect([image.type, image.mimeType, image._meta['openai/title']]).toEqual(['image', 'image/png', 'Sketch · a.step']);
+    expect(text).toEqual({ type: 'text', text: 'Round it.\n\nFile: /project/parts/a.step\nReferences:\n/project/parts/a.step#base/f:base.extrude1.2\nAnnotation: /tmp/p/a-1.annotation.json', _meta: { 'openai/title': 'Quick edit · a.step' } });
     await port.deliver(edit());
-    expect(updates[1].params.content).toHaveLength(3);
+    expect(updates[1].params.content).toHaveLength(2);
     // The host cleared the context (the message went out): the next one starts afresh.
     context({ 'openai/modelContext': null });
     await port.deliver(edit());
@@ -405,13 +411,26 @@ describe('a Quick Edit in the chat', () => {
     const port = createChatPromptContext({
       hostContext: {}, onHostContext: () => () => {},
       request: async () => { throw new HostError('Method not found', -32601); },
-    } as any, { reach: { queue: true, send: false, sendImages: false } });
+    } as any, { reach: { queue: true, send: false } });
     const result = await port.deliver(edit());
     expect(result.status).toBe('failed');
     expect((result as { message: string }).message).toMatch(/Copy Prompt/);
   });
 
-  it('sends a message into the chat, its sketch as an image, or saved and named where the host refuses the image', async () => {
+  it.each(['queue', 'send'])('delivers inline snapshot JSON through the real %s host port', async action => {
+    const sent: any[] = [];
+    const port = createChatPromptContext({ hostContext: {}, onHostContext: () => () => {},
+      request: async (method: string, params: any) => { sent.push({ method, params }); return {}; },
+    } as any, { reach: { queue: true, send: true } });
+    const context = edit({ ...snapshot(), path: Promise.resolve(''),
+      inlineText: Promise.resolve('Snapshot JSON:\n{"jobs":[]}') });
+    await (action === 'queue' ? port.deliver(context) : port.send!(context));
+    expect(sent[0].method).toBe(action === 'queue' ? 'ui/update-model-context' : 'ui/message');
+    expect(sent[0].params.content[0].text).toBe('Round it.\n\nFile: /project/parts/a.step\nSnapshot JSON:\n{"jobs":[]}');
+    port.dispose();
+  });
+
+  it('sends a message into the chat, its single snapshot named by path even when the host supports images', async () => {
     const sent: any[] = [];
     let refuse = false;
     const bridge = {
@@ -422,19 +441,17 @@ describe('a Quick Edit in the chat', () => {
         return {};
       },
     } as any;
-    const saved: string[] = [];
-    const attachments = { save: async (_png: Blob, name: string) => { saved.push(name); return `/tmp/cadgen-sketches/${name}`; } };
-    const port = createChatPromptContext(bridge, { reach: { queue: false, send: true, sendImages: true }, attachments });
+    const port = createChatPromptContext(bridge, { reach: { queue: false, send: true } });
     expect(port.getSnapshot().kind).toBe('unavailable');
-    expect((await port.send!(edit(sketch()))).status).toBe('sent');
+    expect((await port.send!(edit(snapshot()))).status).toBe('sent');
     expect(sent[0].method).toBe('ui/message');
     expect(sent[0].params.role).toBe('user');
-    expect(sent[0].params.content.map((block: any) => block.type)).toEqual(['text', 'image']);
-    expect(sent[0].params.content[0].text).toBe('Round it.\n\nFile: /project/parts/a.step');
+    expect(sent[0].params.content.map((block: any) => block.type)).toEqual(['text']);
+    expect(sent[0].params.content[0].text).toBe('Round it.\n\nFile: /project/parts/a.step\nSnapshot: /tmp/p/a-1.snapshot.json');
     refuse = true;
-    expect((await port.send!(edit(sketch()))).status).toBe('sent');
-    expect(sent.at(-1).params.content).toEqual([{ type: 'text', text: 'Round it.\n\nFile: /project/parts/a.step\nSketch: /tmp/cadgen-sketches/a-sketch.png' }]);
-    expect(saved).toEqual(['a-sketch.png']);
+    expect((await port.send!(edit(snapshot()))).status).toBe('sent');
+    expect(sent.at(-1).params.content).toEqual([{ type: 'text',
+      text: 'Round it.\n\nFile: /project/parts/a.step\nSnapshot: /tmp/p/a-1.snapshot.json' }]);
   });
 });
 
@@ -451,5 +468,46 @@ describe('the frame\'s clipboard', () => {
       await copied;
       expect(events).toEqual(['item', 'write', 'File: /work/a.step']);
     } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('copies by the page\'s copy command where the host grants the frame no clipboard, and fails only when that fails too', async () => {
+    const details = ['File: /work/gear.step', 'Operation: loading geometry', 'Traceback (most recent call last):',
+      ...Array.from({ length: 40 }, (_, line) => `  File "/work/gear.py", line ${line + 1}, in build`), 'ValueError: no teeth'].join('\n');
+    // What the copy command would put on the clipboard: the selection in the focused field.
+    const copied: string[] = [];
+    const execCommand = vi.fn((command: string) => {
+      const field = document.activeElement as HTMLTextAreaElement;
+      copied.push(`${command}:${field.value.slice(field.selectionStart, field.selectionEnd)}`);
+      return true;
+    });
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: execCommand });
+    const button = document.body.appendChild(document.createElement('button'));
+    const refusing = { clipboard: { writeText: async () => { throw new DOMException('Write permission denied.', 'NotAllowedError'); } } };
+    try {
+      // Granted: the clipboard API, and nothing else.
+      const written: string[] = [];
+      vi.stubGlobal('navigator', { clipboard: { writeText: async (text: string) => { written.push(text); } } });
+      await frameClipboard.writeText(details);
+      expect([written, execCommand.mock.calls.length]).toEqual([[details], 0]);
+      // Refused, or no clipboard API at all: the copy command takes the whole text, and leaves the
+      // page as it was, its field gone and the focus back on the button pressed.
+      vi.stubGlobal('navigator', refusing);
+      button.focus();
+      await frameClipboard.writeText(details);
+      expect([copied, document.querySelector('textarea'), document.activeElement]).toEqual([[`copy:${details}`], null, button]);
+      vi.stubGlobal('navigator', {});
+      await frameClipboard.writeText('File: /work/a.step');
+      await frameClipboard.writeText(Promise.resolve('File: /work/b.step'));
+      expect(copied.slice(1)).toEqual(['copy:File: /work/a.step', 'copy:File: /work/b.step']);
+      // Both refused: the copy fails, with the clipboard's refusal where there was one.
+      execCommand.mockReturnValue(false);
+      await expect(frameClipboard.writeText('File: /work/c.step')).rejects.toThrow('Copying is not available here.');
+      vi.stubGlobal('navigator', refusing);
+      await expect(frameClipboard.writeText('File: /work/c.step')).rejects.toThrow('Write permission denied.');
+    } finally {
+      vi.unstubAllGlobals();
+      delete (document as { execCommand?: unknown }).execCommand;
+      button.remove();
+    }
   });
 });

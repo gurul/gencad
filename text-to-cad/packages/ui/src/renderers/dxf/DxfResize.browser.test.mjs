@@ -1,11 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
-import { build } from 'esbuild';
+import { harnessBundle } from '../harness/bundle.mjs';
 import { chromium } from 'playwright';
 
 // A drawing pane that changes size in ONE layout step (a window snap) must paint the
@@ -18,7 +16,7 @@ import { chromium } from 'playwright';
 // the same pass, exactly what the next paint will show. A 2D canvas keeps its pixels, so
 // the probe can read them there and compare them with the picture once it has settled.
 
-// The committed `/__cad/drawing` payload the DXF spec uses (see `__fixtures__/README.md`).
+// The committed drawing payload (a DXF document's `drawing`) the DXF spec uses (see `__fixtures__/README.md`).
 const SAMPLE = JSON.parse(await readFile(new URL('./__fixtures__/sample.drawing.json', import.meta.url), 'utf8'));
 
 // The harness renders its pane at a fixed CSS size; the spec draws it smaller (a Retina buffer
@@ -27,22 +25,32 @@ const SAMPLE = JSON.parse(await readFile(new URL('./__fixtures__/sample.drawing.
 const HARNESS_SIZE = '<style>#root > div { width: var(--harness-width, 800px) !important; height: var(--harness-height, 500px) !important; }</style>';
 
 async function serveHarness(t) {
-  const temporary = await mkdtemp(join(tmpdir(), 'text-to-cad-dxf-resize-browser-'));
   let server, browser;
-  t.after(async () => { await browser?.close(); if (server) await new Promise(resolve => server.close(resolve)); await rm(temporary, { recursive: true, force: true }); });
-  await build({ entryPoints: [fileURLToPath(new URL('../harness/index.tsx', import.meta.url))], outfile: join(temporary, 'harness.js'), bundle: true, format: 'esm', platform: 'browser', conditions: ['production'], jsx: 'automatic', loader: { '.webp': 'dataurl', '.avif': 'dataurl', '.woff2': 'dataurl', '.svg': 'dataurl' } });
-  const bundle = await readFile(join(temporary, 'harness.js'));
+  t.after(async () => { await browser?.close(); if (server) await new Promise(resolve => server.close(resolve)); });
+  const { bundle } = await harnessBundle();
   const css = await readFile(new URL('../../../dist/styles.css', import.meta.url));
   server = createServer((request, response) => {
     const url = new URL(request.url, 'http://test');
     const root = url.pathname.split('/')[1];
+    if (url.pathname.endsWith('/api/v1/documents') && request.method === 'POST') {
+      // A file opened by its path: its document's reads are under its kind, by an id (here its name).
+      let body = '';
+      request.on('data', chunk => { body += chunk; });
+      request.on('end', () => {
+        const file = String(JSON.parse(body || '{}').path || '').split('/').pop();
+        response.statusCode = 201;
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify({ id: file, kind: file.split('.').pop(), api: `/api/v1/documents/${file.split('.').pop()}/${file}` }));
+      });
+      return;
+    }
     if (url.pathname === '/harness.js') { response.setHeader('Content-Type', 'text/javascript'); response.end(bundle); }
     else if (url.pathname === '/styles.css') { response.setHeader('Content-Type', 'text/css'); response.end(css); }
-    else if (url.pathname.endsWith('/__cad/drawing')) { response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify(SAMPLE)); }
-    else if (url.pathname.endsWith('/__cad/catalog')) {
+    else if (url.pathname.endsWith('/drawing')) { response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify(SAMPLE)); }
+    else if (url.pathname.endsWith('/api/v1/documents') && request.method === 'GET') {
       response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ entries: [{ kind: 'dxf', file: '/models/sample.dxf', url: '/sample.dxf', hash: `${root}-sample.dxf`, bytes: 4096 }] }));
-    } else if (url.pathname.endsWith('/__cad/server')) {
+      response.end(JSON.stringify({ documents: ([{ kind: 'dxf', file: '/models/sample.dxf', url: '/sample.dxf', hash: `${root}-sample.dxf`, bytes: 4096 }]).map(entry => ({ entry, revision: entry.hash })) }));
+    } else if (url.pathname.endsWith('/api/v1/server')) {
       response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ backend: 'cadgen' }));
     } else { response.setHeader('Content-Type', 'text/html'); response.end(`<!doctype html><html><head><link rel="stylesheet" href="/styles.css">${HARNESS_SIZE}</head><body><div id="root"></div><script type="module" src="/harness.js"></script></body></html>`); }
   });
@@ -152,17 +160,7 @@ test('a drawing pane resized in one step paints the drawing at its new size in t
   const [widened] = await page.evaluate(() => window.__dxfProbe.records);
   assertPaintedAtNewSize(widened, ratio, await settledPicture(page), 'one-step widening');
 
-  // 3. The file explorer, which the file's name opens, floats OVER the drawing: the pane keeps its
-  // size, so nothing is resized.
-  await page.evaluate(() => window.__dxfProbe.mark());
-  await pane.locator('[data-file-name]').click();
-  await page.locator('[data-file-explorer]').waitFor();
-  await frames(page, 2);
-  assert.deepEqual(await page.evaluate(() => window.__dxfProbe.records), [], 'opening the explorer resized nothing');
-  await page.keyboard.press('Escape');
-  await page.locator('[data-file-explorer]').waitFor({ state: 'detached' });
-
-  // 4. A drag resizes once per frame: every frame is painted at its own size, once.
+  // 3. A drag resizes once per frame (the explorer floating over the view resizes nothing: `FileViewer.browser.test.mjs`): every frame is painted at its own size, once.
   await page.evaluate(() => window.__dxfProbe.mark());
   const paintsPerFrame = await page.evaluate(() => new Promise(resolve => {
     const perFrame = [];
@@ -189,7 +187,7 @@ test('a drawing pane resized in one step paints the drawing at its new size in t
   assert.ok(paintsPerFrame.every(count => count > 0 && count === paintsPerFrame[0]),
     `a drag paints once each frame (canvas transforms per frame: ${paintsPerFrame.join(',')})`);
 
-  // 5. At rest, nothing is painted.
+  // 4. At rest, nothing is painted.
   await frames(page, 4);
   const idleBefore = await page.evaluate(() => window.__canvasPaints || 0);
   await frames(page, 10);

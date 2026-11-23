@@ -39,6 +39,11 @@ Design numbers not taken from a source are marked "(design)" in `src/lib/spec.py
 
 The animation's JS runtime matches kin.py to 3.5e-12 across all moving labels (animcheck PASS).
 
+**Update (2026-10-06):** the clips are now Python (`src/lib/clips.py`), baked to keyframes in the
+sidecar at build; no JavaScript is generated or shipped. On the rebuilt engine, animcheck matches
+kin.py to 6.3e-13 for `running` and `exploded-running` (PASS), and the `explode` clip equals the
+plan exactly.
+
 ## Validation (final geometry)
 
 - **Builds:** every build exited 0. The final assembly build took 68 s: 18 system checks, then the assembly in 32 s. After the fuel-line fix it took 25 s.
@@ -157,7 +162,7 @@ Full log: `GAUNTLET.md`.
   - **Exhaust collector:** the interlock is unresolved, so its moves are forced through the parts around it.
 - **Running clip:** `tmp/final/running.mp4`, an 8 s seamless 720° loop showing the firing order,
   cam ring, pushrods, impeller and propeller at 2/3 crank speed. The same clip, `running`, is
-  embedded in the assembly for the CAD Viewer.
+  embedded in the assembly for the viewer.
 
 ## Repo defects found (BUGS.md)
 

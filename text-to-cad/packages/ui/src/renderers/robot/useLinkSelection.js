@@ -30,11 +30,13 @@ function nextLinkNames(current, name, multiSelect) {
  * object's id belongs to one built scene and does not.
  *
  * `requestRender` asks the viewport for the frame that shows a changed highlight; a highlight
- * moves and reshapes nothing, so the renderer hands one that keeps the shadow maps.
+ * moves and reshapes nothing, so the renderer hands one that keeps the shadow maps. While the
+ * selection is not `shown` (preview, which draws the robot as it opens) nothing is lit, and the
+ * selection stays as it is.
  *
- * @param {{ scene: object | null, requestRender: () => void }} options
+ * @param {{ scene: object | null, requestRender: () => void, shown?: boolean }} options
  */
-export function useLinkSelection({ scene, requestRender }) {
+export function useLinkSelection({ scene, requestRender, shown = true }) {
   const [selection, setSelection] = useState(NOTHING);
   const hover = useRef({ linkName: "", componentId: "" });
   const live = useRef(null);
@@ -43,18 +45,18 @@ export function useLinkSelection({ scene, requestRender }) {
     [scene, selection.componentIds]
   );
   const selectedLinkNames = selection.linkNames;
-  live.current = { scene, requestRender, selectedLinkNames, selectedComponentIds };
+  live.current = { scene, requestRender, selectedLinkNames, selectedComponentIds, shown };
 
   const paint = useCallback(() => {
     const now = live.current;
     if (!now.scene) return;
-    now.scene.setHighlight({
+    now.scene.setHighlight(now.shown ? {
       hoveredLink: hover.current.linkName, hoveredComponent: hover.current.componentId,
       selectedLinks: now.selectedLinkNames, selectedComponents: now.selectedComponentIds
-    });
+    } : { hoveredLink: "", hoveredComponent: "", selectedLinks: EMPTY, selectedComponents: EMPTY });
     now.requestRender();
   }, []);
-  useEffect(paint, [paint, scene, selectedLinkNames, selectedComponentIds]);
+  useEffect(paint, [paint, scene, selectedLinkNames, selectedComponentIds, shown]);
 
   const setHover = useCallback((linkName, componentId) => {
     if (hover.current.linkName === linkName && hover.current.componentId === componentId) return;
@@ -74,13 +76,18 @@ export function useLinkSelection({ scene, requestRender }) {
     else if (hit.componentId) select(hit.componentId, { multiSelect });
     else selectLink(hit.linkName, { multiSelect });
   }, [clear, select, selectLink]);
-  const hoverHit = useCallback(hit => setHover(hit && !hit.componentId ? hit.linkName : "", hit?.componentId || ""), [setHover]);
+  // What the pointer is on in the view, a link or an object, as React state: the frame's hover tip names it.
+  const [pointed, setPointed] = useState("");
+  const hoverHit = useCallback((hit) => {
+    setHover(hit && !hit.componentId ? hit.linkName : "", hit?.componentId || "");
+    setPointed(hit ? String(hit.componentId || hit.linkName || "") : "");
+  }, [setHover]);
 
   return {
     selectedLinkNames, selectedComponentIds, active: Boolean(selectedLinkNames.length || selectedComponentIds.length),
     select, selectLink, clear, pick,
     hover: useCallback(id => setHover("", String(id || "")), [setHover]),
     hoverLink: useCallback(linkName => setHover(String(linkName || ""), ""), [setHover]),
-    hoverHit
+    hoverHit, pointed
   };
 }

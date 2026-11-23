@@ -6,7 +6,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const repoRoot = path.resolve(packageRoot, "..", "..");
 // Both roots: src/ holds the library tests, scripts/ the CLI ones. A runner that only
 // walked src/ would silently stop running any CLI test that lands beside this file.
 const testRoots = [path.join(packageRoot, "src"), path.join(packageRoot, "scripts")];
@@ -35,7 +34,7 @@ function collectTests(dir, tests = []) {
 const nodeMajor = Number(process.versions.node.split(".")[0] || 0);
 if (nodeMajor > 0 && nodeMajor < 22) {
   console.error(
-    `@text-to-cad/core tests require Node 22 or newer (running ${process.versions.node}): 22 is this `
+    `@cad/core tests require Node 22 or newer (running ${process.versions.node}): 22 is this `
     + "repository's declared runtime floor."
   );
   process.exit(1);
@@ -48,7 +47,7 @@ const tests = (
     : testRoots.filter((root) => fs.existsSync(root)).flatMap((root) => collectTests(root))
 ).sort();
 if (!tests.length) {
-  console.error("No @text-to-cad/core tests found.");
+  console.error("No @cad/core tests found.");
   process.exit(1);
 }
 
@@ -66,15 +65,6 @@ const result = spawnSync(process.execPath, [
   ...tests,
 ], {
   cwd: packageRoot,
-  env: {
-    ...process.env,
-    ...(fs.existsSync(path.join(repoRoot, ".venv", "bin", "python"))
-      ? { CAD_PYTHON: path.join(repoRoot, ".venv", "bin", "python") }
-      : {}),
-    ...(fs.existsSync(path.join(repoRoot, "packages", "cadgen", "src"))
-      ? { CAD_PYTHONPATH: path.join(repoRoot, "packages", "cadgen", "src") }
-      : {}),
-  },
   stdio: "inherit",
 });
 

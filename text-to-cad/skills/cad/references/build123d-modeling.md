@@ -1,214 +1,206 @@
 # build123d modeling patterns
 
-Read this file when constructing or repairing native CAD geometry. Model scripts
-return build123d shapes; decorators declare the output files. See the
-[model contract](step-generation.md) for execution and composition.
+Read this file when constructing or repairing native CAD geometry. Models return
+build123d shapes; see [models](model-contract.md) for how they run and compose.
 
-## Construction choices
+## Contents
 
-Choose a construction that expresses the controlling dimensions directly and
-preserves the intended geometry. Builder contexts and algebraic modeling are
-both valid; profile operations, solid features and surface construction suit
-different shapes. The examples and remedies below are options, not a required
-feature sequence.
+- [Selecting edges and faces](#selecting-edges-and-faces)
+- [Colour and materials](#colour-and-materials)
+- [Placement and frame pitfalls](#placement-and-frame-pitfalls)
+- [Kernel pitfalls](#kernel-pitfalls)
 
-Use meaningful parameters and functional datums. Keep separately manufactured
-or moving parts identifiable in an assembly; fuse bodies where the design calls
-for one continuous part. Prefer solids for physical parts, but do not close or
-thicken surfaces when the user requested surface geometry.
+## Selecting edges and faces
 
-Operation order depends on the design. Applying finishing features late often
-makes selectors simpler; constructing them in a profile can be more robust for
-some outlines. Through-cut tools should span the intended material; choose any
-extra extent relative to the geometry and nearby features, not a fixed distance.
+Select by the feature's geometry or datum (normal, axis, plane, position, curve
+type), and re-select after an operation that changes the topology. An operation returns new
+native topology wherever it changed the solid, so an edge held from before may not be the
+solid's own. Select a fillet's or chamfer's edges from the solid it rounds, after that solid's
+last operation:
 
-## Selection and topology
+- `solid.fillet(radius, edges)` silently skips an edge that is not the solid's own (and fails when
+  none is left); `solid.chamfer` fails on one;
+- `bd.fillet(edges, radius)` rounds the solid the edges came from: given edges held from before a
+  cut, it returns the solid without the cut.
 
-An **occurrence** is a placed assembly node. Its geometry contains bodies,
-faces, edges and vertices. For inspection, keep the canonical `ref` and
-`occurrence_ref`; see [inspection](inspection-and-validation.md) for enumeration.
-Numeric selectors belong to one saved revision.
+Shape equality compares native handles, so `edge in solid.edges()` is true only for the
+solid's own edge. A face or edge a person picked is selected the same way, by what it is
+([a picked element in a model's body](inspection-and-validation.md#a-picked-element-in-a-models-body)).
 
-For construction, select by the feature's geometry or datum where practical:
-normal, axis, plane, position or curve type. Re-evaluate selections after an
-operation that changes the relevant topology. Select a fillet's or chamfer's
-edges from the solid it rounds, after that solid's last operation: an
-operation returns new native topology wherever it changed the solid, so an
-edge held from before it may not be the solid's own. A fillet silently skips
-such an edge, and fails when none is left; a chamfer fails on it. Shape
-equality is build123d's own and compares native handles, so
-`edge in solid.edges()` is true only for the solid's own edge.
+## Colour and materials
 
-## Labels and assemblies
-
-Use concise, meaningful native labels on exported parts and assembly occurrences,
-including repeated placements such as `m3_screw:front_left`:
+Materials are build123d's native `bd_materials` objects. A fuse (`a + b`) returns a shape with
+no label, colour or material, while a cut or an intersection keeps its first operand's: label a
+part and set its material after its last operation. Set an explicit colour after the material,
+whose setter also sets the colour.
 
 ```python
-# Inside an assembly model, after constructing and placing its parts:
-base.label = "base"
-lid.label = "lid"
-assembly = bd.Compound(children=[base, lid], label="electronics_enclosure")
+from bd_materials import metals
+from cad.build123d import paint
+
+body.material = metals.aluminum()
+body.material.pbr = body.material.pbr.override(roughness=0.35, anisotropy=0.3)
+body.color = "#2E3742"
+polished = metals.aluminum()
+polished.pbr = polished.pbr.override(roughness=0.15)
+paint(body, body.faces().filter_by(bd.Axis.Z)[-1:], polished)     # a material or a colour on some faces
 ```
 
-Labels describe role or placement; they need not repeat topology categories.
-A feature fused into or cut from a body does not retain a separate occurrence
-label. Keep its intent in parameters, construction datums and geometric checks.
-Do not promise persistent face/edge names through STEP export.
+Each family is a module of `bd_materials` and each material a function of it (bd_materials 0.2):
 
-See [positioning](positioning.md) for assembly datums, joints, explicit transforms
-and checks of saved mating relationships. Source joints position geometry;
-[kinematics](kinematics.md) separately declares motion for the viewer.
+- `metals`: `aluminum`, `stainless`, `mild_steel`, `alloy_steel`, `spring_steel`, `tool_steel`,
+  `titanium`, `brass`, `copper`, `bronze`, `magnesium`, `gold`, `silver`
+- `plastics`: `pla`, `petg`, `abs_`, `asa`, `nylon`, `pc`, `pp`, `pe`, `pom`, `ptfe`, `pmma`,
+  `peek`, `pps`, `tpu`, `rubber`, `phenolic`, `fr4`, `cfrp`
+- `resins`: `standard`, `tough`, `high_temp`, `flexible`, `transparent`, `castable`, `ceramic`, `esd`
+- `wood`: `hardwood`, `softwood`, `oak`, `maple`, `walnut`, `birch`, `beech`, `ash`,
+  `american_cherry`, `spruce`, `pine`, `engineered_wood`, `mdf`, `osb`
+- `glass`: `soda_lime`, `borosilicate`; `paper`: `paper`, `cardboard`, `foamboard`;
+  `textile`: `woven`, `felt`, `leather`
 
-## Colour and finish
+There is no `metals.steel()`: plain steel is `mild_steel()`. A grade is a name, as
+`bd_materials.material_names()` lists them: `part.material = "alu_g6061_t6"`.
 
-Native `Color` channels are linear RGB. Use `cadgen.srgb` for a colour specified
-as a display hex value:
+- **Units.** A material is a `FinishedMaterial`, with physics in `.material` and appearance in
+  `.pbr`; each family's `custom_*` factory (`metals.custom_metal`) makes one of your own. Density
+  is a single value in kg/m³; mechanical properties are ranges, modulus in GPa and strength in
+  MPa. `shape.mass()` is in grams; `cad <type> inspect` reports kilograms. A measured weight is
+  declared beside the material, `mass(part, grams)` from `cad.build123d`
+  ([declaring for a simulator](kinematics.md#declaring-for-a-simulator)).
+- **A part read from a STEP or an xbf** keeps the file's colours until it is given a material,
+  which replaces its colour like any other part's. To keep the file's colour, set it again after
+  the material: `color = part.color; part.material = plastics.pe(); part.color = color`. Faces
+  the file paints (a cable's red and black wires) keep their colours either way.
+- **Colour spellings.** `shape.color` takes a hex string (`"#f2f0ea96"` with alpha), a colour
+  name, a build123d `Color` or 0–1 sRGB floats `(0.95, 0.94, 0.92, 0.59)`; it refuses 0–255
+  integers with OCCT's `Color out`. `paint(shape, faces, ...)` takes those and 0–255 integers,
+  `(242, 240, 234)` or four with alpha.
+- **`pbr.override(...)`** returns an edited look. Its controls include `metalness`, `roughness`,
+  `ior`, `anisotropy`, `anisotropy_rotation`, `transmission`, `attenuation_color`,
+  `attenuation_distance`, `clearcoat`, `clearcoat_roughness`, `emissive`, `emissive_intensity`
+  and `opacity`. Base colour floats are sRGB ratios; emission and attenuation floats are linear.
+  Hex strings avoid that ambiguity.
+
+A transmissive part is one fade, never two, in every file of it. What draws transmission (the
+viewer's preview and shaded modes, a GLB in a path tracer) draws it opaque with its transmission;
+what draws none (the viewer's `xray` and `parts` modes, a snapshot, a 3MF) draws it at a preview alpha the
+material setter infers (`transmission=1` gives `0.3`, even with PBR `opacity=1`). The colour's
+alpha does not fade it further; to fade it everywhere, give the look a PBR `opacity` below 1.
+
+- **Leave air between glass and what lies behind it.** A see-through part lying on another (a
+  window on its liner, two surfaces from one loft) draws mottled: each part is meshed on its own,
+  to about a thousandth of its size, so their triangles cross. A gap wider than both meshes'
+  error cures it: half a millimetre on an 80 mm part, a millimetre or two on a 400 mm one.
+- **Smoked glass is a clear look with a tint, not a dark one that lets some light through.** A
+  near-black colour with `transmission=0.35` draws as smoked glass in a snapshot, which fades it,
+  and as a black surface where light is traced through it (the GLB in Blender): the colour
+  tints what passes, and a third of nothing passes. Give it
+  `transmission=1` and the tint as its colour (a mid grey).
+
+For boards, electronic parts and process finishes, which `bd_materials` lacks or draws poorly
+untextured, `cad.build123d.materials` has named looks. Each returns a fresh `FinishedMaterial`
+(physics from `bd_materials`, a scalar look every renderer draws). A `color` is a preset, a hex,
+a CSS name or an sRGB `(r, g, b)` of 0–1 floats; one colour is one material whatever its spelling
+(`"grey"`, `"gray"` and `"RAL7016"` are `powder_coat_RAL7016_satin`), so it is one BOM row.
+`zinc_plated` takes its passivation, not a colour. `substrate=` is the `bd_materials` metal a
+finish is on: its physics are kept, its look replaced.
 
 ```python
-from cadgen import srgb
+from cad.build123d import materials, paint
 
-body.color = srgb("#2E3742")
-glass.color = srgb("#38414D", 0.42)
+board.material = materials.soldermask("green")              # finish="matte" for a flat mask
+paint(board, pads, materials.enig())
+bracket.material = materials.powder_coat("RAL7016", finish="satin")
 ```
 
-Set native colour on leaf occurrences: a colour on a group compound does not
-propagate to its leaves in the render tree. Named material assignments can target
-a group and expand to its leaves:
+| Use for | Call |
+| --- | --- |
+| A board's body; its edge or a slot | `soldermask(color, finish="glossy"\|"matte")`, `soldermask_green()`, `soldermask_matte_black()`; `fr4()` |
+| Markings, pads, joints | `silkscreen(color)`, `bare_copper(oxidized=False)`, `enig()`, `hasl(lead_free=True)`, `solder()` |
+| IC packages, chip parts, LEDs | `mold_compound()`, `ceramic("white"\|"tan")`, `led_lens(color, diffused=False)` |
+| Connector and switch bodies | `connector_housing(color)` (PBT-GF30) |
+| Aluminium | `anodized(color)`, `anodized_black()`, `bead_blasted()` |
+| Steel and stainless | `powder_coat(color, finish="matte"\|"satin"\|"gloss")`, `powder_coat_black()`, `brushed()`, `zinc_plated(passivation="clear"\|"blue"\|"yellow"\|"black")`, `black_oxide(oiled=True)` |
 
-```python
-@step(materials={
-    "definitions": {
-        "cast": {"name": "As-cast steel", "roughness": 0.85, "metalness": 0.2},
-        "ground": {"name": "Ground steel", "roughness": 0.25, "metalness": 0.9},
-    },
-    "assignments": [
-        {"targets": ["#housing"], "material": "cast"},
-        {"targets": ["#journal"], "material": "ground"},
-    ],
-})
-def gearbox():
-    ...
-```
-
-Material keys are optional `name`, `baseColor`, `roughness`, `metalness`,
-`clearcoat`, `clearcoatRoughness`, and `opacity`. Numeric channels are finite
-0..1 values; `baseColor` is `#RRGGBB`. STEP's sidecar carries these finishes;
-`baseColor` does not change STEP colours or geometry bytes. Finishes inherit
-through cached child composition and are consumed by Render and GLB export.
-Normal CAD display keeps colour/opacity with workbench shading. Dynamically
-setting `cad_material` is unsupported.
+Prefer these to `bd_materials`' textured finishes (`bead_blast`, `brushed`, `zinc_plate`,
+`tin_plate`), which draw flat at roughness 1. Texture maps (every wood, cardboard and CFRP in the
+catalogue, a finish such as `processes.mjf()`) are kept in an xbf but not drawn: the viewer,
+snapshots and GLB and 3MF exports draw the part in its material's scalar look and name what
+they left out (`PART: Hardwood_ASH's color, normal and roughness maps not drawn: ...`; `cad xbf
+inspect` lists the parts under `textures`). Set the scalar values with `pbr.override(...)` when
+the look matters. What each file keeps of a material is in [formats](exports.md#formats).
 
 ## Placement and frame pitfalls
 
-- **Rotation frame:** do not infer a local rotation axis from Euler-angle
-  spelling. Check the transformed basis for a non-global `Plane`; explicit
-  direction vectors or an axis-angle construction can make the intended frame
-  clearer. A valid loft can still join incorrectly oriented sections.
-- **Primitive alignment:** `align=None` preserves the primitive's raw datum;
-  it does not mean centered. For example, a cylinder is based at Z=0 while a
-  box starts at a corner. Set alignment deliberately when placement depends on it.
+- **Rotation frame:** Euler-angle spelling does not reveal a local rotation axis;
+  explicit direction vectors or an axis-angle construction make the frame clear.
+  A valid loft can still join incorrectly oriented sections.
+- **Primitive alignment:** `align=None` keeps the primitive's raw datum, not its
+  centre: a cylinder is based at Z=0, a box starts at a corner.
 - **Absolute versus relative placement:** `.located(loc)` replaces location;
-  `.moved(loc)` and `Location * shape` compose it. Applying `.located()` after
-  a rotation can therefore discard the orientation. For placed child models,
-  use `.moved()` or multiplication to preserve shared geometry; `.located()`
-  copies it and loses the child link. Absolute placement remains a native API
-  option when replacement and copying are actually intended.
+  `.moved(loc)` and `Location * shape` compose it, so `.located()` after a
+  rotation discards the orientation.
+- **A face's winding sets its extrusion:** `bd.extrude(face, h)` runs along the face's
+  normal, so a `Polygon` whose points run clockwise (seen from +Z) faces -Z and extrudes
+  down, and mirroring sampled points flips them. Give the direction (`dir=(0, 0, 1)`) or list
+  the points anticlockwise.
+- **A moved assembly's `intersect()` can miss:** on a moved `Compound` of nested assemblies,
+  `intersect()` and `&` walk the unmoved `.children` although `.wrapped` carries the placement.
+  Intersect its placed `.solids()`, or use `cad.build123d.overlap_volume`.
 
-```python
-# A local box, rotated before placement:
-box = bd.Solid.make_box(1, 1, 1)
-rotated = box.rotate(bd.Axis.Z, 90)
-placed = bd.Location((5, 0, 0)) * rotated  # retains the rotation
-```
+## Kernel pitfalls
 
-In build123d 0.11.1, a moved assembly compound's `intersect()` can traverse
-unmoved `.children` despite `.wrapped` carrying the correct placement. Extract
-placed `.solids()` or operate on the placed OCCT shapes when affected.
-`cadgen.geometry.overlap_volume` takes individual solids and queries private
-copies of their placed geometry. Check the actual pose when diagnosing an
-unexpectedly constant interference result.
-
-## Loft and sampled-profile pitfalls
-
-For sampled sections, keep feature order, edge correspondence and orientation
-consistent across stations. Twisting or rippling can be present in valid
-geometry, so check the intended sections and review the surface.
-
-- Corresponding feature rails or consistent samples per band can prevent a
-  feature from drifting between sections. Equal sample counts alone do not
-  guarantee a correct loft.
-- Independently easing every interval to zero slope can introduce unintended
-  flat spots. Choose interpolation for the desired continuity. Smooth measured
-  noise only within the task's geometric tolerance.
-- A disconnected or self-crossing section can produce misleading downstream
-  loft failures. Inspect section wires as well as face validity. Increasing
-  prefixes or adjacent section pairs can localize a failing region.
-- A ruled loft can help diagnose a smooth-loft failure, but changes the surface;
-  use it as a replacement only if its faceting and continuity meet the design.
-- For fields built by blending sampled component profiles, a component ending
-  inside its neighbor may leave a steep wall. Inspect the blend function and
-  continuity before increasing sample density. Adjust component overlap or the
-  blend only if it preserves the required boundary.
-
-## Boolean and finishing pitfalls
-
-Kernel behavior depends on topology, tolerances and the installed build123d/OCP
-version. Diagnose the failing operation before changing the construction.
-
-- **Many tools:** batch independent cuts when that avoids repeatedly rebuilding
-  the same intersection network. Overlapping tools may need staged operations;
-  sequential cuts are legitimate when later features depend on earlier ones.
-  Restrict excessive tool extents when they create unnecessary intersections.
-- **Large spline surfaces:** even batched cuts can be expensive. Localize the
-  expensive operation with timing or a stack sample, then consider simpler
-  surfaces, smaller tool regions or a different construction of the same feature.
-  A groove's screen size is not a reason to remove it from the CAD model.
-- **Near tangency or coincident boundaries:** inspect the removed/added region
-  and solid count, not only a successful return. A direct profile construction
-  may avoid an unstable Boolean intersection, when it describes the same shape.
-- **Fillets and chamfers:** check selected edges and available local space.
-  Smaller radii, different feature ordering, grouped selections or a profile
-  bevel are possible remedies, subject to the required dimensions. Do not
-  silently reduce or omit a specified feature through a retry ladder.
-- **Tangent chains or complex outlines:** some kernel versions fail or crash
-  during finishing operations. Isolate a reproducible case; a profile bevel or
-  separately constructed transition is a workaround, not a ban on 3D fillets.
-- **2D algebra:** inspect intermediate types. A `ShapeList` participates in
-  Python list operations, which may concatenate instead of fusing geometry.
-  Check wire winding/face normals before extrusion, especially after mirroring
-  sampled points. Confirm an intersection is nonempty before using it as a cut.
-- **Dense periodic splines:** build123d 0.10/OCP 7.9 have shown failures in taper,
-  inward offset and coincident-face fusion for some densely sampled profiles.
-  If reproduced, simplify the representation or construct the offset/transition
-  explicitly and verify its distance, continuity and topology. Numerical offsets
-  are an option, not a universal replacement for kernel offsets.
-
-Preserve the requested geometry while repairing it. If an exact feature cannot
-be built, report the limitation or seek a design decision rather than quietly
-substituting an approximation.
-
-## Validity and visual artifacts
-
-Topology validity does not prove positive orientation, the requested shape, or
-suitability for a later Boolean. Check signed volume per intended solid;
-aggregate volumes can hide inverted members. Open shells are legitimate when
-surfaces were requested.
-
-Use `cadgen.geometry.topology_errors`, `boundary_edges` and, when relevant,
-`self_intersections` on saved geometry. During a failing construction, check
-intermediates around the suspect operation. A validity gate inside a model
-body — a retry ladder that accepts a fillet only when the result is sound, a
-stage check on a casting — uses build123d's `shape.is_valid` and
-`cadgen.geometry.is_sound` (the `BRepAlgoAPI_Check` verdict, which also
-identifies Boolean-suitability issues such as tiny edges). A check costs
-kernel time, so gate where a failure is plausible rather than after every
-simple operation. Any repair must preserve the dimensions being checked. See
-[inspection](inspection-and-validation.md).
-
-A periodic cylinder or revolved face has a seam edge that may appear in CAD
-linework. Use shaded display or another camera to distinguish a display seam
-from a crack. Do not rotate a finished, datum-constrained part solely to hide
-its seam.
-
-For further failure diagnosis and before/after checks, see [repair loop](repair-loop.md).
+- **Build with build123d's constructions** (`bd.Cylinder`, not OCCT's
+  `BRepPrimAPI_MakeCylinder`): a shape made by calling `OCP` directly is not kept between runs,
+  nor is what is made of it ([models](model-contract.md)). Of the OCCT makers a model drives
+  itself the server keeps only the transforms, `BRepBuilderAPI_Copy`, `ShapeFix_Shape`,
+  `ShapeUpgrade_UnifySameDomain` and `BRepFilletAPI_MakeFillet`. Where build123d has no
+  construction for it (a hand-built B-spline surface), make that shape in a `@memo` function of
+  values that returns it as OCCT made it.
+- **Lofts:** sampled sections need consistent feature order, edge correspondence
+  and orientation; equal sample counts alone do not guarantee it. A disconnected
+  or self-crossing section produces misleading downstream loft failures, so check
+  section wires as well as face validity. A ruled loft can localize a smooth-loft
+  failure.
+- **A smooth loft is one spline through all its sections,** so it goes where no section
+  says: two sections added near the top of a 400 mm form moved its surface 77 mm near the
+  bottom, and the result was still valid. Space sections evenly and carry a change in their
+  values, not in more of them, or use `ruled=True`, which goes only where the sections say.
+  A clearance is measured from the solid, never worked out from the sections.
+- **A loft that ends in a `Vertex` ends in a cone point,** not a rounded cap, and on a blunt
+  end it can stand millimetres past the point; rows added near the point to round it move
+  the rest of the form. A shaded snapshot hides both and a render shows them.
+- **A revolved polyline is one conical face a segment,** and a shaded picture draws a band
+  for each. A profile that will be seen is arcs or a spline: one face. `EllipticalCenterArc`
+  and `CenterArc` take `start_angle` and `arc_size`, not a start and an end angle.
+- **Many tools:** cutting independent tools in one batch (`body - [a, b, c]`) avoids rebuilding
+  the same intersection network; overlapping tools may need staged cuts, and oversized
+  tool extents create needless intersections. On large spline surfaces even a
+  batched cut can dominate a run; split the body into `@memo` stages and the progress
+  bar names the stage the time goes to.
+- **Near tangency or coincident boundaries:** a Boolean can return successfully
+  with the wrong region or solid count; a direct profile construction of the same
+  shape can avoid the intersection. `is_valid` does not catch it, and `&`, `-` and `+`
+  make no promise of their own: where a result on a lofted or spline solid matters, hold it
+  to what it must be (its `bounding_box()` inside both operands', its volume near the one
+  expected) before building on it.
+- **A Boolean that removes everything does not raise.** A cut returns an empty `Compound`,
+  which places, labels and joins an assembly as a part with nothing in it. An intersection of
+  parts that share nothing returns one too (`None` for two `Solid`s), and placing that fails
+  with `Cannot move an empty shape`, or among an assembly's children
+  (`Compound(children=[...])`) with a bare `AssertionError`. Test `result.solids()` before
+  labelling or placing a Boolean's result.
+- **Tangent chains and complex outlines:** OCCT's 3D fillets can fail or crash
+  there; a profile bevel or a separately constructed transition is a workaround.
+- **2D algebra:** a `ShapeList` takes part in Python list operations, which
+  concatenate instead of fusing, and an empty intersection used as a cut removes nothing.
+- **Periodic spline profiles:** a tapered extrude can fail on one (`Standard_TypeMismatch`), and
+  inward offset and coincident-face fusion have failed on densely sampled ones; a simpler
+  representation or an explicitly constructed offset works around it.
+- **Validity is not correctness:** `is_valid` does not prove positive orientation, the requested
+  shape, or suitability for a later Boolean
+  ([geometry diagnostics](inspection-and-validation.md#geometry-diagnostics)). A gate inside a
+  model body (a retry ladder that keeps a fillet only when the result is sound) uses
+  `shape.is_valid` and `cad.build123d.is_sound`; each check costs kernel time when its body runs.
+- **A seam is not a crack:** a cylinder or a revolved face has a seam edge that shows in CAD
+  linework.

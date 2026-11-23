@@ -1,263 +1,203 @@
-# Snapshot review
+# Snapshots
 
-Read this file when choosing visual checks for saved STEP/STP or mesh outputs.
-Use `cadgen step snapshot` for STEP, or the corresponding `stl`, `3mf` or `glb`
-snapshot command for meshes (see [mesh exports](supported-exports.md)). The
-CAD topology, selection, section and motion controls below apply to STEP.
+Read this file when choosing visual checks for a model or a file the viewer opens. Which pictures a
+change calls for is [Check each change](../SKILL.md#check-each-change); this file is what a
+snapshot can draw.
 
-## Policy
+## Contents
 
-Every created or visibly updated part or assembly gets at least one reviewed
-PNG snapshot of its STEP, or its mesh when no STEP is declared. Passing geometry
-checks does not waive this visual review. Use the format's snapshot command.
-For a STEP pose or clip frame, pass `--kinematics` and/or
-`--animation CLIP --time SECONDS`. A motion review may additionally need video;
-see [kinematics](kinematics.md#reviewing-motion).
+- [Display, camera and size](#display-camera-and-size)
+- [Clipped views](#clipped-views)
+- [Annotations and Quick Edit views](#annotations-and-quick-edit-views)
+- [Mesh files, robots and drawings](#mesh-files-robots-and-drawings)
 
-Skip saved snapshots only when no visible geometry was created or updated, or no valid artifact exists:
-
-- pure format/export requests where geometry is unchanged
-- source changes that do not alter visible geometry
-- inspection-only tasks (for example direct measurement questions) that create or update nothing
-- failed Python or STEP generation before a valid artifact exists
-
-When skipping, report the reason and the deterministic evidence that still ran.
-
-Do not loop on snapshots. Rerender only when a source repair changed visible geometry or when a specific visual finding needs confirmation.
-
-## Packet sizing
-
-Choose views that expose the features being checked. One may be enough;
-add an opposing view for hidden exterior features, an orthographic view for
-a pattern or silhouette, or a section for internal geometry. No fixed set of
-views proves every face or feature is correct.
-
-## Small packet
-
-For example, a four-view comparison can use one JSON job:
-
-```json
-{
-  "input": "models/part.step",
-  "mode": "view",
-  "outputs": [
-    { "path": "/tmp/render/iso.png", "camera": "iso" },
-    { "path": "/tmp/render/iso_opposite.png", "camera": { "direction": [-1, 1, -0.8] } },
-    { "path": "/tmp/render/top_ortho.png", "camera": "top" },
-    { "path": "/tmp/render/front_ortho.png", "camera": "front" }
-  ],
-  "output": { "viewLabels": true, "padding": 0.12, "sizeProfile": "diagnostic" }
-}
-```
-
-Use only the views relevant to the design. Opposed isometric views reveal more
-exterior faces, but neither they nor orthographic views reveal all occluded geometry.
-
-Set `input` to the saved STEP/STP artifact using a relative or absolute path
-(documents only: run a `.py` model first). With no explicit display settings,
-snapshots use the `solid` preset, Light appearance and an orthographic isometric
-camera. Every mode defaults to 1600x1200 (the `diagnostic` profile). Job `mode`
-remains `view`, `section`, or `list`; display presets are a separate choice.
-
-`--size-profile` (`output.sizeProfile` in a job) is one of exactly these names;
-anything else is refused with this list:
-
-| Profile | Size |
-| --- | --- |
-| `simple` | 1200x900 |
-| `simple-square` | 1024x1024 |
-| `diagnostic` (default), `labeled` | 1600x1200 |
-| `assembly` | 1800x1200 |
-| `assembly-large` | 1920x1440 |
-| `presentation`, `contact-sheet` | 2400x1600 |
-| `presentation-large` | 2800x1800 |
-
-`--width`/`--height` (an output's `width`/`height` in a job) override the profile
-with a whole number of pixels from 1 to 8192; a larger request is refused rather
-than clamped. With `--job` they size every output in the packet.
-
-`--display` accepts a preset name, inline JSON, or a JSON file path. The six
-presets are `solid` (default), `render`, `xray`, `hidden-line`, `wireframe`, and
-`grid`. Only `grid` draws the grid: Solid on a finer, plainer measuring grid.
-Render starts with perspective projection and photographic lighting; the other
-presets start with orthographic projection. `appearance` is `light` (the CLI
-default) or `dark`. The Viewer and CLI accept the same grouped display object:
+`cad <type> snapshot SRC OUT.png` draws SRC as the viewer draws it, rendered by OCCT, into a
+PNG: one command, one picture. SRC is a model's id (the document the server holds, as it is:
+nothing is built), a document file (`.xbf`, `.step`), a mesh (`.stl`, `.3mf`, `.glb`), a robot
+(`.urdf`, `.srdf`) or a drawing (`.dxf`). A script is never a source, and SRC is a whole document,
+never a ref into one (`$ID#bracket`): `--display '{"isolated": ["bracket"]}'` draws one part alone.
 
 ```bash
-cadgen step snapshot STEP/part.step tmp/review.png --display render
-cadgen step snapshot STEP/part.step tmp/review.png --display '{"mode":"render","floor":{"enabled":false},"background":{"opacity":0.5}}'
-cadgen step snapshot STEP/part.step tmp/review.png --display display.json --camera front
+cad model snapshot "$ID" tmp/review.png
+cad model snapshot "$ID" tmp/below_behind.png --camera 225:-30
+cad model snapshot "$ID" tmp/top.png --display hidden-line --grid --camera top
 ```
 
-Omitted groups inherit the chosen preset. A supplied group merges its parameters
-with those defaults and implies `enabled: true`, unless `enabled: false` is
-explicit. Every group below supports boolean `enabled`; opacity is 0 for fully
-transparent and 1 for opaque.
+With no flags a snapshot is the `solid` display from an orthographic isometric camera fitted to the
+model, 1600x1200. It is always light, whatever theme the viewer is in. A value outside a flag's
+vocabulary is refused by name before anything renders.
 
-| Group | Parameters |
-| --- | --- |
-| `camera` | `projection`: `orthographic` or `perspective`; `focalLength`: 20–200 mm |
-| `surfaces` | `style`: `shaded`, `flat`, `hidden`, `off`; `colorMode`: `original`, `single`, `by-part`; hex `color`; 1–50 hex `colors`; `opacity`: 0–1 |
-| `edges` | `visibility`: `visible` or `all`; hex `color` |
-| `lighting` | `quality`: `preview` or `final`; `exposure`: -5–5; `rotation`: -180–180 degrees; `size`: 0.25–3; `fill`: 0–1 |
-| `background` | hex `color`; `opacity`: 0–1, including partial PNG alpha |
-| `floor` | `placement`: `lowest` or `origin`; `finish`: `matte` or `glossy`; hex `color`; `opacity`: 0–1 |
-| `grid`, `axes` | hex `color`; `opacity`: 0–1 |
+- **OUT is written exactly as given** and must end in `.png`; a folder (one that is there, or a
+  path ending in `/`) gets `<SRC's stem>_<UTC time>.png`, which the command prints. A refused
+  request and a failed render write nothing and leave an earlier picture where it was, so check
+  the exit status before reading the file: 2 for a request refused before anything ran, 1 for a
+  render that failed. `--json` prints what was drawn and its timings, or the failure as
+  `{"ok": false, "error": ..., "reason": ...}` (`reason`: `usage`, `invalid_argument`,
+  `wrong_type`, `not_found`).
+- **A face the mesher left without triangles is drawn without it**, and one warning counts them
+  and names the first parts. In your own model it is usually a sliver a Boolean left; in a
+  vendor's STEP a few faces of a large assembly (a screw's tip) are common. Either way the picture
+  is not the whole model where they are.
 
-Render's floor defaults to the model's lowest point (`placement: "lowest"`, its
-minimum Z), as in the Viewer. `placement: "origin"` moves it to the document's Z=0
-plane, moving neither geometry nor lighting. `--camera` or a top-level/output
-`camera` controls pose and framing (`preset`, `position`, `target`, `up`,
-`direction`, `zoom`, `orthographicHalfHeight`); projection and focal length belong
-only in `display.camera`. `clip` and `exploded` remain independent inspection tools
-under `display`. Selection, kinematics, robot joint values, animation frames and
-video compose with every display preset where the source format supports them.
-`edges`, `clip`, `exploded`, the `xray`, `hidden-line` and `wireframe` presets and
-the `hidden`/`off` surface styles are STEP/STP-only: a mesh, drawing or robot
-description has no CAD edges, parts to explode or solids to section, and its
-snapshot door refuses them by name. Those inputs take `solid` or `render`.
-The old `display.render`, `guides` and `partColor` fields and old display-mode
-names are rejected. Use the group table above when updating a saved JSON file.
+## Display, camera and size
 
-For close macro views in normal CAD, a JSON job can set `quality.tessellation` to
-`{"chordTolerance": 0.0005, "angleTolerance": 0.10}`. Chord tolerance is
-relative to each component's bounding diagonal; angle tolerance is radians.
-These positive numeric overrides retessellate the exact STEP surfaces and use
-separate shared-cache entries. They do not change the STEP geometry or a model's
-declared mesh-export tolerances. Use them only when visible faceting needs finer
-sampling; lower tolerances cost more memory and render time. `chordTolerance`
-must be at least `0.00001` and `angleTolerance` at least `0.005` — finer than
-that exhausts the renderer instead of improving the image, and the job is
-refused.
-Existing mesh documents cannot be retessellated this way. The explicit top-level
-sampling request works in every display mode. When it is omitted,
-`display.lighting.quality` selects the photographic preview or final LOD.
+`--display` takes one of the viewer's display modes: `solid` (shaded, with edge linework),
+`shaded` (no edges), `parts` (each part its own colour), `xray` (translucent surfaces, hidden edges
+visible), `hidden-line` (linework with occluded edges suppressed) and `wireframe` (edges only).
+After a mode or alone, by commas (`hidden-line,exploded=0.6`, `solid,edges=feature`), it takes:
 
-Scene setup, output capture and geometric sampling are separate closed objects.
-`display` carries the grouped view settings.
-`camera` carries the common pose and framing: a preset (`front`, `back`, `left`,
-`right`, `top`, `bottom`, `iso`), an `azimuth:elevation` pair of exactly two
-numbers, or a camera object. `output` supports `sizeProfile`, `padding` (0–0.15),
-`renderScale` (1–3) and the booleans `viewLabels`, `tightFrame` and
-`transparent`. Top-level `quality` supports exact-surface tessellation, and
-`timeoutSeconds` is a positive number of seconds. Scene units use the top-level
-`scale` (`cad` or `urdf`). Unknown keys and out-of-range values are refused, so a
-misspelling cannot render the wrong thing quietly.
+- `exploded=AMOUNT`: the parts moved apart as the viewer's explode moves them, 0 to 1;
+- `edges=CLASS`: the edges of one class alone, `feature` (where faces meet at an angle), `tangent`
+  (where they meet smoothly) or `seam` (where a face closes on itself). `edges=feature` draws no
+  line along a loft's or a cylinder's seam, nor where a fillet meets its faces, which otherwise
+  draw as lines across a smooth skin. It draws no silhouettes either, so a round part has no
+  outline of its own.
 
-### Flags and job keys
+It also takes the viewer's display object, inline or as a JSON file: `mode`, `grid`, `camera`
+(`projection`: `orthographic` or `perspective`; `focalLength`), `clip`, `exploded`
+(`{"enabled": true, "amount": 0.5}`), `edges` (`{"classes": ["feature", "seam"]}`: the classes
+drawn), `hidden` and `isolated` ([below](#clipped-views)). `parts` and `exploded` are refused for a
+document of one part.
 
-A JSON job's keys are the flags without their dashes, and the job is the only
-place some shapes exist. `--animation CLIP --time SECONDS` is ONE request, so a
-job carries it as one `animation` object — `time` is not a top-level job key:
+`--grid` draws the measuring grid (red X and green Y axes) under the model.
 
-```json
-{
-  "input": "models/arm.step",
-  "kinematics": "open",
-  "animation": { "clip": "demo", "time": 2.0 },
-  "outputs": [{ "path": "/tmp/render/demo_t2.png", "camera": "iso" }]
-}
-```
+`--preview` draws the viewer's preview in place of a display mode: the model lit in a studio (a
+key light, softboxes, shadows on itself), in its materials, on a floor with its shadow, in
+perspective. It is the picture for a person, and the one that shows form on a part of one colour: a
+gloss-black shell, a white fairing. Review geometry in the display modes, where edges are drawn.
+The first preview of a document takes some seconds longer than a mode. It is drawn by the same
+renderer, not a path tracer: glass is a see-through tint, a polished metal reads lighter than the
+viewer's, and nothing is reflected in the floor. A drawing, a board and a schematic have none.
 
-`clip` names a clip embedded in the document sidecar's animation and is required;
-`time` is seconds, finite and >= 0, defaulting to 0. A bare clip name is the
-FLAG's spelling, not the job's: `"animation": "demo"` is refused, as is any key
-the job does not support — the error lists the supported set.
+`--camera` is a preset (`iso`, `front`, `back`, `left`, `right`, `top`, `bottom`), an
+`azimuth:elevation` pair in degrees (`--camera 45:30`; `0:90` looks straight down), a camera
+object (`preset`, `position`, `target`, `up`, `direction`, `zoom`, `orthographicHalfHeight`), or
+`authored` ([below](#annotations-and-quick-edit-views)). Projection and focal length belong in
+`display.camera`. The presets are the world's axes, Z up, not a part's own front: `front` looks
+from -Y along +Y, `top` from +Z down, so a panel modelled lying flat (its face to +Z, as its DXF is
+drawn) faces `top` and shows edge-on from `front`.
 
-A `"video"` object beside it renders the clip's SPAN into the `.mp4` or `.gif`
-the single output names, instead of one frame: `{"fps": 30, "seconds": <what is
-left of the clip>, "start": 0, "quality": "review", "loop": true}`, every key
-optional and every other key refused. It needs `animation`, refuses an
-`animation.time`, refuses a `start` past the end of the clip, and needs ffmpeg
-installed. See `kinematics.md`, "Rendering the whole clip".
+A camera object's lengths, an annotation's ink and `--measurements`' points are in the viewer's
+scene coordinates: a document's and a GLB's millimetres, a robot's metres, a 3MF's declared unit.
+`clip.at` alone is in the file's own unit, which for a GLB is metres.
 
-In a JSON job these two flags are the one exception to "job key = flag name without dashes": they nest under a job-level `selection` object, and a top-level `"hide"` or `"focus"` is rejected as an unknown key. Selection applies to the whole job, not to one output — to hide or focus parts for a single view, give that view its own job in a `jobs` array.
+`--width` and `--height` set the size in pixels, 16 to 8192. `--size-profile` names one instead:
+`simple` 1200x900, `simple-square` 1024x1024, `diagnostic` and `labeled` 1600x1200 (the default),
+`assembly` 1800x1200, `assembly-large` 1920x1440, `presentation` and `contact-sheet` 2400x1600,
+`presentation-large` 2800x1800.
 
-```json
-{
-  "input": "STEP/assembly.step",
-  "mode": "view",
-  "selection": { "hide": ["#o1.3", "#o1.4"] },
-  "outputs": [{ "path": "tmp/render/without_covers.png", "camera": "iso" }]
-}
-```
+`--pose` draws a document's mechanism posed: a mechanism state's name, a configuration sequence
+at a time of its clip (`walk@0.6`, the sequence's name and the seconds), or joint and coupling
+values as JSON, a turn in degrees, a slide in millimetres
+([reviewing motion](kinematics.md#reviewing-motion)). It is how the picture is drawn; a file of
+the pose is a posed model ([exports](exports.md#posed-files-and-parts-on-their-own)).
 
-`"selection": { "focus": ["#o1.2"] }` is the `--focus` form; `focus` and `hide` are the only selection keys. Every other flag keeps the plain rule (`--kinematics` → `"kinematics"`, `--animation CLIP --time S` → `"animation": {"clip": ..., "time": ...}`, `--section XZ:12.5` → `"section": {"plane": "XZ", "offset": 12.5}`).
-
-With `--job`, the other flags override the packet: each one given replaces that
-setting in every job, and `--width`/`--height` size every output. A job is a
-file; there is no stdin form.
-
-## Section planes
-
-`--mode section` cuts the model with a plane and draws the cut outline. Say where
-with `--section PLANE[:OFFSET]`:
+A snapshot draws the mesh the viewer draws, which is right for a review and coarse for a close-up
+of a large curved part (a faceted outline, uneven shading). For a still that needs a finer one,
+export the model as a GLB at the tolerance wanted and draw that file:
 
 ```bash
-cadgen step snapshot STEP/housing.step tmp/cut.png --mode section --section XZ:12.5
-cadgen step snapshot STEP/housing.step tmp/cut.svg --mode section --section YZ
+cad model export "$ID" tmp/fine.glb --tolerance 0.02 --angle 3
+cad glb snapshot tmp/fine.glb tmp/close.png --camera 35:20
 ```
 
-`PLANE` is `XY`, `XZ` or `YZ` — the two axes the plane contains — and defaults to
-`XY`. `OFFSET` moves the plane along its own normal in model units (Z for `XY`,
-Y for `XZ`, X for `YZ`) and defaults to 0, so `XZ:12.5` cuts at Y = 12.5. In a job
-it is `"section": {"plane": "XZ", "offset": 12.5}` beside `"mode": "section"`;
-those are its only two keys, and a `section` on a job whose mode is not `section`
-is refused. A plane that misses the model renders an empty drawing with a
-warning that says so. Section mode is STEP-only, and takes no kinematics,
-animation or Render display.
+## Clipped views
 
-OUT's extension picks the format and nothing else does: section mode writes
-`.png` or `.svg`, view mode writes `.png`, and a video writes `.mp4` or `.gif`.
-Any other extension — a view named `.svg` or `.jpg` — is refused instead of
-writing PNG bytes under it.
-
-## Output paths
-
-Name the file and you get that file:
+Clip reveals internal geometry: a shell, a bore, a cavity, a blind hole, a wall's
+relation to a floor. `display.clip` takes `enabled`, `axis` (`x`, `y` or `z`, lower case), `at`
+(the plane's coordinate on that axis, in the file's unit; the middle of the model when left out)
+and `invert`; the cut is capped. Look straight at the cut:
 
 ```bash
-cadgen step snapshot STEP/bracket.step tmp/review.png
-# then Read tmp/review.png
+cad model snapshot "$ID" tmp/cut.png --camera back --display '{"clip": {"enabled": true, "axis": "y", "at": 12.5}}'
 ```
 
-OUT (and an output's `path` in a JSON packet) is written exactly as given,
-relative to the working directory. Check the command's exit before reading. A
-refused request — an unknown key or value, a setting this kind of input cannot
-take, the wrong door, conflicting options, an unknown pose, clip or joint name —
-leaves an existing file untouched, for every job in a packet. Once the request is
-accepted the target is cleared before anything is built, so a failed build or
-render (and an occurrence ref the model does not have, which needs the built
-tree to check) leaves no file; successful output is written atomically.
-Reuse `tmp/review.png` during iteration, or name before/after images when both
-are needed for comparison.
+Hide and isolate leave parts out, as the viewer's do: `display.hidden` is a list of
+part refs (an occurrence's path: `lid`, `hand/finger.2`; an assembly hides every part
+below it) the picture leaves out, `display.isolated` the parts it alone draws. A name
+with `*`, `?` or `[` is a glob over every occurrence, matched against its label, its
+numbered segment and its path written with either, so one entry leaves out a kind of
+part wherever it is; a glob that matches nothing is refused.
 
-Pass a directory (`tmp/` as OUT, or an output `path` that is one) only when the name does not matter: a timestamped name is generated inside it, and that is the one case where you read the path from the `saved snapshot:` line.
+```bash
+cad model snapshot "$ID" tmp/inside.png --display '{"mode": "solid", "hidden": ["lid"]}'
+cad model snapshot "$ID" tmp/frame.png --display '{"hidden": ["*skin*", "*/skin_screw"]}'   # the structure alone
+```
 
-## Targeted additions
+## Annotations and Quick Edit views
 
-Add views only when the brief or a failure mode calls for them:
+A Quick Edit prompt carries a snapshot packet: inline JSON up to 1 KiB (save it to a
+`.snapshot.json` first), or the path of a `.snapshot.json` in a folder of the server's under
+`/tmp`. The prompt names files relative to your workspace, else from `~/`; `cad <type> snapshot`
+reads either from the workspace. The packet holds:
 
-- reference-image reproduction: one snapshot from the reference image's viewpoint for side-by-side comparison
-- `--mode section --section PLANE[:OFFSET]`: shell, bore, internal cavity, passage, blind hole, enclosure, or wall/floor relationship (see [Section planes](#section-planes))
-- `display.mode: "solid"`: shaded CAD view with visible edge linework
-- `display.edges.enabled: false`: shaded surfaces without the edge overlay
-- `display.mode: "xray"`: translucent surfaces with hidden/occluded edges visible
-- `display.mode: "hidden-line"`: line-focused review with occluded edges suppressed
-- `display.mode: "wireframe"`: edge-only review for internal overlap or interference
-- `display.mode: "grid"`: Solid on a fine measuring grid, for reading size and placement at a glance
-- labeled or annotated review: use supported CAD Viewer refs, selections, screenshots, or GUI review links
+- `input`: what the person looked at: a model's id, or a file's path;
+- `jobs`: one per view they captured (the current view and each view they drew
+  in), each with the view's `camera`, its `display` (the parts that view hid and isolated among
+  it, as `hidden` and `isolated` refs) and an output `label`; a posed document's or a robot's
+  carries its pose as `jointValues`;
+- `annotation`: their ink, when they drew any. Each mark is in model coordinates,
+  on the part it was drawn on, and its `touches` lists what it was drawn over, most
+  first: faces and edges as refs where the viewer could name them, each with its
+  part. Read those to know what a mark is about;
+- `hidden` and `isolated`: with ink, the parts the view it was last drawn in hid
+  and isolated, which `--annotation` leaves out of the picture unless `--display` says otherwise.
 
-Exploded or labeled review is an intent, not a render mode. Satisfy it through supported CAD Viewer mechanisms, supported JSON job settings, or the GUI link.
+Draw the view a person drew their ink in, with the ink on the model:
 
-## Diagnostic review
+```bash
+cad model snapshot "$ID" tmp/quick_edit.png --annotation tmp/bracket.snapshot.json --camera authored
+```
 
-Visual review is diagnostic, not authoritative. Convert every visual concern into a follow-up geometry check before using it as a validation claim:
+`--annotation FILE` takes the packet or an annotation file and draws each mark on its part,
+wherever the picture places that part (posed or exploded). `--camera authored` draws exactly the
+view the last mark was drawn in (no fit), at its size and projection unless other flags say
+otherwise. Pass a job's `display` object as `--display` to draw in the person's mode with the
+parts they hid left out, and its `jointValues` as `--pose`. A view without ink is drawn from its
+`camera`, given as `--camera '<its JSON>'`. `--measurements` draws dimension lines of your own
+over the model, a JSON list of `{start, end, label, color}` or a file of it.
 
-- hole pattern appears asymmetric -> measure hole centers and compare offsets
-- lid, child part, or occurrence appears offset -> inspect frames and mating deltas
-- gusset, boss, standoff, rib, or plate may be floating -> inspect solid count, labels, connectivity, contact, or relevant distances
-- cavity, bore, or blind hole looks wrong -> run section review, then measure wall thickness, depth, or through-condition
-- repeated pattern looks uneven -> measure pattern centers, angular spacing, or occurrence frames
+`--job` replays the whole packet in one call (every view, each with its own camera, display and
+pose, the ink over each) into the files its outputs name:
 
-Final reports name what the snapshots showed, or the documented skip reason, and which deterministic checks support any visual finding. The PNGs are for your review; the user sees the model in the viewer, so attach one only when they ask for an image.
+```bash
+cad model snapshot --job tmp/bracket.snapshot.json
+cad model snapshot --job tmp/bracket.snapshot.json "$ID"   # the same views, of the document as it is now
+```
+
+`--job` also takes a job (`{input, camera, display, preview, jointValues, output, outputs}`) or a
+list of jobs, as a file or JSON, so one command draws many pictures. A job's `jointValues` takes
+what `--pose` does, so a list of jobs is a sequence's frames. Its `outputs` are its pictures
+(`path`, and `width`, `height`, `camera` of their own; a folder `path` takes a generated name). A
+SRC given is drawn in place of every job's input, and any other flag overrides every job. Every
+job is checked before anything renders, and a failure writes none of its pictures. A job's
+`output` settings finish its pictures:
+
+- `padding` (0 to 0.15 of the picture each side) and `tightFrame` frame a fitted camera; a view's
+  own camera with `tightFrame` false, as the viewer writes every view, is drawn exactly;
+- `transparent` draws on nothing, and `background` (a `#rrggbb`) on that flat colour in place of
+  the pale default: a white or pearl part has no outline on it, so give one a dark one
+  (`"output": {"background": "#2b2d31"}`);
+- `renderScale` (1 to 3) supersamples, so edge lines read finer, and `sizeProfile` sizes an output
+  that gives no size.
+
+A preset or `azimuth:elevation` is fitted to what each picture shows, so two pictures of
+different parts or poses are framed differently. For frames that must not move (a motion's
+frames, a part alone beside the whole), draw one picture with `--json`, take the camera it
+settled on from its report (`settledCamera`: `position`, `target`, `up` and, orthographic,
+`orthographicHalfHeight`), and give it to every job as its `camera` with
+`"output": {"tightFrame": false}`: it is drawn exactly, with no fit.
+
+## Mesh files, robots and drawings
+
+- **A mesh** (`.stl`, `.3mf`, `.glb`) takes every display mode, the grid, clip,
+  an explode (a file of several parts) and annotations; `--pose` is refused: a
+  mesh has no mechanism. A GLB is drawn at rest, its clips not played; its materials
+  and base colour textures are drawn.
+- **A robot** (`.urdf`, `.srdf`) is its links' visuals in their colours, faces
+  alone as the viewer draws a robot (its meshes' folds only in the line modes), where the viewer
+  opens it. `--pose` names an SRDF group state, or gives joint values over that
+  pose: degrees for a turn and metres for a slide, though the file holds radians.
+- **A drawing** (`.dxf`) is drawn whole from above in its pens on white paper. It takes the size
+  flags, a plan-view `--camera`, `--annotation` and `--measurements`, and every other flag is
+  refused by name ([see a drawing](2d-profiles-and-dxf.md#see-a-drawing)).

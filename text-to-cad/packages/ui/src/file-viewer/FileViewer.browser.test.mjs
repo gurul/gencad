@@ -34,7 +34,8 @@ async function reset() {
 const pane = () => page.getByTestId("primary");
 const payload = () => pane().getByTestId("payload");
 async function waitPayload(value) { await page.waitForFunction((expected) => document.querySelector('[data-testid="primary"] [data-testid="payload"]')?.textContent === expected, value); }
-// Two frames on: what a change asked for has been drawn.
+// Which file generation owns a write or an action is `FileViewerGenerations.test.tsx`'s (jsdom, over
+// this harness's App); here, what needs a layout. Two frames on: what a change asked for has been drawn.
 const settle = () => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 
 test("the file's name opens the explorer under it, over the view, its long folder scrolling inside it; a pick is shown through the host and puts it away", async () => {
@@ -76,78 +77,6 @@ test("the explorer opens with its filter taking the keyboard, under a breadcrumb
   await page.keyboard.press("Escape");
 });
 
-test("sources, instances and cancelled opens stay isolated", async () => {
-  await reset();
-  await page.evaluate(() => window.harness.setRoot("root-b"));
-  await waitPayload("root-b notes");
-  await page.evaluate(() => { window.harness.setRoot("root-a"); window.harness.second(true); });
-  await waitPayload("root-a notes");
-  assert.equal(await page.getByTestId("secondary").getByTestId("payload").textContent(), "root-b notes");
-  await page.evaluate(() => window.harness.second(false));
-  await page.evaluate(() => window.harness.open("/work/slow.txt"));
-  await pane().getByRole("status").filter({ hasText: "Opening" }).waitFor();
-  await page.evaluate(() => window.harness.open("/work/next.txt"));
-  await waitPayload("root-a next");
-  assert.ok(await page.evaluate(() => window.harness.events.includes("root-a:aborted")));
-  assert.ok(await page.evaluate(() => window.harness.events.includes("root-b:/work/notes.txt:disposed")));
-});
-
-test("a former renderer cannot change the new source's state", async () => {
-  await reset();
-  await page.evaluate(() => window.harness.setRoot("root-b"));
-  await waitPayload("root-b notes");
-  await page.evaluate(() => window.harness.rendererCallbacks.get("root-a").onStateChange({ from: "old root" }));
-  await settle();
-  assert.equal(await page.evaluate(() => window.harness.state.renderers), undefined);
-});
-
-test("navbar actions belong to the active file generation and ignore retired registrations", async () => {
-  await reset();
-  await page.evaluate(() => {
-    const current = window.harness.rendererCallbacks.get('root-a');
-    window.retiredNavbar = current.onNavigationActionsChange;
-    current.onNavigationActionsChange([{ id: 'fixture', label: 'Inspect notes', icon: 'span',
-      onInvoke: () => window.harness.events.push('notes-action') }]);
-  });
-  await page.getByRole('button', { name: 'Inspect notes', exact: true }).click();
-  assert.ok(await page.evaluate(() => window.harness.events.includes('notes-action')));
-  // A hint shorter than the accessible name is the action's own field, not a special case in the navbar.
-  await page.evaluate(() => window.harness.rendererCallbacks.get('root-a').onNavigationActionsChange([
-    { id: 'snapshot', label: 'Take snapshot', hint: 'Snapshot', icon: 'span', onInvoke() {} }]));
-  await page.mouse.move(0, 0);
-  await page.getByRole('button', { name: 'Take snapshot', exact: true }).hover();
-  assert.equal(await page.getByRole('tooltip').innerText(), 'Snapshot');
-  assert.equal(await page.getByRole('button', { name: 'Take snapshot', exact: true }).getAttribute('title'), null);
-  await page.evaluate(() => window.harness.open('/work/next.txt'));
-  await waitPayload('root-a next');
-  assert.equal(await page.getByRole('button', { name: 'Inspect notes', exact: true }).count(), 0);
-  await page.evaluate(() => {
-    window.harness.rendererCallbacks.get('root-a').onNavigationActionsChange([
-      { id: 'next', label: 'Inspect next', icon: 'span', onInvoke() {} }
-    ]);
-    window.retiredNavbar([]);
-  });
-  await page.getByRole('button', { name: 'Inspect next', exact: true }).waitFor();
-  await page.evaluate(() => window.retiredNavbar([{ id: 'stale', label: 'Stale action', icon: 'span', onInvoke() {} }]));
-  assert.equal(await page.getByRole('button', { name: 'Stale action', exact: true }).count(), 0);
-  assert.equal(await page.getByRole('button', { name: 'Inspect next', exact: true }).count(), 1);
-});
-
-test("a departing renderer flushes its own state on file changes and reloads, but never into another source", async () => {
-  await reset();
-  await page.evaluate(() => { window.harness.cleanupWrites.set('root-a:/work/notes.txt', { selection: 'last frame' }); window.harness.open('/work/next.txt'); });
-  await waitPayload('root-a next');
-  assert.deepEqual(await page.evaluate(() => window.harness.state.renderers['["/work/notes.txt","in-memory"]']), { selection: 'last frame' });
-  const mount = await pane().getByTestId('mount').textContent();
-  await page.evaluate(() => { window.harness.cleanupWrites.set('root-a:/work/next.txt', { drawing: 'pending stroke' }); window.harness.rendererCallbacks.get('root-a').reload(); });
-  await page.waitForFunction(previous => document.querySelector('[data-testid="primary"] [data-testid="mount"]')?.textContent !== previous, mount);
-  await waitPayload('root-a next');
-  assert.deepEqual(await page.evaluate(() => window.harness.state.renderers['["/work/next.txt","in-memory"]']), { drawing: 'pending stroke' });
-  await page.evaluate(() => { window.harness.cleanupWrites.set('root-a:/work/next.txt', { drawing: 'wrong source' }); window.harness.setRoot('root-b'); });
-  await waitPayload('root-b next');
-  assert.deepEqual(await page.evaluate(() => window.harness.state.renderers['["/work/next.txt","in-memory"]']), { drawing: 'pending stroke' });
-});
-
 test("the renderer is not re-rendered by the frame's own chrome: a navbar action it published or a resize within a layout", async () => {
   await reset();
   await settle();
@@ -158,4 +87,30 @@ test("the renderer is not re-rendered by the frame's own chrome: a navbar action
   await page.setViewportSize({ width: 1240, height: 800 });
   await settle();
   assert.equal(await page.evaluate(() => window.harness.renders["root-a"]), before, "no renderer render for its own navbar action, or a width that does not cross the breakpoint");
+});
+
+// A library card's picture is drawn by a viewer of its own, out of sight at 480 × 360 (`OffscreenPicture.tsx`). That viewer
+// is under the phone breakpoint, and the page's type once followed it: Home's text grew a step while its cards got pictures.
+test("a viewer drawn out of sight for a picture never changes the page: its layout pinned, no data-viewer-layout, the page's type its own", async () => {
+  await reset();
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await settle();
+  const type = () => page.evaluate(() => ({ xs: getComputedStyle(document.documentElement).getPropertyValue("--cad-text-xs").trim(),
+    name: getComputedStyle(document.querySelector('[data-testid="primary"] [data-file-name]')).fontSize,
+    layouts: [...document.querySelectorAll("[data-viewer-layout]")].map((node) => node.getAttribute("data-viewer-layout")) }));
+  const desktop = await type();
+  assert.deepEqual(desktop.layouts, ["desktop"]);
+  // As OffscreenPicture draws it: pinned, it neither measures nor carries the attribute the page's stylesheet reads.
+  await page.evaluate(() => window.harness.picture("pinned"));
+  await page.getByTestId("picture").locator("[data-viewer-pinned-layout]").waitFor({ state: "attached" });
+  await settle();
+  assert.deepEqual(await type(), desktop, "a pinned picture viewer leaves the page as it was");
+  assert.equal(await page.getByTestId("picture").locator("[data-viewer-pinned-layout]").getAttribute("data-viewer-pinned-layout"), "mobile");
+  // And a viewer in the picture's box that measured itself a phone's is still not the page's.
+  await page.evaluate(() => window.harness.picture("measured"));
+  await page.getByTestId("picture").locator('[data-viewer-layout="mobile"]').waitFor({ state: "attached" });
+  await settle();
+  const measured = await type();
+  assert.deepEqual([measured.xs, measured.name], [desktop.xs, desktop.name], "a phone-sized viewer out of sight never sets the page's type");
+  await page.evaluate(() => window.harness.picture("none"));
 });

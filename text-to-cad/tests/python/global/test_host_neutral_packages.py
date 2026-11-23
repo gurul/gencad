@@ -1,10 +1,16 @@
 """Host neutrality, held by test: shared code never knows which app hosts it.
 
-packages/core and packages/ui serve every app -- the web CAD Viewer and the Codex
+packages/core and packages/ui serve every app -- the web viewer and the Codex
 plugin -- through injected host capabilities (packages/ui/docs/viewer-host.md).
-cadgen is shared the same way: its Codex adapter lives in cadgen/mcp/ (plus the
-`cadgen mcp` command shell), which may depend on the rest of cadgen; nothing else
-in cadgen may name a host or import the adapter.
+The Python packages are shared the same way: the server's host adapter lives in cad_server/mcp/,
+which may depend on the rest of the server; nothing else in the library or the server may name a
+host or import the adapter. The shim (cad-mcp) is the stdio transport an
+agent app starts, an adapter whole: it reads which host launched it.
+
+One more place names the agent apps, for another reason: cad_server/plugin/, the table of apps
+that `cad plugin install` and `cad plugin update` put the plugin in. It knows where each app keeps
+its plugins, never which app hosts cad, and no code of cad's but that command reaches it
+(test_cad_names_no_skill_or_plugin.py holds both).
 
 A host name, a host-protocol call, a host-identity flag or host sniffing in shared
 code means an abstraction is missing. Fix the interface -- a capability, a
@@ -22,7 +28,6 @@ from tests.python.support.paths import repo_path
 
 SHARED_JS_ROOTS = (
     repo_path("packages/core/src"),
-    repo_path("packages/core/bin"),
     repo_path("packages/ui/src"),
     repo_path("packages/ui/scripts"),
 )
@@ -32,9 +37,13 @@ SHARED_PACKAGE_MANIFESTS = (
     repo_path("packages/ui/package.json"),
 )
 
-CADGEN_PACKAGE = repo_path("packages/cadgen/src/cadgen")
-# The adapter and its command shell: the only cadgen code allowed to know the host.
-CADGEN_ADAPTER = ("mcp/", "cli/mcp.py")
+# The library's and the server's packages, by their source tree.
+CAD_SOURCES = (repo_path("packages/cad/src"),)
+CAD_PACKAGES = ("cad", "cad_server")
+# The adapter: the only code of theirs allowed to know the host.
+CAD_ADAPTER = ("cad_server/mcp/", "cad_server/_internal/engine_host.py")
+# The table of the agent apps the plugin is installed in: it names every app, and hosts none of cad.
+CAD_APP_TABLE = "cad_server/plugin/"
 
 # Each entry: (compiled pattern, what the match means).
 HOST_NAMES = (re.compile(r"\b(?:codex|chatgpt|openai|skybridge)\b", re.IGNORECASE), "names a host")
@@ -52,8 +61,9 @@ SHARED_JS_RULES = (
         "calls a host protocol",
     ),
 )
-CADGEN_ADAPTER_IMPORT = re.compile(
-    r"^\s*(?:from\s+(?:cadgen\.mcp|\.+mcp)\b|import\s+cadgen\.mcp\b|from\s+(?:cadgen|\.+)\s+import\s+(?:[^#\n]*,\s*)?mcp\b)",
+CAD_ADAPTER_IMPORT = re.compile(
+    r"^\s*(?:from\s+(?:cad_server\.mcp|\.+mcp)\b|import\s+cad_server\.mcp\b"
+    r"|from\s+(?:cad_server|\.+)\s+import\s+(?:[^#\n]*,\s*)?mcp\b)",
     re.MULTILINE,
 )
 
@@ -77,9 +87,14 @@ def _offenses(path: Path, rules) -> list[str]:
     return found
 
 
-def _is_adapter(path: Path) -> bool:
-    relative = path.relative_to(CADGEN_PACKAGE).as_posix()
-    return any(relative == entry or relative.startswith(entry) for entry in CADGEN_ADAPTER)
+def _cad_sources() -> list[tuple[Path, str]]:
+    """Every source of the library and the server, with its path from its source tree."""
+    return [(path, path.relative_to(source).as_posix()) for source in CAD_SOURCES for top in CAD_PACKAGES
+            if (source / top).is_dir() for path in sorted((source / top).rglob("*.py"))]
+
+
+def _is_adapter(relative: str) -> bool:
+    return any(relative == entry or relative.startswith(entry) for entry in CAD_ADAPTER)
 
 
 class SharedPackagesAreHostNeutral(unittest.TestCase):
@@ -100,20 +115,24 @@ class SharedPackagesAreHostNeutral(unittest.TestCase):
         self.assertEqual(offenders, [], "shared packages must not depend on a host SDK:\n" + "\n".join(offenders))
 
 
-class CadgenKeepsItsHostAdapterApart(unittest.TestCase):
+class ThePackagesKeepTheirHostAdapterApart(unittest.TestCase):
     def test_only_the_adapter_names_a_host_or_imports_it(self) -> None:
-        sources = sorted(CADGEN_PACKAGE.rglob("*.py"))
-        self.assertTrue(sources, "no cadgen sources found; the package moved")
+        sources = _cad_sources()
+        self.assertGreater(len(sources), 100, "the library's and the server's sources are not where this looks")
+        self.assertTrue(any(_is_adapter(relative) for _path, relative in sources), "the adapter moved")
         offenders = []
-        for path in sources:
-            if "_runtime" in path.relative_to(CADGEN_PACKAGE).parts or _is_adapter(path):
+        self.assertTrue(any(relative.startswith(CAD_APP_TABLE) for _path, relative in sources), "the app table moved")
+        for path, relative in sources:
+            if "/_runtime/" in relative or _is_adapter(relative):
                 continue
-            offenders.extend(_offenses(path, (HOST_NAMES,)))
+            if not relative.startswith(CAD_APP_TABLE):
+                offenders.extend(_offenses(path, (HOST_NAMES,)))
             text = path.read_text(encoding="utf-8", errors="replace")
-            for match in CADGEN_ADAPTER_IMPORT.finditer(text):
+            for match in CAD_ADAPTER_IMPORT.finditer(text):
                 line = text.count("\n", 0, match.start()) + 1
                 offenders.append(f"{path.relative_to(repo_path('.'))}:{line}: imports the host adapter")
-        self.assertEqual(offenders, [], "cadgen code outside its adapter must stay host-neutral:\n" + "\n".join(offenders))
+        self.assertEqual(offenders, [], "code outside the host adapter (and, for an app's name, the app table) must "
+                                        "stay host-neutral:\n" + "\n".join(offenders))
 
 
 if __name__ == "__main__":

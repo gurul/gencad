@@ -1,7 +1,7 @@
 // A mesh file (STL, 3MF) as the viewer draws it: one three geometry per object
 // (per material within an object that has several), each with its display
-// normals and the one colour its source gave it. Nothing
-// else: no part table, no edges, no ids. The decoded arrays are the loaders'
+// normals, source colour, opacity and optional scalar 3MF metallic finish.
+// No CAD topology, edges or occurrence identity is invented. The decoded arrays are the loaders'
 // (`stlMeshData.js`, `threeMfMeshData.js`), which already carry the display
 // normals (`meshNormals.js`) and are parsed once per file revision, off the main
 // thread where a worker exists. Geometries here are VIEWS over those arrays, so
@@ -10,15 +10,18 @@
 
 /**
  * @typedef {{ name: string, geometry: import("three").BufferGeometry,
- *   color: import("three").Color | null, paletteIndex: number }} MeshObject
+ *   color: import("three").Color | null, opacity?: number, finish?: {metalness: number, roughness: number} | null,
+ *   paletteIndex: number, path: number[] | null, body?: number }} MeshObject
  *   `color`: the object's source colour (linear, as authored), or null when the
  *   file gave it none and the viewer's own surface colour applies.
  *   `paletteIndex`: the object's place when a palette is cycled over the file.
+ *   `path`: a 3MF object's place in the file's build (`threeMfMeshData.js`), or null (an STL).
+ *   `body`: an STL body's number, from 1 (`stlBodies.js`); an STL not split is body 1.
  */
 
 // A palette has always been dealt over a file's objects in the order of this key
-// compared as text (`buildPartFillIndexMap`, common/cadScene.js), which is not file
-// order once there are more than ten. A saved "Color by part" view keeps its colours.
+// compared as text, which is not file order once there are more than ten. A saved
+// "Color by part" view keeps its colours.
 function paletteKey(range, index) {
   return [String(range?.occurrenceId || ""), String(range?.id || ""), String(range?.label || range?.name || ""),
     String(index).padStart(8, "0")].join("\u0000");
@@ -74,7 +77,7 @@ export function buildMeshObjects(THREE, meshData) {
   if (!vertexCount || !triangleCount) return [];
   const ranges = Array.isArray(meshData.parts) && meshData.parts.length
     ? meshData.parts
-    : [{ name: "", vertexOffset: 0, vertexCount, triangleOffset: 0, triangleCount }];
+    : [{ name: String(meshData.name || ""), vertexOffset: 0, vertexCount, triangleOffset: 0, triangleCount }];
   // Once one object is coloured the file is: the rest keep the colour their material
   // carried (a writer's default grey included) rather than the viewer's surface colour.
   const colored = meshData.has_source_colors === true && meshData.colors?.length === meshData.vertices.length;
@@ -86,7 +89,11 @@ export function buildMeshObjects(THREE, meshData) {
       name: String(range.label || range.name || ""),
       geometry: objectGeometry(THREE, meshData, range),
       color: colored ? new THREE.Color(meshData.colors[at], meshData.colors[at + 1], meshData.colors[at + 2]) : null,
-      paletteIndex: places[index]
+      opacity: Number.isFinite(range.opacity) ? range.opacity : 1,
+      finish: range.finish || null,
+      paletteIndex: places[index],
+      path: Array.isArray(range.path) && range.path.length ? range.path : null,
+      body: Number.isInteger(range.body) ? range.body : index + 1
     };
   }).filter(Boolean);
 }

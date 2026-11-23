@@ -15,3 +15,8 @@ coverage/
 
 # Generated from src/lib/icon/model.mjs before dev/build
 /public/icon/icon.glb
+
+# The one-line installer, copied from scripts/install/ before dev/build
+/public/install.sh
+/public/install.ps1
+/public/install.py
