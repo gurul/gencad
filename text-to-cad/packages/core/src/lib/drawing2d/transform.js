@@ -97,10 +97,11 @@ export function clampScale(scale, limits) {
  * @param {DrawingBounds|null} bounds
  * @param {number} width CSS pixels.
  * @param {number} height CSS pixels.
- * @param {{ margin?: number }} [options]
+ * @param {{ margin?: number, top?: number }} [options]  `top`: CSS pixels at the pane's top that the
+ *   drawing keeps clear of (the view's tool strip), past its margin.
  * @returns {DrawingTransform}
  */
-export function fitTransform(bounds, width, height, { margin = DRAWING_FIT_MARGIN } = {}) {
+export function fitTransform(bounds, width, height, { margin = DRAWING_FIT_MARGIN, top = 0 } = {}) {
   if (!Array.isArray(bounds) || bounds.length !== 4 || !bounds.every(finite)) {
     throw new Error(
       "fitTransform needs a [minX, minY, maxX, maxY] box of finite numbers; "
@@ -116,8 +117,10 @@ export function fitTransform(bounds, width, height, { margin = DRAWING_FIT_MARGI
   const spanY = Math.abs(maxY - minY);
   // Never let the margin eat the pane: a 30 px pane with a 16 px gutter has no
   // room left, and a non-positive usable size would make the scale 0 or worse.
+  // The strip's room comes off the top, never more than half the pane.
+  const clear = finite(top) && top > 0 ? Math.min(top, height * 0.5) : 0;
   const usableWidth = Math.max(width - 2 * margin, width * 0.5);
-  const usableHeight = Math.max(height - 2 * margin, height * 0.5);
+  const usableHeight = Math.max(height - clear - 2 * margin, (height - clear) * 0.5);
   const scaleX = spanX > 0 ? usableWidth / spanX : Infinity;
   const scaleY = spanY > 0 ? usableHeight / spanY : Infinity;
   const fitted = Math.min(scaleX, scaleY);
@@ -127,7 +130,7 @@ export function fitTransform(bounds, width, height, { margin = DRAWING_FIT_MARGI
   return {
     scale,
     offsetX: width / 2 - centreX * scale,
-    offsetY: height / 2 + centreY * scale
+    offsetY: clear + (height - clear) / 2 + centreY * scale
   };
 }
 
@@ -195,6 +198,32 @@ export function zoomTransform(transform, anchor, factor, limits) {
     offsetX: anchor.x - (anchor.x - transform.offsetX) * ratio,
     offsetY: anchor.y - (anchor.y - transform.offsetY) * ratio
   };
+}
+
+/**
+ * A view carried from the pane it was framed in to another, by what it shows rather than by its
+ * pixels: the point of the drawing at the first pane's centre stands at the second's, and the zoom
+ * against each pane's fit is the same (inside the second fit's limits). On a pane of the size it was
+ * framed in it is that view exactly, whatever the fits: what a view stored with its pane gives back
+ * once its pane is that size again (a reload, the panel docked beside it as the file opens).
+ *
+ * A pane's fit is its `fitTransform` scale, so the zoom a view keeps is the one its zoom readout
+ * shows (100% the fit).
+ *
+ * @param {DrawingTransform} transform
+ * @param {{ width: number, height: number, fitScale: number }} from  The pane it was framed in, CSS pixels.
+ * @param {{ width: number, height: number, fitScale: number }} to
+ * @returns {DrawingTransform}
+ */
+export function carryTransform(transform, from, to) {
+  const { scale, offsetX, offsetY } = transform;
+  if (from.width === to.width && from.height === to.height) return { scale, offsetX, offsetY };
+  if (!finite(from.fitScale) || from.fitScale <= 0) {
+    throw new Error(`carryTransform needs the first pane's positive fitted scale; received ${from.fitScale}.`);
+  }
+  const [x, y] = screenToModel(transform, from.width / 2, from.height / 2);
+  const carried = clampScale((scale / from.fitScale) * to.fitScale, zoomLimits(to.fitScale));
+  return { scale: carried, offsetX: to.width / 2 - x * carried, offsetY: to.height / 2 + y * carried };
 }
 
 /**

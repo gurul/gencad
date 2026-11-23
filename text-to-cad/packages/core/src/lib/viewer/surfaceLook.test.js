@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as THREE from "three";
 
-import { createSurfaceLook } from "./surfaceLook.js";
+import { SEE_THROUGH_OFFSET, createSurfaceLook, surfaceOffset } from "./surfaceLook.js";
 
 const INSPECT = Object.freeze({
   defaultColor: "#8fa3b5", fillColors: ["#8fa3b5"], cycleColors: false, overrideSourceColors: false,
@@ -112,6 +112,35 @@ test("opacity scales the authored opacity; Flat swaps in an unlit stand-in and S
   assert.deepEqual([lit.opacity, lit.transparent, lit.depthWrite], [1, false, true]);
 });
 
+test("a see-through surface steps a hair forward in the depth test, and one that writes depth keeps its family's step, in every look", () => {
+  // An engine document's surfaces step back so the edges on them win (polygon offset 1, 1); a translucent one
+  // lying on an opaque one (a diffuser on its baffle) must be in front of it at every pixel, never decided by
+  // how each one's triangles round their depth.
+  const opaque = new THREE.MeshStandardMaterial({ color: "#1b1c1f", polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+  const glass = new THREE.MeshStandardMaterial({ color: "#f2f0ea", transparent: true, opacity: 0.8, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+  const root = new THREE.Group();
+  const baffle = new THREE.Mesh(new THREE.BoxGeometry(), opaque);
+  const diffuser = new THREE.Mesh(new THREE.BoxGeometry(), glass);
+  root.add(baffle, diffuser);
+  const look = createSurfaceLook(THREE, root);
+  const step = (mesh) => [mesh.material.depthWrite, mesh.material.polygonOffset, mesh.material.polygonOffsetFactor, mesh.material.polygonOffsetUnits];
+  const solid = { materialSettings: INSPECT, authored: false, surface: { style: "shaded", opacity: 1 } };
+  look.apply(solid);
+  assert.deepEqual([step(baffle), step(diffuser)], [[true, true, 1, 1], [false, true, 0, -4]]);
+  assert.deepEqual(SEE_THROUGH_OFFSET, { polygonOffset: true, polygonOffsetFactor: 0, polygonOffsetUnits: -4 });
+  // X-ray: every surface see-through, every surface a hair forward.
+  look.apply({ ...solid, surface: { style: "shaded", opacity: 0.22 } });
+  assert.deepEqual([step(baffle), step(diffuser)], [[false, true, 0, -4], [false, true, 0, -4]]);
+  // Solid again, and the file as authored: the opaque surface's own step back, the translucent one forward.
+  for (const again of [solid, null]) {
+    look.apply(again);
+    assert.deepEqual([step(baffle), step(diffuser)], [[true, true, 1, 1], [false, true, 0, -4]], JSON.stringify(again));
+  }
+  // A family whose surfaces take no step keeps none where they write depth.
+  assert.deepEqual(surfaceOffset(true, new THREE.MeshStandardMaterial()), { polygonOffset: false, polygonOffsetFactor: 0, polygonOffsetUnits: 0 });
+});
+
 test("dispose restores the authored scene and releases only what the look created", () => {
   const { root, a, b, shared } = scene();
   let sharedDisposed = 0;
@@ -128,4 +157,96 @@ test("dispose restores the authored scene and releases only what the look create
   assert.equal(a.material, shared);
   assert.deepEqual([shared.roughness, shared.metalness], [0.2, 1]);
   assert.deepEqual([sharedDisposed, cloneDisposed, standInDisposed], [0, 1, 1]);
+});
+
+test("a look's surface model: its stand-ins compile OCCT's lighting after three's, an authored look and none keep three's", () => {
+  const { root, a } = scene();
+  const authored = a.material;
+  const look = createSurfaceLook(THREE, root);
+  look.apply({ materialSettings: INSPECT, authored: false, surface: { style: "shaded", opacity: 1 }, brdf: "occt" });
+  const standIn = a.material;
+  assert.equal(standIn.customProgramCacheKey(), "surface-brdf:occt", "one program per model, shared by every stand-in");
+  const shader = { fragmentShader: THREE.ShaderLib.physical.fragmentShader, uniforms: {} };
+  standIn.onBeforeCompile(shader);
+  const at = (text) => shader.fragmentShader.indexOf(text);
+  assert.ok(at("#include <lights_physical_pars_fragment>") < at("#define RE_Direct RE_Direct_Occt"), "after three's own functions");
+  assert.ok(at("#define RE_IndirectSpecular RE_IndirectSpecular_Occt") > 0);
+  assert.ok(at("#include <lights_physical_fragment>") < at("material.roughness = clamp( roughnessFactor, 0.01, 1.0 );"));
+  assert.ok(at("material.roughness = clamp( roughnessFactor, 0.01, 1.0 );") < at("#include <lights_fragment_begin>"),
+    "the roughness set before the lights read it");
+  assert.equal(shader.uniforms.occtEnvironmentTable.value.image.width, 32, "OCCT's split-sum table, not three's");
+  assert.throws(() => look.apply({ materialSettings: INSPECT, authored: false, surface: { style: "shaded", opacity: 1 }, brdf: "phong" }),
+    /a surface model is one of occt, not "phong"/);
+
+  look.apply({ materialSettings: INSPECT, authored: true, surface: { style: "shaded", opacity: 1 }, brdf: "occt" });
+  assert.equal(a.material, authored);
+  assert.equal(authored.onBeforeCompile, THREE.Material.prototype.onBeforeCompile, "an authored material is never touched");
+  look.apply({ materialSettings: INSPECT, authored: false, surface: { style: "shaded", opacity: 1 } });
+  assert.equal(a.material, standIn);
+  assert.equal(standIn.onBeforeCompile, THREE.Material.prototype.onBeforeCompile, "no model named: three's own");
+  assert.equal(standIn.customProgramCacheKey, THREE.Material.prototype.customProgramCacheKey);
+});
+
+
+test("authored Standard and Physical finishes survive shaded modes, with reversible Parts and X-ray overrides", () => {
+  for (const physical of [false, true]) {
+    const texture = new THREE.Texture();
+    const material = physical ? new THREE.MeshPhysicalMaterial({ color: "#336699", map: texture,
+      metalness: 1, roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.15, transmission: 0.8,
+      thickness: 0.006, attenuationDistance: 50, opacity: 0.7, transparent: true })
+      : new THREE.MeshStandardMaterial({ color: "#336699", map: texture, metalness: 1, roughness: 0.3, opacity: 0.7, transparent: true });
+    material.userData.cadAuthoredFinish = true;
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(), material), root = new THREE.Group(); root.add(mesh);
+    const surface = createSurfaceLook(THREE, root);
+    const original = { materialSettings: INSPECT, authored: false, surface: { style: "shaded", opacity: 1 } };
+    const check = () => {
+      assert.deepEqual([mesh.material.metalness, mesh.material.roughness, mesh.material.clearcoat], [1, 0.3, physical ? 1 : 0]);
+      assert.equal(mesh.material.map, texture);
+      assert.deepEqual([mesh.material.color.getHexString(), mesh.material.opacity, mesh.material.transparent], ["336699", 0.7, true]);
+      assert.deepEqual([mesh.material.emissive.getHexString(), mesh.material.emissiveIntensity], ["336699", 0.02], "non-emitting authored finishes retain the existing small Inspect lift");
+      assert.equal(mesh.material.transmission, physical ? 0.8 : 0);
+      assert.equal(mesh.material.attenuationDistance, physical ? 50 : Infinity);
+    };
+    surface.apply(original); check();
+    surface.apply({ ...original, materialSettings: { ...INSPECT, overrideSourceColors: true, defaultColor: "#ff8800", fillColors: ["#ff8800"] } });
+    assert.deepEqual([mesh.material.color.getHexString(), mesh.material.metalness, mesh.material.roughness, mesh.material.transmission], ["ff8800", 0.03, 0.92, 0]);
+    assert.equal(mesh.material.map, null);
+    surface.apply({ ...original, finishes: false, surface: { style: "shaded", opacity: 0.22 } });
+    assert.equal(mesh.material.opacity, 0.7 * 0.22);
+    assert.equal(mesh.material.transmission, 0);
+    surface.apply(original); check();
+    assert.deepEqual([material.metalness, material.roughness, material.opacity], [1, 0.3, 0.7], "authored material stays unchanged");
+    surface.dispose(); mesh.geometry.dispose(); material.dispose(); texture.dispose();
+  }
+});
+
+
+test("an emitting authored finish restores its own glow after X-ray without changing the non-emitting Inspect lift", () => {
+  const root = new THREE.Group();
+  const emitting = new THREE.MeshPhysicalMaterial({ color: "#336699", metalness: 1, roughness: 0.3,
+    emissive: "#ff8800", emissiveIntensity: 2 });
+  const neutral = new THREE.MeshPhysicalMaterial({ color: "#336699", metalness: 1, roughness: 0.3 });
+  for (const material of [emitting, neutral]) material.userData.cadAuthoredFinish = true;
+  const lamp = new THREE.Mesh(new THREE.BoxGeometry(), emitting), plate = new THREE.Mesh(new THREE.BoxGeometry(), neutral);
+  root.add(lamp, plate);
+  const surface = createSurfaceLook(THREE, root);
+  const original = { authored: false, materialSettings: INSPECT, surface: { style: "shaded", opacity: 1 } };
+  const check = () => {
+    assert.deepEqual([lamp.material.emissive.getHexString(), lamp.material.emissiveIntensity], ["ff8800", 2]);
+    assert.deepEqual([plate.material.emissive.getHexString(), plate.material.emissiveIntensity], ["336699", 0.02]);
+  };
+  surface.apply(original); check();
+  const single = { ...original, materialSettings: { ...INSPECT, overrideSourceColors: true, defaultColor: "#ff0000", fillColors: ["#ff0000"] } };
+  surface.apply(single);
+  const direct = [lamp.material.color.getHexString(), lamp.material.emissive.getHexString(), lamp.material.emissiveIntensity];
+  assert.deepEqual(direct, ["ff0000", "ff8800", 2], "Single color keeps the authored glow");
+  surface.apply({ ...original, finishes: false, surface: { style: "shaded", opacity: 0.22 } });
+  assert.deepEqual([lamp.material.emissive.getHexString(), lamp.material.emissiveIntensity], ["336699", 0.02]);
+  surface.apply(single);
+  assert.deepEqual([lamp.material.color.getHexString(), lamp.material.emissive.getHexString(), lamp.material.emissiveIntensity], direct,
+    "X-ray → Single color matches direct Single color, independent of the previous mode");
+  surface.apply(original); check();
+  assert.deepEqual([emitting.emissive.getHexString(), emitting.emissiveIntensity], ["ff8800", 2]);
+  assert.deepEqual([neutral.emissive.getHexString(), neutral.emissiveIntensity], ["000000", 1]);
+  surface.dispose(); lamp.geometry.dispose(); plate.geometry.dispose(); emitting.dispose(); neutral.dispose();
 });

@@ -1,19 +1,34 @@
-import React, { forwardRef, useImperativeHandle, useRef } from 'react';
+import React, { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-// The shell's surfaces a RENDERER fills — the viewport menu, Quick Edit, the camera-settled
-// report — driven end to end through the real RendererShell and useRendererShell under the shell
-// harness (a renderer that uses all three), with only the WebGL viewport replaced. The stand-in
+// The shell's surfaces a RENDERER fills — the viewport menu and Quick Edit — driven end to end
+// through the real RendererShell and useRendererShell under the shell
+// harness (a renderer that uses both), with only the WebGL viewport replaced. The stand-in
 // hands the overlay the same viewport context the real one does (a host the pointer events arrive
 // on, a runtime whose renderer's canvas is the scene's), and records the props the shell wired, so
 // the camera reports reach the renderer through exactly the callbacks the real viewport calls.
 // The viewport's own half of those reports (a resize, a preview camera) is ShellViewport.test.tsx.
-const viewport = vi.hoisted(() => ({ props: null as any }));
+// `props`: the editor's viewport; `preview`: Preview's, a viewport of its own while it is open.
+// `gpu`, where a test sets it: what the viewport says of its WebGL renderer (`softwareRendering`),
+// and the Render scenes it was asked to prepare ahead.
+const viewport = vi.hoisted(() => ({ props: null as any, preview: null as any, annotationAt: null as null | ((x: number, y: number) => string | null),
+  annotationsInBox: null as null | ((box: { left: number, top: number, right: number, bottom: number }) => string[]),
+  gpu: null as null | { software: boolean; prepared: number } }));
 vi.mock('../../../../dist/renderers/kit/shell/ShellViewport.js', () => ({
   default: forwardRef(function StandInViewport(props: any, ref) {
-    viewport.props = props;
-    useImperativeHandle(ref, () => ({ captureScreenshotBlob: async () => new Blob(['pixels'], { type: 'image/png' }) }));
+    if (props.preview) viewport.preview = props; else viewport.props = props;
+    useEffect(() => () => { if (props.preview) viewport.preview = null; }, []);
+    useImperativeHandle(ref, () => ({
+      captureScreenshotBlob: async () => new Blob(['pixels'], { type: 'image/png' }),
+      annotationAt: (x: number, y: number) => viewport.annotationAt?.(x, y) ?? null,
+      annotationsInBox: (box: any) => viewport.annotationsInBox?.(box) ?? [],
+      promptCamera: () => ({ camera: { position: [0, -100, 0], target: [0, 0, 0], up: [0, 0, 1], orthographicHalfHeight: 40 }, width: 800, height: 600 }),
+      ...(viewport.gpu ? {
+        softwareRendering: () => viewport.gpu!.software,
+        prepareViewSettings: async (scene: any) => { if (scene.render.enabled) viewport.gpu!.prepared += 1; },
+      } : {}),
+    }));
     const hostRef = useRef<HTMLDivElement | null>(null);
     const runtimeRef = useRef<any>(null);
     const context = { hostRef, runtimeRef, mountRef: hostRef, viewerReadyTick: 1, commitScene: () => true };
@@ -24,34 +39,31 @@ vi.mock('../../../../dist/renderers/kit/shell/ShellViewport.js', () => ({
   })
 }));
 import HarnessRenderer from '../../../../dist/renderers/shell-harness/HarnessRenderer.js';
-import { ViewerHostContext } from '../../../../dist/host/context.js';
+import { ViewerElementContext, ViewerHostContext } from '../../../../dist/host/context.js';
 import { testHost } from '../../../../dist/host/testing/host.js';
+import { createAnimationClock } from '../../../../dist/renderers/kit/tools/playbar/animationClock.js';
 
 beforeEach(() => {
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal('matchMedia', (query: string) => ({ matches: false, media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }));
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); viewport.props = null; document.querySelectorAll('[data-test-navbar]').forEach(slot => slot.remove()); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); viewport.props = null; viewport.preview = null; });
 
-// The navbar FileViewer hands a renderer: the box at its right end Display and Preview go in.
-function navbarSlot() {
-  const slot = document.createElement('div');
-  slot.setAttribute('data-test-navbar', '');
-  document.body.append(slot);
-  return slot;
-}
 
-function mount(host = testHost(), state?: unknown) {
+function mount(host = testHost(), state?: unknown, name = 'one.harness', element: { current: HTMLElement | null } | null = null) {
   const save = vi.fn();
   const navigation = vi.fn();
   let settings: any = { toolStack: { panels: {}, collapsed: {} } };
   const listeners = new Set<() => void>();
   const preferences = { getSnapshot: () => settings, subscribe: (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener); },
     update: (patch: any) => { settings = { ...settings, ...patch }; listeners.forEach(listener => listener()); } };
-  const props = { source: { id: 'one' }, file: { path: '/models/one.harness', name: 'one.harness', kind: 'file' }, document: null,
-    navbarSlot: navbarSlot(), onReady() {}, onOpenFile() {}, appearance: { colorScheme: 'light' },
+  const props = { source: { id: 'one' }, file: { path: `/models/${name}`, name, kind: 'file' }, document: null,
+    onReady() {}, onOpenFile() {}, appearance: { colorScheme: 'light' },
     state, onStateChange: save, onNavigationActionsChange: navigation, reload() {}, data: { services: { preferences } } };
-  const view = render(<ViewerHostContext.Provider value={host}><HarnessRenderer {...(props as any)} /></ViewerHostContext.Provider>);
+  // `element`: the viewer the keyboard reaches (its Escape and Delete), as a file viewer provides.
+  const view = render(<ViewerHostContext.Provider value={host}><ViewerElementContext.Provider value={element as any}>
+    <HarnessRenderer {...(props as any)} />
+  </ViewerElementContext.Provider></ViewerHostContext.Provider>);
   const canvas = view.container.querySelector('[data-stand-in-viewport] > canvas') as HTMLCanvasElement;
   const overlay = (name: string) => view.container.querySelector(`[data-harness-${name}]`)!.textContent;
   return { ...view, canvas, overlay, save, navigation };
@@ -113,69 +125,272 @@ it('a press the renderer has nothing to say about, a secondary drag, or a press 
   expect(screen.getByRole('menu')).toBeTruthy();
 });
 
-it('Quick Edit is there once something is picked, with what the host can do, is put away in Preview, and nothing sits at the bottom', () => {
+it('Quick Edit is always there, one row with nothing picked, its attachments over the note once something is, with what the host can do; put away in Preview', async () => {
   const destination = { kind: 'composer', available: true } as const;
   const send = vi.fn(async () => ({ status: 'sent' as const, partIds: [] }));
   const { container, canvas } = mount(testHost({ promptContext: { getSnapshot: () => destination, subscribe: () => () => {}, deliver: async () => ({ status: 'added', partIds: [] }), send } }));
   expect(container.querySelector('[data-viewport-bottom-actions]')).toBeNull();
-  // Nothing picked, nothing drawn: no Quick Edit at all, not even a button.
-  expect(container.querySelector('[data-quick-edit-box]')).toBeNull();
-  expect(screen.queryByRole('button', { name: 'Quick Edit' })).toBeNull();
-  pick(canvas);
+  // Nothing picked, nothing drawn: the bar, one row (the note and the host's buttons), no attachments, no X.
   const box = screen.getByRole('region', { name: 'Quick Edit' });
-  expect(box.querySelector('[data-quick-edit-chip="references"]')!.textContent).toBe('1 ref');
-  expect(within(box).getAllByRole('button').map(button => button.getAttribute('aria-label') || button.textContent)).toEqual(['Close Quick Edit', 'Copy Prompt', 'Queue', 'Send']);
-  // Its X clears the pick, as a press on the background would, and goes with it.
-  fireEvent.click(within(box).getByRole('button', { name: 'Close Quick Edit' }));
-  expect(screen.queryByRole('region', { name: 'Quick Edit' })).toBeNull();
+  const labels = () => within(box).getAllByRole('button').map(button => button.getAttribute('aria-label') || button.textContent);
+  expect([box.querySelector('[data-quick-edit-context]'), labels()]).toEqual([null, ['Copy Prompt', 'Queue', 'Send']]);
   pick(canvas);
-  act(() => { fireEvent.click(screen.getByRole('button', { name: 'Preview' })); });
-  expect(container.querySelector('[data-preview-chrome]')!.contains(container.querySelector('[data-quick-edit]'))).toBe(true);
-  expect(container.querySelector('[data-preview-chrome]')!.hasAttribute('inert')).toBe(true);
+  // The one reference is its own chip, by its name (several are one chip, "N refs": `ReferenceChips.jsx`), on a row over the note.
+  expect([box.querySelector('[data-quick-edit-context]') !== null, labels()]).toEqual([true, ['press-300-200', 'Copy Prompt', 'Queue', 'Send']]);
+  fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+  await waitFor(() => expect(container.querySelector('[data-preview-chrome]')!.hasAttribute('inert')).toBe(true));
+  // Quick Edit stands in the layer over the panels, which Preview puts away with the rest of the chrome.
+  const top = container.querySelector<HTMLElement>('[data-view-top-layer]')!;
+  expect([top.hidden, top.hasAttribute('inert'), top.contains(container.querySelector('[data-quick-edit]'))]).toEqual([true, true, true]);
 });
 
-it('a sketch opens Quick Edit, which sends the file, the note and the view with its ink through the port', async () => {
+// A stroke as the drawing tools put one into the model.
+const ink = (id: string) => ({ id, kind: 'stroke', points: new Float32Array([0, 0, 0, 1, 0, 0]), color: '#ff2d55', width: 2, touches: [] });
+
+it("an annotation is Quick Edit's attachment, which sends the note with the files made of its view and its annotation, and goes with them", async () => {
   const destination = { kind: 'composer', available: true } as const;
   const send = vi.fn(async (_context: unknown) => ({ status: 'sent' as const, partIds: [] }));
-  const host = testHost({ promptContext: { getSnapshot: () => destination, subscribe: () => () => {}, deliver: async () => ({ status: 'added', partIds: [] }), send } as any });
+  const promptFiles = {
+    create: vi.fn(async (_request: any) => ({ snapshot: '/tmp/p/one-1.snapshot.json' })),
+    read: vi.fn(async () => new Blob(['{}'], { type: 'application/json' })),
+  };
+  const host = testHost({ promptContext: { getSnapshot: () => destination, subscribe: () => () => {}, deliver: async () => ({ status: 'added', partIds: [] }), send } as any, promptFiles });
   mount(host);
   fireEvent.click(screen.getByRole('button', { name: 'Draw' }));
-  // The surface clears its ink as the viewport's does, saying so once it is gone.
-  const clearInk = vi.fn(() => viewport.props.drawing.onContentChange(false, 0));
-  act(() => viewport.props.drawing.onReady({ clear: clearInk }));
-  act(() => viewport.props.drawing.onContentChange(true, 1));
+  act(() => viewport.props.annotation.add([ink('a')]));
   const box = screen.getByRole('region', { name: 'Quick Edit' });
-  expect(box.querySelector('[data-quick-edit-chip="sketch"]')).not.toBeNull();
+  expect(box.querySelector('[data-quick-edit-ref="annotation"]')).not.toBeNull();
   const note = within(box).getByRole('textbox', { name: 'Describe your changes' });
   expect(document.activeElement).toBe(note);
-  fireEvent.change(note, { target: { value: 'Add a boss here.' } });
+  note.textContent = 'Add a boss here.';
+  fireEvent.input(note);
+  expect(promptFiles.create).not.toHaveBeenCalled();
   fireEvent.keyDown(note, { key: 'Enter' });
   await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+  // The view on screen, as a snapshot job says it (its mode and Grid switch with it, so the snapshot
+  // replays it), with the annotation in the same snapshot file.
+  const [request] = promptFiles.create.mock.calls[0] as any[];
+  expect(request).toMatchObject({ name: 'one.harness', input: '/models/one.harness', annotation: { units: 'mm', marks: [{ id: 'a', kind: 'stroke' }] } });
+  expect(request.views).toEqual([{ label: 'current view', camera: { position: [0, -100, 0], target: [0, 0, 0], up: [0, 0, 1], orthographicHalfHeight: 40 },
+    display: { mode: 'solid', grid: false }, width: 1600, height: 1200 }]);
   const context = send.mock.calls[0][0] as any;
-  expect(context.parts.map((part: any) => part.kind)).toEqual(['text', 'reference', 'attachment']);
-  expect((await context.parts[2].content).type).toBe('image/png');
-  // Sent, the note goes with its sketch.
-  await waitFor(() => expect(screen.queryByRole('region', { name: 'Quick Edit' })).toBeNull());
-  expect(clearInk).toHaveBeenCalledTimes(1);
+  expect(context.parts.map((part: any) => [part.kind, part.label ?? part.id])).toEqual([['text', 'text'], ['reference', 'file'],
+    ['attachment', 'Snapshot (cad model snapshot --annotation)']]);
+  expect(await context.parts[2].path).toBe('/tmp/p/one-1.snapshot.json');
+  expect(context.parts.filter((part: any) => part.kind === 'attachment').map((part: any) => part.mimeType)).toEqual(['application/json']);
+  expect(promptFiles.read).not.toHaveBeenCalled();
+  // Sent, the note goes with its annotation: the bar is one row again.
+  await waitFor(() => expect(box.querySelector('[data-quick-edit-context]')).toBeNull());
+  expect([viewport.props.annotation.hasAnnotation, note.textContent]).toEqual([false, '']);
 });
 
-it('a clipboard destination has no snapshot in the navbar, and Draw copies its ink from the foot of its controls', async () => {
+it('a clipboard destination has no snapshot in the navbar; the annotation is Quick Edit\'s chip, its pen first', async () => {
   const destination = { kind: 'clipboard', available: true } as const;
   const writeImage = vi.fn(async () => {}), deliver = vi.fn();
   const { navigation } = mount(testHost({
     promptContext: { getSnapshot: () => destination, subscribe: () => () => {}, deliver } as any,
-    clipboard: { writeText: async () => {}, readText: async () => '', writeImage },
+    clipboard: { writeText: async () => {}, writeImage },
   }));
   expect(navigation.mock.calls.flatMap(([actions]) => actions)).toEqual([]);
   fireEvent.click(screen.getByRole('button', { name: 'Draw' }));
-  const controls = () => screen.getByRole('region', { name: 'Drawing controls' });
-  expect(within(controls()).queryByRole('button', { name: /^Copy/ })).toBeNull();
-  act(() => viewport.props.drawing.onContentChange(true, 1));
-  fireEvent.click(within(controls()).getByRole('button', { name: 'Copy Drawing' }));
-  await waitFor(() => expect(writeImage).toHaveBeenCalledTimes(1));
+  act(() => viewport.props.annotation.add([ink('a')]));
+  const chip = screen.getByRole('region', { name: 'Quick Edit' }).querySelector('[data-quick-edit-ref="annotation"]')!;
+  expect(chip.querySelector('svg[data-pick-glyph="pencil"]')).not.toBeNull();
   // A clipboard destination's Quick Edit copies its prompt, and nothing else.
   expect(within(screen.getByRole('region', { name: 'Quick Edit' })).queryByRole('button', { name: 'Queue' })).toBeNull();
   expect(deliver).not.toHaveBeenCalled();
+});
+
+it("under Select a press on the annotation picks its mark before anything under it; Shift adds, Escape lets go, Delete deletes", () => {
+  // A file with Select (`panel*`): ink 'a' lies at x < 100 on the canvas, ink 'b' at x >= 100 and y < 50.
+  viewport.annotationAt = (x: number, y: number) => (x < 100 ? 'a' : y < 50 ? 'b' : null);
+  const { canvas } = mount(testHost(), undefined, 'panel-one.harness', { current: document.body });
+  act(() => viewport.props.annotation.add([ink('a'), ink('b'), ink('c')]));
+  const press = (x: number, y: number, shiftKey = false) => fireEvent.pointerDown(canvas, { button: 0, clientX: x, clientY: y, shiftKey, pointerId: 1 });
+  const selected = () => viewport.props.annotation.selected;
+  press(10, 10);
+  expect(selected()).toEqual(['a']);
+  press(150, 10, true);
+  expect(selected()).toEqual(['a', 'b']);
+  press(150, 10, true);
+  expect(selected()).toEqual(['a']);
+  // A press on no ink lets go of it, unless Shift keeps it.
+  press(150, 150, true);
+  expect(selected()).toEqual(['a']);
+  press(150, 150);
+  expect(selected()).toEqual([]);
+  press(10, 10);
+  fireEvent.keyDown(canvas, { key: 'Escape' });
+  expect(selected()).toEqual([]);
+  // With nothing picked Delete deletes nothing; with 'a' picked, 'a' alone.
+  fireEvent.keyDown(canvas, { key: 'Delete' });
+  expect(viewport.props.annotation.items.map((item: any) => item.id)).toEqual(['a', 'b', 'c']);
+  press(10, 10);
+  fireEvent.keyDown(canvas, { key: 'Delete' });
+  expect(viewport.props.annotation.items.map((item: any) => item.id)).toEqual(['b', 'c']);
+  viewport.annotationAt = null;
+});
+
+it("under Box select a drag from empty space takes the ink the box touches, with what was drawn with it, then hands the box on; Shift adds, a plain box replaces; a drag from the ink is Select's", () => {
+  // In the page's pixels: a box reaching x < 100 takes 'a' (drawn with 'a2'), one starting below y = 100 takes 'b'.
+  viewport.annotationsInBox = box => (box.left < 100 ? ['a'] : box.top > 100 ? ['b'] : []);
+  // A press at the top-left corner lands on 'c', which a press picks: a drag from there is no box.
+  viewport.annotationAt = (x: number, y: number) => (x < 5 && y < 5 ? 'c' : null);
+  const { canvas, overlay } = mount(testHost(), undefined, 'panel-box.harness', { current: document.body });
+  act(() => viewport.props.annotation.add([{ ...ink('a'), group: 'arrow' }, { ...ink('a2'), group: 'arrow' }, ink('b'), ink('c')]));
+  const selected = () => viewport.props.annotation.selected;
+  const drag = (from: [number, number], to: [number, number], shiftKey = false) => {
+    fireEvent.pointerDown(canvas, { button: 0, clientX: from[0], clientY: from[1], shiftKey, pointerId: 1, pointerType: 'mouse' });
+    fireEvent.pointerMove(canvas, { clientX: to[0], clientY: to[1], buttons: 1, shiftKey, pointerId: 1, pointerType: 'mouse' });
+    fireEvent.pointerUp(canvas, { button: 0, clientX: to[0], clientY: to[1], shiftKey, pointerId: 1, pointerType: 'mouse' });
+  };
+  drag([10, 10], [60, 60]);
+  expect(selected()).toEqual(['a', 'a2']);
+  expect(overlay('box')).toBe('10,10,60,60');
+  // A drag from the model (the harness's right half) is the camera's, Shift with it: no box is drawn or handed on.
+  drag([600, 300], [450, 200], true);
+  expect([selected(), overlay('box'), document.querySelector('[data-box-select]')]).toEqual([['a', 'a2'], '10,10,60,60', null]);
+  drag([300, 300], [200, 200], true);
+  expect(selected()).toEqual(['a', 'a2', 'b']);
+  expect(overlay('box')).toBe('+200,200,300,300');
+  // The same box left to right takes the same: a plain one, in place of the rest.
+  drag([200, 200], [300, 300]);
+  expect([selected(), overlay('box')]).toEqual([['b'], '200,200,300,300']);
+  // It looks the same whichever way it goes, as the drag crosses back over its start: one solid blue outline.
+  fireEvent.pointerDown(canvas, { button: 0, clientX: 300, clientY: 300, pointerId: 1, pointerType: 'mouse' });
+  const look = (x: number) => {
+    fireEvent.pointerMove(canvas, { clientX: x, clientY: 350, buttons: 1, pointerId: 1, pointerType: 'mouse' });
+    const { style } = document.querySelector<HTMLElement>('[data-box-select]')!;
+    return `${style.borderStyle} ${style.borderColor}`;
+  };
+  expect([look(350), look(250), look(320)]).toEqual(Array(3).fill('solid rgb(41, 121, 255)'));
+  fireEvent.keyDown(window, { key: 'Escape' });
+  expect(document.querySelector('[data-box-select]')).toBeNull();
+  // A plain box over no ink lets go of the ink, as it replaces the rest of the selection.
+  drag([300, 10], [400, 60]);
+  expect(selected()).toEqual([]);
+  // A drag from on the ink is Select's: the press picks that ink, and no box is drawn or handed on.
+  drag([1, 1], [50, 50]);
+  expect([selected(), overlay('box'), document.querySelector('[data-box-select]')]).toEqual([['c'], '300,10,400,60', null]);
+  // A tap is a click: it picks what it lands on, and hands no box on.
+  drag([10, 10], [60, 60]);
+  fireEvent.pointerDown(canvas, { button: 0, clientX: 1, clientY: 1, pointerId: 1, pointerType: 'mouse' });
+  fireEvent.pointerUp(canvas, { button: 0, clientX: 1, clientY: 1, pointerId: 1, pointerType: 'mouse' });
+  expect([selected(), overlay('box')]).toEqual([['c'], '10,10,60,60']);
+  viewport.annotationsInBox = null;
+  viewport.annotationAt = null;
+});
+
+it("Escape on the drawing surface with no ink picked puts Draw down and takes Select up, whichever family is up", async () => {
+  // The surface takes the keyboard on a press, so after a stroke its Escape is the one the key reaches.
+  mount(testHost(), undefined, 'panel-one.harness', { current: document.body });
+  const strip = within(screen.getByRole('group', { name: 'Interaction tools' }));
+  for (const tool of ['Pen', 'Rectangle']) {
+    if (strip.getByRole('button', { name: 'Draw' }).getAttribute('aria-pressed') !== 'true') fireEvent.click(strip.getByRole('button', { name: 'Draw' }));
+    fireEvent.click(within(screen.getByRole('toolbar', { name: 'Annotation controls' })).getByRole('button', { name: tool }));
+    act(() => viewport.props.annotation.add([ink(`${tool}-mark`)]));
+    // The real surface is the viewport's (stood in here): a focusable layer marked as it is.
+    const surface = document.body.appendChild(Object.assign(document.createElement('div'), { tabIndex: -1 }));
+    surface.setAttribute('data-cad-annotation-overlay', '');
+    act(() => { surface.focus(); });
+    fireEvent.keyDown(surface, { key: 'Escape' });
+    surface.remove();
+    expect([strip.getByRole('button', { name: 'Draw' }).getAttribute('aria-pressed'), strip.getByRole('button', { name: 'Select' }).getAttribute('aria-pressed')]).toEqual(['false', 'true']);
+  }
+});
+
+it("Draw is one plain tool on the strip; one row under the strip is its: the drawing tools, one group, then Color, Stroke width, Placement and Clear, disabled with nothing to do", async () => {
+  mount(testHost(), undefined, 'panel-one.harness');
+  const strip = within(screen.getByRole('group', { name: 'Interaction tools' }));
+  expect(strip.queryByRole('button', { name: 'Annotate' })).toBeNull();
+  // One plain tool: its button, no chevron; what it draws with is the row's.
+  expect(strip.getAllByRole('button').map(button => button.getAttribute('aria-label')).slice(0, 3)).toEqual(['Select', 'Draw', 'Keep']);
+  expect(strip.queryByRole('button', { name: 'Pencil' }) || strip.queryByRole('button', { name: 'Shapes' })).toBeNull();
+  expect(strip.getByRole('button', { name: 'Draw' }).querySelector('svg')!.getAttribute('class')).toContain('lucide-pencil');
+  expect(screen.queryByRole('toolbar', { name: 'Annotation controls' })).toBeNull();
+  fireEvent.click(strip.getByRole('button', { name: 'Draw' }));
+  expect([viewport.props.annotation.tool, strip.getByRole('button', { name: 'Draw' }).getAttribute('aria-pressed')]).toEqual(['freedraw', 'true']);
+  // Not a panel of the tool stack: a toolbar of its own, hung under the strip.
+  const row = screen.getByRole('toolbar', { name: 'Annotation controls' });
+  expect([row.closest('[data-cad-tool-stack]'), row.closest('[data-tool-panel]')]).toEqual([null, null]);
+  const panel = () => within(screen.getByRole('toolbar', { name: 'Annotation controls' }));
+  expect(panel().getAllByRole('button').map(button => button.getAttribute('aria-label')))
+    .toEqual(['Pen', 'Highlighter', 'Line', 'Arrow', 'Rectangle', 'Ellipse', 'Text', 'Eraser', 'Colour', 'Stroke width', 'Placement', 'Undo', 'Redo', 'Clear annotations']);
+  expect(panel().getByRole('button', { name: 'Pen' }).getAttribute('aria-pressed')).toBe('true');
+  const clear = () => panel().getByRole('button', { name: 'Clear annotations' }).hasAttribute('disabled');
+  expect(clear()).toBe(true);
+  // Ink enables Clear. Undo and Redo are the row's buttons and ⌘Z and ⇧⌘Z (below).
+  act(() => viewport.props.annotation.add([ink('a')]));
+  expect(clear()).toBe(false);
+});
+
+it("choosing the Highlighter in Draw's row makes Draw show it, and a press on Draw takes up what it last drew with; a shape's key takes up the shapes; each kind keeps its own colour, weight and placement", async () => {
+  mount(testHost(), undefined, 'panel-one.harness');
+  const strip = within(screen.getByRole('group', { name: 'Interaction tools' }));
+  const icon = () => strip.getByRole('button', { name: 'Draw' }).querySelector('svg')!.getAttribute('class') ?? '';
+  const choose = async (tool: string) => {
+    if (strip.getByRole('button', { name: 'Draw' }).getAttribute('aria-pressed') !== 'true') fireEvent.click(strip.getByRole('button', { name: 'Draw' }));
+    fireEvent.click(within(screen.getByRole('toolbar', { name: 'Annotation controls' })).getByRole('button', { name: tool }));
+  };
+  await choose('Highlighter');
+  expect([viewport.props.annotation.tool, strip.getByRole('button', { name: 'Draw' }).getAttribute('aria-pressed')]).toEqual(['highlighter', 'true']);
+  expect(icon()).toContain('lucide-highlighter');
+  // The highlighter's own settings, set while it is up: yellow to start.
+  expect(viewport.props.annotation.style).toEqual({ color: '#ffe600', strokeWidth: 2, placement: 'surface' });
+  act(() => { viewport.props.annotation.selectColor('#39ff14'); viewport.props.annotation.selectStrokeWidth(4); viewport.props.annotation.selectPlacement('plane'); });
+  // A shape chosen: the Rectangle, Shapes' own style; Draw shows it.
+  await choose('Rectangle');
+  expect(viewport.props.annotation.tool).toBe('rectangle');
+  expect(icon()).toContain('lucide-square');
+  expect(viewport.props.annotation.style).toEqual({ color: '#ff2d55', strokeWidth: 2, placement: 'surface' });
+  // Put down, then taken up again: what it last drew with, the Rectangle.
+  fireEvent.click(strip.getByRole('button', { name: 'Select' }));
+  fireEvent.click(strip.getByRole('button', { name: 'Draw' }));
+  expect(viewport.props.annotation.tool).toBe('rectangle');
+  // The Highlighter again keeps its own style.
+  await choose('Highlighter');
+  expect(viewport.props.annotation).toMatchObject({ tool: 'highlighter', style: { color: '#39ff14', strokeWidth: 4, placement: 'plane' } });
+});
+
+it('⌘Z and ⇧⌘Z walk the annotation\'s history from anywhere in the viewer; a text field keeps its own', () => {
+  const { canvas } = mount(testHost(), undefined, 'panel-one.harness', { current: document.body });
+  act(() => viewport.props.annotation.add([ink('a')]));
+  act(() => viewport.props.annotation.add([ink('b')]));
+  const ids = () => viewport.props.annotation.items.map((item: any) => item.id);
+  fireEvent.keyDown(canvas, { key: 'z', metaKey: true });
+  expect(ids()).toEqual(['a']);
+  const field = document.createElement('input');
+  document.body.append(field);
+  fireEvent.keyDown(field, { key: 'z', metaKey: true });
+  expect(ids()).toEqual(['a']);
+  field.remove();
+  fireEvent.keyDown(canvas, { key: 'z', metaKey: true, shiftKey: true });
+  expect(ids()).toEqual(['a', 'b']);
+});
+
+it('under Select the pointer resting on a mark lights it, and the part under it hears nothing', () => {
+  viewport.annotationAt = (x: number) => (x < 100 ? 'a' : null);
+  const { canvas } = mount(testHost(), undefined, 'panel-one.harness');
+  act(() => viewport.props.annotation.add([ink('a'), ink('b')]));
+  const heard = vi.fn();
+  canvas.addEventListener('pointermove', heard);
+  const move = (x: number, buttons = 0) => fireEvent.pointerMove(canvas, { clientX: x, clientY: 10, buttons, pointerId: 1 });
+  move(10);
+  expect(viewport.props.hoveredAnnotation).toEqual(['a']);
+  expect(heard).not.toHaveBeenCalled();
+  const frame = canvas.closest('[data-slot="cad-file-view"]')!;
+  expect(frame.classList.contains('cursor-pointer')).toBe(true);
+  // Off the ink the part hears the pointer again; a drag lights nothing.
+  move(150);
+  expect(viewport.props.hoveredAnnotation).toBeNull();
+  expect(heard).toHaveBeenCalledTimes(1);
+  expect(frame.classList.contains('cursor-pointer')).toBe(false);
+  move(10, 1);
+  expect(viewport.props.hoveredAnnotation).toBeNull();
+  move(10);
+  fireEvent.pointerLeave(canvas.closest('[data-slot="cad-file-view"]')!);
+  expect(viewport.props.hoveredAnnotation).toBeNull();
+  viewport.annotationAt = null;
 });
 
 it('a host with no prompt workflow gets no snapshot, and Quick Edit copies a prompt: left out, not disabled', () => {
@@ -184,10 +399,10 @@ it('a host with no prompt workflow gets no snapshot, and Quick Edit copies a pro
   expect(navigation.mock.calls.flatMap(([actions]) => actions)).toEqual([]);
   pick(canvas);
   expect(within(screen.getByRole('region', { name: 'Quick Edit' })).getAllByRole('button').map(button => button.getAttribute('aria-label') || button.textContent))
-    .toEqual(['Close Quick Edit', 'Copy Prompt']);
+    .toEqual(['press-300-200', 'Copy Prompt']);
 });
 
-it('the renderer is told the camera settled, through what the viewport reports: a recorded move and its own settle', () => {
+it('the renderer is told the camera settled, through what the viewport reports: a recorded move and its own settle', async () => {
   const { overlay } = mount();
   expect(overlay('camera-settles')).toBe('0');
   // A camera that moved and was recorded (`onPerspectiveChange`) is a settle.
@@ -196,12 +411,13 @@ it('the renderer is told the camera settled, through what the viewport reports: 
   // So is the viewport's own settle (a preview camera, a resize), which records nothing.
   act(() => { viewport.props.onCameraSettled(); });
   expect(overlay('camera-settles')).toBe('2');
-  // Preview: the camera that moves records no perspective, and the renderer still hears of it.
-  act(() => { fireEvent.click(screen.getByRole('button', { name: 'Preview' })); });
-  expect(viewport.props.previewMode).toBe(true);
-  act(() => { viewport.props.onPerspectiveChange({ position: [4, 5, 6], target: [0, 0, 0], up: [0, 0, 1], zoom: 2, projection: 'orthographic' }); });
-  act(() => { viewport.props.onCameraSettled(); });
-  expect(overlay('camera-settles')).toBe('4');
+  // Preview's own view keeps no camera (it records no perspective), and the renderer still hears
+  // its camera settle.
+  fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+  await waitFor(() => expect(viewport.preview).not.toBeNull());
+  expect(viewport.preview.onPerspectiveChange ?? null).toBeNull();
+  act(() => { viewport.preview.onCameraSettled(); });
+  expect(overlay('camera-settles')).toBe('3');
 });
 
 it('a view that has gone writes nothing more: its last write is the one it makes as it unmounts, and a camera report after it writes no view again', () => {
@@ -226,3 +442,90 @@ it('a view that has gone writes nothing more: its last write is the one it makes
 
 // The full reset crosses the renderer callback and the shell's tool/preview
 // lifecycle; it must reach the camera only after those changes commit.
+
+// A stand-in routine runtime: it says what was asked of it.
+function routineRuntime(name: string, calls: string[]) {
+  return { clips: [{ id: name }], clock: createAnimationClock(), onRelease: () => calls.push(`release ${name}`),
+    onPlayToggle: () => calls.push(`play ${name}`) };
+}
+
+function mountRoutine(data: Record<string, unknown>, state: unknown = undefined) {
+  const settings = { toolStack: { panels: {}, collapsed: {} } };
+  const preferences = { getSnapshot: () => settings, subscribe: () => () => {}, update() {} };
+  const props = (extra: Record<string, unknown>) => ({ source: { id: 'one' }, file: { path: '/models/one.harness', name: 'one.harness', kind: 'file' },
+    document: null, onReady() {}, onOpenFile() {}, appearance: { colorScheme: 'light' }, state,
+    onStateChange() {}, onNavigationActionsChange() {}, reload() {}, data: { services: { preferences }, ...extra } });
+  const view = render(<ViewerHostContext.Provider value={testHost()}><HarnessRenderer {...(props(data) as any)} /></ViewerHostContext.Provider>);
+  return (extra: Record<string, unknown>) => view.rerender(
+    <ViewerHostContext.Provider value={testHost()}><HarnessRenderer {...(props(extra) as any)} /></ViewerHostContext.Provider>);
+}
+
+it('opening another file while Preview is up leaves it; crossing touches neither the tools view\'s routine nor Preview\'s', async () => {
+  const calls: string[] = [];
+  const rerender = mountRoutine({ animation: routineRuntime('tools-a', calls), previewAnimation: routineRuntime('preview-a', calls), modelKey: 'a.glb' });
+  fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+  await screen.findByRole('button', { name: 'Exit preview' });
+  // With Autoplay off, entering plays nothing and puts nothing down.
+  expect(calls).toEqual([]);
+  rerender({ animation: routineRuntime('tools-b', calls), previewAnimation: routineRuntime('preview-b', calls), modelKey: 'b.glb' });
+  expect(screen.queryAllByRole('button', { name: 'Exit preview' })).toEqual([]);
+  expect([calls, viewport.preview]).toEqual([[], null]);
+});
+
+it("Preview opens at rest, even for a file whose old view said Autoplay: nothing plays but the person", async () => {
+  const calls: string[] = [];
+  mountRoutine({ animation: routineRuntime('tools', calls), previewAnimation: routineRuntime('preview', calls) },
+    { version: 2, playback: { orbitSpeed: 1, autoplay: true } });
+  fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+  await screen.findByRole('button', { name: 'Exit preview' });
+  fireEvent.click(screen.getByRole('button', { name: 'Exit preview' }));
+  expect(calls).toEqual([]);
+});
+
+it('a view that stops offering Preview while it is up leaves it as every exit does: its view goes, and nothing else', async () => {
+  const calls: string[] = [];
+  const tools = routineRuntime('tools', calls), preview = routineRuntime('preview', calls);
+  const rerender = mountRoutine({ animation: tools, previewAnimation: preview });
+  fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+  await screen.findByRole('button', { name: 'Exit preview' });
+  rerender({ animation: tools, previewAnimation: preview, previewable: false });
+  expect([calls, viewport.preview, viewport.props.suspended]).toEqual([[], null, false]);
+  expect(screen.queryAllByRole('button', { name: 'Exit preview' })).toEqual([]);
+});
+
+it.each([['a GPU', false, 1], ['a software renderer', true, 0]])('on %s, Preview is prepared ahead a moment after the model is on screen, or only as it is entered', (_name, software, prepared) => {
+  // A software renderer (SwiftShader, llvmpipe) compiles for seconds on the page's one thread:
+  // there Preview prepares as it is entered, under its cover, and nothing is asked of it before.
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    viewport.gpu = { software: software as boolean, prepared: 0 };
+    mount();
+    act(() => { vi.advanceTimersByTime(599); });
+    expect(viewport.gpu.prepared).toBe(0);
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(viewport.gpu.prepared).toBe(prepared);
+  } finally {
+    vi.useRealTimers();
+    viewport.gpu = null;
+  }
+});
+
+
+it('text-only Quick Edit captures the current view at Copy without any annotations', async () => {
+  const promptFiles = { create: vi.fn(async (_request: any) => ({ inline: '{"jobs":[]}' })), read: vi.fn() };
+  let copied = '';
+  const { canvas } = mount(testHost({ promptFiles, clipboard: {
+    writeText: async text => { copied = await text; }, readText: async () => '', writeImage: async () => {} } }));
+  pick(canvas);
+  const note = screen.getByRole('textbox', { name: 'Describe your changes' });
+  note.textContent = 'Keep this view.';
+  fireEvent.input(note);
+  // The harness's synthetic press reference is not a CAD selector. Clear it while the note stays.
+  secondaryTap(canvas, 300, 200);
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Clear the note' }));
+  expect(promptFiles.create).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Copy Prompt' }));
+  await waitFor(() => expect(copied).toContain('Snapshot JSON (cad model snapshot --annotation):'));
+  expect(promptFiles.create.mock.calls[0][0]).toMatchObject({ annotation: null,
+    views: [{ label: 'current view', camera: { position: [0, -100, 0] } }] });
+});

@@ -1,14 +1,18 @@
 // /llms.txt: the homepage for an agent, as markdown (https://llmstxt.org). It says what the page
-// says, from the same copy (src/lib/content.ts), so the two never drift apart.
+// says, from the same copy (src/lib/content.ts), so the two never drift apart, then lists the
+// documentation's pages, each at its Markdown address (/docs/<page>.md).
 import {
-  agentInstallByline,
-  agentInstallMessage,
-  installs,
+  community,
+  contributing,
+  features,
+  featuresIntro,
+  installCommands,
+  installSummary,
+  manualInstallPage,
+  manualInstall,
   pluginDescription,
-  skillGroups,
-  support,
-  telemetryNote,
 } from "@/lib/content";
+import { navigation } from "@/lib/docs/source";
 import { absoluteUrl, siteConfig } from "@/lib/site";
 
 export const dynamic = "force-static";
@@ -21,39 +25,41 @@ export function GET() {
     "",
     `> ${pluginDescription}`,
     "",
-    `${support.before} [${support.link.text}](${support.link.href}) ${support.after}`,
-    "",
     "## Install",
     "",
-    agentInstallByline,
+    ...installCommands.flatMap(({ system, language, command }) => [`${system}:`, "", "```" + language, command, "```", ""]),
+    installSummary,
     "",
-    "```text",
-    agentInstallMessage,
-    "```",
+    `${manualInstall.label}: ${absoluteUrl(`${manualInstallPage}.md`)}`,
     "",
-    `${telemetryNote} See the [privacy policy](${absoluteUrl("/privacy-policy")}).`,
+    "## Features",
     "",
-    ...installs.flatMap((item) => [
-      `### ${item.agent}`,
+    featuresIntro,
+    "",
+    ...features.map((feature) => `- [${feature.name}](${onGitHub(feature.path)}): ${feature.summary.replace(/\]\((skills\/[^)]+)\)/g, (_, path) => `](${onGitHub(path)})`)}`),
+    "",
+    // The documentation: every page, as Markdown (`/docs/<page>.md`).
+    ...navigation().flatMap((section) => [
+      `## Docs: ${section.title}`,
       "",
-      ...(item.note ? [item.note, ""] : []),
-      ...(item.listing ? [`${item.listing.label}: ${item.listing.href}`, "", "Or install it by hand:", ""] : []),
-      "```bash",
-      item.command,
-      "```",
+      ...section.pages.map((page) => `- [${page.label}](${absoluteUrl(`${page.href}.md`)})`),
       "",
-      ...(item.update
-        ? ["Update, then restart the app:", "", "```bash", item.update, "```", ""]
-        : ["Run the install command again to update or reinstall, then restart the app.", ""]),
-      ...(item.remove
-        ? ["Reinstall: remove it, then install it again:", "", "```bash", item.remove, "```", ""]
-        : []),
     ]),
-    `The README has each install's full notes: ${siteConfig.repository}#readme`,
+    "## Community",
     "",
-    "## Skills",
+    community.intro,
     "",
-    ...skillGroups.map((skill) => `- [${skill.name}](${onGitHub(`${skill.path}/SKILL.md`)}): ${skill.summary}`),
+    ...community.items.map(({ title, body, links }) =>
+      `- **${title}**: ${body} ${links.map(({ text, href }) => `[${text}](${href})`).join(" ")}`
+    ),
+    "",
+    "## Contributing",
+    "",
+    contributing.intro,
+    "",
+    ...contributing.items.map(({ title, body, links }) =>
+      `- **${title}**: ${body} ${links.map(({ text, href }) => `[${text}](${href})`).join(" ")}`
+    ),
     "",
     "## Optional",
     "",

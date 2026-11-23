@@ -347,14 +347,18 @@ export function createStudioContactShadow(THREE, keyLight, {
   const schedule = createHeightSchedule({ interval: heightInterval, requestFrame, now, setTimer, clearTimer });
   const state = {
     heightsStale: true, compositeStale: true, heightsReady: false, heightsFloorDepth: 0,
-    enabled: true, opacity: 1, rect: null, floorDepth: 0, placement: ""
+    enabled: true, opacity: 1, rect: null, floorDepth: 0, placement: "", holdHeights: false
   };
   const markStale = () => {
     state.heightsStale = true;
     state.compositeStale = true;
   };
   sentinel.onBeforeShadow = (renderer, object3d, camera, shadowCamera) => {
-    if (shadowCamera !== light.shadow.camera) markStale();
+    if (shadowCamera === light.shadow.camera) return;
+    // A pass for a key that only moved (a still frame's sample of its softbox) changed no
+    // caster: the heights stand, and only the composite of the key's new shadow is due.
+    if (state.holdHeights) state.compositeStale = true;
+    else markStale();
   };
 
   function renderHeights(shadowMap, scene, camera) {
@@ -490,6 +494,13 @@ export function createStudioContactShadow(THREE, keyLight, {
     setEnabled(enabled) {
       state.enabled = enabled;
       showLayer();
+    },
+    /**
+     * While held, a shadow pass of the key marks only the composite stale, not the heights:
+     * the studio holds them for a pass that moved the key and no caster.
+     */
+    holdHeights(hold) {
+      state.holdHeights = hold === true;
     },
     /** The dither's spread: a snapshot's render scale (`syncDitherScale`). */
     setDitherScale(scale) {

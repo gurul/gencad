@@ -1,4 +1,4 @@
-import { createCadClient } from "@text-to-cad/core/client";
+import { createCadClient } from "@cad/core/client";
 
 /**
  * The web viewer's connection to the server it was loaded from. Its catalog is read every two
@@ -8,5 +8,7 @@ import { createCadClient } from "@text-to-cad/core/client";
  * The CAD app polls nothing; this is the web's alone.
  */
 export function createWebCadClient({ document: page = globalThis.document, ...options } = {}) {
+  // The page is the engine's one page, at its origin: every request goes to the server's root,
+  // whichever document's path (`/<id>`) the page is at.
   return createCadClient({ origin: "", ...options, shouldPoll: () => page.visibilityState !== "hidden" });
 }

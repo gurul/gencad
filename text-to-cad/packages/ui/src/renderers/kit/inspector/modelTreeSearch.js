@@ -1,5 +1,7 @@
 import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { fuzzyMatch } from '../../../file-viewer/navigation/fuzzy.js';
+import { useControlUsage } from '../../../usage/controls.js';
+import { useFlatPanel, useFlatPanelMatches } from '../shell/FlatPanel.jsx';
 
 /** The scroller a tree sits in (its tool-stack panel's body): a search keeps its place in it. */
 const panelScroller = element => element?.closest('[data-tool-panel-body]') ?? element;
@@ -24,20 +26,19 @@ const panelScroller = element => element?.closest('[data-tool-panel-body]') ?? e
  * @property {string} prefix Ancestor labels joined by `/`, with a trailing `/`; shared between siblings.
  * @property {string} lowerLabel
  * @property {string} lowerPrefix
- * @property {string} reference Lower-case id the node is selected by (`node.selectionId`, e.g. `o1.2`), when it has one.
+ * @property {string} reference Lower-case id the node is selected by (`node.selectionId`: a document's part instance `i3` or assembly `n0.2`, a mesh file's `o2.1`), when it has one.
  * @property {string[]} aliases Other names the row answers to (`node.searchAliases`).
  */
 
 const segment = label => String(label || '').replaceAll('/', '∕');
 const NO_ALIASES = Object.freeze([]);
 
-/** Flatten the presented tree once per tree; curves are never rows. */
+/** Flatten the presented tree once per tree. */
 export function buildModelTreeSearchIndex(tree) {
   /** @type {ModelTreeSearchEntry[]} */
   const entries = [];
   const visit = (nodes, parent, prefix) => {
     for (const node of nodes || []) {
-      if (node.kind === 'curve') continue;
       const label = String(node.label || '');
       const at = entries.push({
         node, parent, label, prefix,
@@ -92,7 +93,7 @@ export function searchModelTree(index, query, limit = 200) {
   const scored = [];
   for (let at = 0; at < index.length; at += 1) {
     const entry = index[at];
-    // A pasted reference (`#o1.2`) names one row; nothing outranks it.
+    // A pasted selection id (`#i3`, `#n0.2`, a mesh file's `#o2.1`; never an engine ref) names one row; nothing outranks it.
     if (entry.reference === lower) { scored.push({ at, entry, indices: [], score: 1000 }); continue; }
     // The whole query against the name first, as the file filter reads a
     // filename: `m3scr` finds `M3 Screw`. Names are short, so a subsequence
@@ -122,38 +123,64 @@ const NO_MATCHES = Object.freeze({ matches: Object.freeze([]), total: 0 });
  * A tree's filter box, as one hook for every file tree that has one: the query, the ranked
  * hits over `roots` (indexed only while there is a query, and searched at deferred
  * priority), the keyboard cursor over them, and the scroll position the tree had when the
- * search began, put back when it ends.
+ * search began, put back when it ends. Escape clears the query.
  *
  * The tree renders the hits into `listRef`'s element; each hit row carries
  * `data-search-row={node.id}`, and Enter presses that row's `button[aria-pressed]`.
  *
  * @param {object[]} roots The presented tree's top-level nodes.
  */
-export function useTreeSearch(roots) {
-  const [query, setQuery] = useState(''), [cursor, setCursor] = useState(null);
+export function useTreeSearch(roots, external = null) {
+  // `external`: a query typed elsewhere (a flat view's panel's search box, `FlatPanel.jsx`), read, never written.
+  const [ownQuery, setOwnQuery] = useState(''), [cursor, setCursor] = useState(null);
+  const query = external ? external.query : ownQuery;
+  const setQuery = external ? () => {} : setOwnQuery;
   const searching = query.trim() !== '', deferredQuery = useDeferredValue(query);
   const index = useMemo(() => (searching ? buildModelTreeSearchIndex(roots) : null), [searching, roots]);
   const found = useMemo(() => (index ? searchModelTree(index, deferredQuery) : NO_MATCHES), [index, deferredQuery]);
   const listRef = useRef(null), resumeScroll = useRef(0);
+  const controls = useControlUsage();
   const changeQuery = value => {
+    // A search begun is a use (`usage/controls.js`); never what it looks for.
+    if (!searching && value.trim()) controls.used('tree_filter');
     if (!searching && value.trim() && listRef.current) resumeScroll.current = panelScroller(listRef.current).scrollTop;
     setQuery(value); setCursor(null);
   };
   // Back where the tree was; a hit selected meanwhile is then scrolled to by the tree's own reveal.
-  useLayoutEffect(() => { if (!searching && listRef.current) panelScroller(listRef.current).scrollTop = resumeScroll.current; }, [searching]);
-  const cursorId = found.matches.some(match => match.entry.node.id === cursor) ? cursor : found.matches[0]?.entry.node.id ?? null;
+  useLayoutEffect(() => { if (!external && !searching && listRef.current) panelScroller(listRef.current).scrollTop = resumeScroll.current; }, [searching]);
+  // A query typed elsewhere starts its cursor on the first match, as one typed here does.
+  useEffect(() => { if (external) setCursor(null); }, [external?.query]);
+  // A query typed in the view's panel: how many it finds here, said on this tab's name there.
+  useFlatPanelMatches(external ? (searching ? found.total : null) : undefined);
+  // The cursor is drawn only where the search box's keys are: in the panel's results across several tabs, one list's
+  // at a time (`FlatPanel.jsx`'s `keyed`).
+  const keyed = useFlatPanel()?.keyed !== false;
+  const cursorId = !keyed ? null : found.matches.some(match => match.entry.node.id === cursor) ? cursor : found.matches[0]?.entry.node.id ?? null;
   useEffect(() => { if (cursorId) listRef.current?.querySelector(`[data-search-row="${CSS.escape(cursorId)}"]`)?.scrollIntoView?.({ block: 'nearest' }); }, [cursorId]);
+  // The search box's keys: the arrows walk the hits, Enter picks the one under the cursor. An arrow that would leave
+  // the list (past its last hit, before its first) moves nothing and answers false, so the panel can hand the keys to
+  // the next list; `Home` and `End` (the panel's, as it hands them over) put the cursor on the first or the last hit.
   const onKeyDown = event => {
-    if (event.key === 'Escape' && query) { event.preventDefault(); event.stopPropagation(); changeQuery(''); return; }
-    if (!found.matches.length) return;
+    if (event.key === 'Escape' && query) { event.preventDefault(); event.stopPropagation(); changeQuery(''); return true; }
+    if (!found.matches.length) return false;
     const at = found.matches.findIndex(match => match.entry.node.id === cursorId);
+    if (event.key === 'Home' || event.key === 'End') {
+      setCursor(found.matches[event.key === 'Home' ? 0 : found.matches.length - 1].entry.node.id);
+      return true;
+    }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
-      setCursor(found.matches[Math.min(Math.max(at + (event.key === 'ArrowDown' ? 1 : -1), 0), found.matches.length - 1)].entry.node.id);
-    } else if (event.key === 'Enter' && at >= 0) {
+      const next = at + (event.key === 'ArrowDown' ? 1 : -1);
+      if (next < 0 || next >= found.matches.length) return false;
+      setCursor(found.matches[next].entry.node.id);
+      return true;
+    }
+    if (event.key === 'Enter' && at >= 0) {
       event.preventDefault();
       listRef.current?.querySelector(`[data-search-row="${CSS.escape(cursorId)}"] button[aria-pressed]:not(:disabled)`)?.click();
+      return true;
     }
+    return false;
   };
   return { query, searching, deferredQuery, index, found, cursorId, listRef, changeQuery, onKeyDown };
 }

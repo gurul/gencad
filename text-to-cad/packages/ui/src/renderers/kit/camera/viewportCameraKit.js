@@ -1,8 +1,13 @@
-// Shared, renderer-agnostic viewport/camera helpers used by the CAD viewer
+// Shared, renderer-agnostic viewport/camera helpers used by the viewer
 // (the kit viewport). They operate on a generic `runtime` shape that exposes at least
 // `{ THREE, camera, controls, keyboardOrbitState }`; they make no assumption
 // about how the scene itself is rendered.
 
+import { turnCamera } from "./turntable.js";
+
+// The world's vertical: what the turntable turns about (`turntable.js`), and the up of every
+// upright view. A camera's own up (`camera.up`) is its screen's, which an upside-down view has
+// pointing down it.
 export const WORLD_UP = Object.freeze([0, 0, 1]);
 // The two viewing modes, as the camera sees them: Inspect's CAD frustum and
 // Render's photographic lens. Each frames the model itself (see reframeReason).
@@ -14,37 +19,24 @@ export const KEYBOARD_ORBIT_NUDGE_RAD = Math.PI / 32;
 // Dragging the view cube: about half a turn across the cube's width.
 export const VIEW_CUBE_DRAG_RAD_PER_PX = Math.PI / 120;
 export const KEYBOARD_ORBIT_SPEED_RAD_PER_SEC = Math.PI * 0.42;
-export const KEYBOARD_POLAR_EPSILON = 0.02;
 export const VIEW_PLANE_ACTIVE_DOT_THRESHOLD = 0.994;
 export const VIEW_PLANE_TRANSITION_MS = 280;
+// A view this near the world's vertical (the cosine) is a pole view: straight down or up it.
 export const VIEW_PLANE_POLE_DIRECTION_DOT_THRESHOLD = 0.9999;
-// How far off the pole a top/bottom view sits. The camera's `up` is ALWAYS world up, so the
-// orbit axis never changes; that makes looking straight down it degenerate, because `lookAt`
-// cannot build a basis when up is parallel to the view direction. This is the offset that
-// keeps the basis well defined.
-//
-// It is bounded on both sides. Below ~1e-6 it meets Spherical.makeSafe()'s own EPS, which
-// OrbitControls applies on every update, and the azimuth stops being well defined. Above about
-// 1e-3 it becomes visible: an orthographic top view projects parallel, so vertical faces that
-// should collapse to nothing acquire width. At 1e-4 the error is 0.0057 degrees, a tenth of a
-// pixel across a 1000px viewport, while sitting 100x clear of makeSafe.
-//
-// It was 0.02 (1.146 degrees, 20px across that viewport), which is what made a "top" view
-// visibly not top-down.
-export const VIEW_PLANE_POLE_DIRECTION_NUDGE = 1e-4;
 export const DEFAULT_VIEW_DIRECTION = Object.freeze([2.1, -1.65, 1.08]);
 export const DEFAULT_VIEW_PLANE_ORIENTATION = Object.freeze({
   x: [1, 0, 0],
   y: [0, 1, 0],
   z: [0, 0, 1]
 });
+// Each view's `title` is its English name; `viewPlaneTitle` says it in the view's language, from its `sides`.
 export const VIEW_PLANE_FACES = [
-  { id: "z", label: "Z", title: "Jump to top view", direction: [0, 0, 1], up: [0, 1, 0] },
-  { id: "zNeg", label: "-Z", title: "Jump to bottom view", direction: [0, 0, -1], up: [0, 1, 0] },
-  { id: "yNeg", label: "-Y", title: "Jump to front view", direction: [0, -1, 0], up: WORLD_UP },
-  { id: "y", label: "Y", title: "Jump to back view", direction: [0, 1, 0], up: WORLD_UP },
-  { id: "x", label: "X", title: "Jump to right view", direction: [1, 0, 0], up: WORLD_UP },
-  { id: "xNeg", label: "-X", title: "Jump to left view", direction: [-1, 0, 0], up: WORLD_UP }
+  { id: "z", label: "Z", title: "Jump to top view", sides: ["top"], direction: [0, 0, 1], up: [0, 1, 0] },
+  { id: "zNeg", label: "-Z", title: "Jump to bottom view", sides: ["bottom"], direction: [0, 0, -1], up: [0, 1, 0] },
+  { id: "yNeg", label: "-Y", title: "Jump to front view", sides: ["front"], direction: [0, -1, 0], up: WORLD_UP },
+  { id: "y", label: "Y", title: "Jump to back view", sides: ["back"], direction: [0, 1, 0], up: WORLD_UP },
+  { id: "x", label: "X", title: "Jump to right view", sides: ["right"], direction: [1, 0, 0], up: WORLD_UP },
+  { id: "xNeg", label: "-X", title: "Jump to left view", sides: ["left"], direction: [-1, 0, 0], up: WORLD_UP }
 ];
 // The view cube's corners: each looks at the model along a cube diagonal, a true isometric
 // view from that corner. Ids read x, y, z signs: "iso+-+" is right, front, top.
@@ -55,6 +47,7 @@ export const VIEW_CUBE_CORNERS = [-1, 1].flatMap((sz) => [-1, 1].flatMap((sy) =>
   return Object.freeze({
     id: `iso${sign(sx)}${sign(sy)}${sign(sz)}`,
     title: `Jump to ${name("y", sy)} ${name("x", sx)} ${name("z", sz)} isometric view`,
+    sides: [name("y", sy), name("x", sx), name("z", sz)],
     direction: [sx, sy, sz],
     up: WORLD_UP
   });
@@ -67,8 +60,21 @@ export const VIEW_CUBE_EDGES = [0, 1, 2].flatMap((along) => [-1, 1].flatMap((a) 
   direction[other[1]] = b;
   const names = other.map((axis) => CUBE_SIDE_NAMES[["x", "y", "z"][axis]][direction[axis] > 0 ? 1 : 0]);
   return Object.freeze({ id: `edge${direction.map((value) => value > 0 ? "+" : value < 0 ? "-" : "0").join("")}`,
-    title: `Jump to ${names.join(" ")} edge view`, direction, along, up: WORLD_UP });
+    title: `Jump to ${names.join(" ")} edge view`, sides: names, direction, along, up: WORLD_UP });
 })));
+/**
+ * A view's name for its button, in `t`'s language: a face's ("Jump to top view"), an edge's or a
+ * corner's, each from its sides' names.
+ * @param {{ title: string, sides?: readonly string[] }} view
+ * @param {(key: string, params?: Record<string, unknown>) => string} t
+ */
+export function viewPlaneTitle(view, t) {
+  const sides = (view.sides || []).map((side) => t(`viewCube.side.${side}`));
+  if (sides.length === 1) return t(`viewCube.view.${view.sides[0]}`);
+  if (sides.length === 2) return t("viewCube.edgeView", { a: sides[0], b: sides[1] });
+  if (sides.length === 3) return t("viewCube.cornerView", { a: sides[0], b: sides[1], c: sides[2] });
+  return view.title;
+}
 export const VIEW_PLANE_FACE_BY_ID = Object.fromEntries(
   [...VIEW_PLANE_FACES, ...VIEW_CUBE_EDGES, ...VIEW_CUBE_CORNERS].map((face) => [face.id, face])
 );
@@ -81,17 +87,6 @@ export function finiteNumber(value, fallback = 0) {
   return Number.isFinite(numeric) ? numeric : fallback;
 }
 
-export function normalizeAngleAround(angle, center) {
-  let adjusted = angle;
-  while (adjusted - center > Math.PI) {
-    adjusted -= Math.PI * 2;
-  }
-  while (adjusted - center < -Math.PI) {
-    adjusted += Math.PI * 2;
-  }
-  return adjusted;
-}
-
 export function easeInOutCubic(t) {
   if (t <= 0) {
     return 0;
@@ -102,15 +97,30 @@ export function easeInOutCubic(t) {
   return t < 0.5 ? 4 * t * t * t : 1 - ((-2 * t + 2) ** 3) / 2;
 }
 
-// OrbitControls r161+ multiplies a ctrl+wheel deltaY by this before we ever see the effect
-// of zoomSpeed, because browsers report a trackpad pinch as a small ctrl+wheel. Callers divide
-// their pinch speed by it so the boost is applied once, not twice. Kept beside the predicate
-// that identifies those events so the two cannot drift apart.
+// OrbitControls r161+ multiplies a pinch's deltaY by this before we ever see the effect of
+// zoomSpeed, because browsers report a trackpad pinch as a small ctrl+wheel. Callers divide their
+// pinch speed by it so the boost is applied once, not twice -- for exactly the events it boosts
+// (`orbitControlsBoostsPinch`). Kept beside the predicates that identify those events so the
+// three cannot drift apart.
 export const WHEEL_PINCH_DELTA_BOOST = 10;
 
 /** A trackpad PINCH: every browser spells it ctrl+wheel, whatever the pointer type. */
 export function isPinchWheelEvent(event) {
   return Boolean(event?.ctrlKey);
+}
+
+/**
+ * Whether OrbitControls boosts this wheel event as a pinch (`WHEEL_PINCH_DELTA_BOOST`): a
+ * ctrl+wheel while, by its own record of the key (`_controlActive`, kept from Control's keydown
+ * and keyup on the canvas's root), Control is not held. A pinch's zoom speed divides that boost
+ * out, so the two must decide it alike. Its record goes stale when Control's keyup never reaches
+ * the page -- the key let go in another Space or Mission Control, or outside the CAD app's frame
+ * -- and it then boosts no ctrl+wheel at all: a pinch divided by the boost anyway zoomed a tenth
+ * as fast, until the controls were rebuilt. Read as it reads it, such a ctrl+wheel is a
+ * trackpad-like scroll to both, which zooms at the pinch's rate.
+ */
+export function orbitControlsBoostsPinch(event, controls) {
+  return isPinchWheelEvent(event) && controls?._controlActive !== true;
 }
 
 /**
@@ -160,7 +170,7 @@ export function viewportFitScale({
 // A source fallback must also be authored bounds. Live modelBounds are never
 // a safe fallback: before adoption they may still describe another pose.
 export function runtimeFramingBounds(runtime, fallbackBounds = null) {
-  return runtime?.zeroPoseBounds || fallbackBounds || runtime?.cadScene?.restBounds || null;
+  return runtime?.zeroPoseBounds || fallbackBounds || null;
 }
 
 // When the camera fits, and why. A model is framed ONCE per viewing mode, on
@@ -180,11 +190,13 @@ export function runtimeFramingBounds(runtime, fallbackBounds = null) {
 //   once it can grow no more. A package that declares its box is complete from
 //   its first publish and is never framed twice.
 //
-// An UPDATE is none of these. A rebuild of the open file -- a saved revision, a
-// detail swap, another publish of the same geometry -- keeps the camera exactly,
-// its pose and its zoom, even when the model grew or shrank: only the person's
-// Zoom to fit frames it again. Neither is a joint, a group state, a mate or an
-// animation frame, which never move the zero pose at all.
+// An UPDATE is none of these. A rebuild of the open file -- a saved revision,
+// another publish of the same geometry -- is not a reframe: a camera the person
+// took keeps exactly its pose and its zoom, even when the model grew or shrank,
+// until their own fit. The one rebuild that fits again is decided apart from
+// this (`cameraTouch.js`'s `rebuildRefits`): a camera still untouched since the
+// last fit, and a box that changed. Neither is a joint, a group state, a mate or
+// an animation frame, which never move the zero pose at all.
 //
 // "complete" stands down once the user has taken the view: their camera is a
 // deliberate choice about this model, and an automatic fit would throw it away. A
@@ -234,20 +246,6 @@ export function getKeyboardOrbitCommand(event) {
   if (event.key === "ArrowDown") {
     return { direction: "down", keyId: "ArrowDown" };
   }
-
-  const key = String(event.key || "").toLowerCase();
-  if (key === "a" || event.code === "KeyA") {
-    return { direction: "left", keyId: event.code || "KeyA" };
-  }
-  if (key === "d" || event.code === "KeyD") {
-    return { direction: "right", keyId: event.code || "KeyD" };
-  }
-  if (key === "w" || event.code === "KeyW") {
-    return { direction: "up", keyId: event.code || "KeyW" };
-  }
-  if (key === "s" || event.code === "KeyS") {
-    return { direction: "down", keyId: event.code || "KeyS" };
-  }
   return null;
 }
 
@@ -272,9 +270,18 @@ export function clearKeyboardOrbitState(keyboardOrbitState) {
   keyboardOrbitState.directionCounts.up = 0;
   keyboardOrbitState.directionCounts.down = 0;
   keyboardOrbitState.lastFrameTime = 0;
+  keyboardOrbitState.sense = 1;
 }
 
-export function applyOrbitDelta(runtime, azimuthDelta, polarDelta) {
+/**
+ * The arrow keys' and the view cube's orbit: the turntable's turn (`turntable.js`'s `turnCamera`),
+ * as a drag on the model makes it. `azimuthDelta` turns about the world's vertical, positive taking
+ * the eye toward the screen's right while the view is upright, times `sense`, the gesture's sideways
+ * sense, held from its start (`turnSense`: -1 for one begun upside down, so its right is the screen's
+ * right still). `polarDelta` turns about the camera's own level right, positive taking the eye toward
+ * the screen's bottom, and goes on over the poles.
+ */
+export function applyOrbitDelta(runtime, azimuthDelta, polarDelta, sense = 1) {
   if (!runtime?.THREE || !runtime?.camera || !runtime?.controls) {
     return false;
   }
@@ -287,46 +294,9 @@ export function applyOrbitDelta(runtime, azimuthDelta, polarDelta) {
   if (Math.abs(azimuthDelta) < 1e-6 && Math.abs(polarDelta) < 1e-6) {
     return false;
   }
-
-  const offset = new runtime.THREE.Vector3().copy(runtime.camera.position).sub(runtime.controls.target);
-  const distance = offset.length();
-  if (!Number.isFinite(distance) || distance <= 1e-6) {
+  if (!turnCamera(runtime.camera, runtime.controls.target, (sense < 0 ? -1 : 1) * azimuthDelta, polarDelta)) {
     return false;
   }
-  const worldUp = new runtime.THREE.Vector3(...WORLD_UP).normalize();
-  const direction = offset.clone().divideScalar(distance);
-  const minPolar = Math.max(
-    Number.isFinite(runtime.controls.minPolarAngle) ? runtime.controls.minPolarAngle : 0,
-    KEYBOARD_POLAR_EPSILON
-  );
-  const maxPolar = Math.min(
-    Number.isFinite(runtime.controls.maxPolarAngle) ? runtime.controls.maxPolarAngle : Math.PI,
-    Math.PI - KEYBOARD_POLAR_EPSILON
-  );
-  const currentPolar = Math.acos(clamp(direction.dot(worldUp), -1, 1));
-  const requestedPolar = clamp(currentPolar + polarDelta, minPolar, maxPolar);
-  const resolvedPolarDelta = requestedPolar - currentPolar;
-
-  const minAzimuth = Number.isFinite(runtime.controls.minAzimuthAngle) ? runtime.controls.minAzimuthAngle : -Infinity;
-  const maxAzimuth = Number.isFinite(runtime.controls.maxAzimuthAngle) ? runtime.controls.maxAzimuthAngle : Infinity;
-  if (Number.isFinite(minAzimuth) || Number.isFinite(maxAzimuth)) {
-    const currentAzimuth = Math.atan2(offset.y, offset.x);
-    const nextAzimuth = clamp(normalizeAngleAround(currentAzimuth + azimuthDelta, currentAzimuth), minAzimuth, maxAzimuth);
-    azimuthDelta = nextAzimuth - currentAzimuth;
-  }
-
-  if (Math.abs(azimuthDelta) > 1e-6) {
-    offset.applyAxisAngle(worldUp, azimuthDelta);
-  }
-  if (Math.abs(resolvedPolarDelta) > 1e-6) {
-    let orbitRight = new runtime.THREE.Vector3().crossVectors(worldUp, offset).normalize();
-    if (orbitRight.lengthSq() <= 1e-9) {
-      orbitRight = new runtime.THREE.Vector3(1, 0, 0);
-    }
-    offset.applyAxisAngle(orbitRight, resolvedPolarDelta);
-  }
-  runtime.camera.position.copy(runtime.controls.target).add(offset);
-  runtime.camera.up.set(...WORLD_UP);
   runtime.camera.lookAt(runtime.controls.target);
   return true;
 }
@@ -352,17 +322,20 @@ export function stepKeyboardOrbit(runtime, timestamp) {
   return applyOrbitDelta(
     runtime,
     axes.azimuth * KEYBOARD_ORBIT_SPEED_RAD_PER_SEC * deltaSeconds,
-    axes.polar * KEYBOARD_ORBIT_SPEED_RAD_PER_SEC * deltaSeconds
+    axes.polar * KEYBOARD_ORBIT_SPEED_RAD_PER_SEC * deltaSeconds,
+    keyboardOrbitState.sense
   );
 }
 
 /**
- * The camera basis for a view-plane preset: where to sit, and which way is up.
+ * The camera basis for a view-plane preset: where to sit, and which way is up. Every view lands
+ * upright.
  *
- * Returns `{ direction, up }` as plain arrays. `up` is ALWAYS world up, so OrbitControls
- * orbits about the same axis from every view; a preset that declares another up (the poles
- * declare [0,1,0]) contributes only the screen orientation, by choosing which way the pole
- * offset leans. Lived in the monolithic viewer, where the invariant could not be tested.
+ * Returns `{ direction, up }` as plain arrays. Off the poles `up` is the world's. A pole view
+ * (straight down or up the world's vertical, where the world's up gives `lookAt` no direction)
+ * looks exactly along it, its up the preset's declared one square to the view: the poles declare
+ * [0,1,0], so +Y runs up the screen, as it always has. The orbit does not need the world's up as
+ * the camera's: the turntable turns about the world's vertical whatever the camera's up is.
  */
 export function viewPlaneCameraBasis(preset, worldUp = WORLD_UP) {
   const dir = normalizeVector3(preset?.direction);
@@ -375,9 +348,6 @@ export function viewPlaneCameraBasis(preset, worldUp = WORLD_UP) {
   if (Math.abs(alignment) < VIEW_PLANE_POLE_DIRECTION_DOT_THRESHOLD) {
     return { direction: dir, up: axis };
   }
-  // A pole view. Lean off the axis toward the preset's declared up, projected into the plane
-  // perpendicular to the orbit axis, so the resulting screen-up is the one the preset asked
-  // for rather than whatever lookAt's own degenerate fallback would pick.
   let screenUp = subtractScaled3(declaredUp, axis, dot3(declaredUp, axis));
   if (lengthSq3(screenUp) < 1e-12) {
     screenUp = subtractScaled3([0, 1, 0], axis, axis[1]);
@@ -385,12 +355,7 @@ export function viewPlaneCameraBasis(preset, worldUp = WORLD_UP) {
   if (lengthSq3(screenUp) < 1e-12) {
     screenUp = [1, 0, 0];
   }
-  screenUp = normalizeVector3(screenUp);
-  const poleSign = alignment >= 0 ? 1 : -1;
-  const leaned = normalizeVector3(
-    subtractScaled3(dir, screenUp, poleSign * VIEW_PLANE_POLE_DIRECTION_NUDGE)
-  );
-  return { direction: leaned, up: axis };
+  return { direction: dir, up: normalizeVector3(screenUp) };
 }
 
 function normalizeVector3(value) {

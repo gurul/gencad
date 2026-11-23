@@ -6,10 +6,10 @@ import { THUMBNAIL_SIZE, useModelThumbnail } from './thumbnails.js';
 afterEach(cleanup);
 
 /** A mounted view showing `path`, whose picture comes when the test settles it. */
-function view(path: string) {
+function view(path: string, kind = 'workspace-file') {
   let settle!: (png: Blob) => void;
   return {
-    readState: () => ({ active: true, loading: false, resource: { kind: 'workspace-file', path } }),
+    readState: () => ({ active: true, loading: false, resource: { kind, path } }),
     capture: async () => new Blob(['screen']),
     thumbnail: vi.fn(() => new Promise<Blob>(resolve => { settle = resolve; })),
     settle: (png: Blob) => settle(png),
@@ -47,4 +47,15 @@ test('a model rebuilt while it is open is pictured again once its new revision s
   expect(a.thumbnail).toHaveBeenCalledTimes(2);
   await act(async () => a.settle(new Blob(['r2'])));
   expect(save).toHaveBeenCalledTimes(2);
+});
+
+test('a model\'s document on screen is pictured by its id', async () => {
+  const id = '6f1c2a4e-1b2c-5d3e-8f4a-0123456789ab';
+  const live = createLiveRegistry();
+  const save = vi.fn(async () => {});
+  renderHook(() => useModelThumbnail(live, id, 'model:1', save));
+  const shown = view(id, 'cad-model');
+  act(() => { live.binding.bind(shown); });
+  await act(async () => shown.settle(new Blob(['m'])));
+  expect(save).toHaveBeenCalledWith(expect.any(Blob), id);
 });

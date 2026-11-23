@@ -1,4 +1,6 @@
-import { buildCadRefToken, parseCadRefSelector } from '../lib/cadRefs.js';
+import { buildBoardRefToken, isBoardRefPath, parseBoardRefSelector, parseBoardRefToken } from '../lib/boardRefs.js';
+import { buildSchematicRefToken, isSchematicRefPath, parseSchematicRefSelector, parseSchematicRefToken } from '../lib/schematicRefs.js';
+import { buildCadRefToken, isDocumentId, isEngineRefFile, isEngineSelector, isLabelSelector, parseCadRefToken } from '../lib/cadRefs.js';
 
 let operationSequence = 0;
 const operationNamespace = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
@@ -13,6 +15,9 @@ export function validatePromptReference(reference) {
     // A file is named by its absolute path, `/`-separated (`/a/b.step`, `C:/a/b.step`).
     requireValue(typeof resource.path === 'string' && /^(?:[A-Za-z]:)?\//.test(resource.path) && !/[\\\0]/.test(resource.path)
       && resource.path.replace(/^(?:[A-Za-z]:)?\//, '').split('/').every(part => part && part !== '.' && part !== '..'), 'file paths must be normalized and absolute');
+  } else if (resource.kind === 'cad-model') {
+    // A document the engine holds by its id alone (a model's): its id, never a path.
+    requireValue(isDocumentId(resource.path), 'model references name the document by its id');
   } else {
     requireValue(resource.kind === 'url' && typeof resource.url === 'string', 'unknown resource kind');
     let url; try { url = new URL(resource.url); } catch { /* Report the contract error below. */ }
@@ -21,14 +26,19 @@ export function validatePromptReference(reference) {
   requireValue(resource.revision === undefined || typeof resource.revision === 'string', 'revision must be a string');
   requireValue(reference.label === undefined || typeof reference.label === 'string', 'label must be text');
   if (target.kind === 'text-range') {
+    requireValue(resource.kind !== 'cad-model', 'a model has no text ranges');
     requireValue(position(target.start) && position(target.end), 'invalid text range');
     requireValue(target.end.line > target.start.line || (target.end.line === target.start.line && target.end.character >= target.start.character), 'range end precedes its start');
   } else if (target.kind === 'cad-selector') {
-    requireValue(resource.kind === 'workspace-file', 'CAD selectors require a workspace file');
-    requireValue(Array.isArray(target.selectors) && target.selectors.length > 0 && target.selectors.every(selector => {
-      const parsed = typeof selector === 'string' && selector === selector.trim() ? parseCadRefSelector(selector) : null;
-      return parsed && parsed.selectorType !== 'opaque';
-    }), 'invalid CAD selector');
+    requireValue(resource.kind === 'workspace-file' || resource.kind === 'cad-model', 'CAD selectors require a file or a model');
+    // A document the engine draws (an .xbf, a STEP, a model) is named in the engine's grammar; any
+    // other file by its renderer's labels (cadRefs.js).
+    // A KiCad board or schematic in its references' grammar (`boardRefs.js`, `schematicRefs.js`).
+    const valid = isBoardRefPath(resource.path) ? selector => typeof selector === "string" && selector === selector.trim() && Boolean(parseBoardRefSelector(selector))
+      : isSchematicRefPath(resource.path) ? selector => typeof selector === "string" && selector === selector.trim() && Boolean(parseSchematicRefSelector(selector))
+      : isEngineRefFile(resource.path) ? isEngineSelector : isLabelSelector;
+    requireValue(Array.isArray(target.selectors) && target.selectors.length > 0 && target.selectors.every(selector => valid(selector)),
+      'invalid CAD selector');
   } else requireValue(target.kind === 'whole-resource', 'unknown reference target');
   return reference;
 }
@@ -51,6 +61,8 @@ export function validatePromptContext(context) {
       requireValue(part.content && (typeof part.content.arrayBuffer === 'function' || typeof part.content.then === 'function'), 'attachment must provide binary content');
       requireValue(part.about === undefined || (Array.isArray(part.about) && part.about.every(id => typeof id === 'string')), 'attachment relationships must name reference parts');
       requireValue(part.label === undefined || typeof part.label === 'string', 'attachment label must be text');
+      requireValue(part.inlineText === undefined || typeof part.inlineText === 'string' || typeof part.inlineText?.then === 'function', 'inline attachment text must be text or its promise');
+      requireValue(part.path === undefined || typeof part.path === 'string' || typeof part.path?.then === 'function', 'attachment path must be a path or the promise of one');
     }
   }
   for (const part of context.parts) if (part.kind === 'attachment') {
@@ -59,7 +71,12 @@ export function validatePromptContext(context) {
   return context;
 }
 
-export function createPromptContext(parts, operationId = `${operationNamespace}:${++operationSequence}`) {
+/**
+ * A context of `parts`. `folders`, where the host knows them (an object, or the promise of one): the
+ * workspace its paths are named from and the person's home (`{ start, home }`, `/`-separated), by which
+ * the message names each file (`displayPath`); the parts keep every file's absolute path.
+ */
+export function createPromptContext(parts, operationId = `${operationNamespace}:${++operationSequence}`, { folders } = {}) {
   validatePromptContext({ schemaVersion: 1, operationId, parts });
   const snapshot = parts.map(part => {
     if (part.kind === 'reference') {
@@ -71,7 +88,8 @@ export function createPromptContext(parts, operationId = `${operationNamespace}:
     }
     return Object.freeze(part.kind === 'attachment' && part.about ? { ...part, about: Object.freeze([...part.about]) } : { ...part });
   });
-  return Object.freeze({ schemaVersion: 1, operationId, parts: Object.freeze(snapshot) });
+  if (folders && typeof folders.then === 'function') void Promise.resolve(folders).catch(() => {});
+  return Object.freeze({ schemaVersion: 1, operationId, parts: Object.freeze(snapshot), ...(folders ? { folders } : {}) });
 }
 export function referencePart(reference, id = 'reference') { return { id, kind: 'reference', reference: validatePromptReference(reference) }; }
 export function textPart(text, id = 'text') { return { id, kind: 'text', text }; }
@@ -90,13 +108,76 @@ export function promptReferenceIds(reference) {
   return reference.label ? [reference.label] : [];
 }
 
-/** Keep machine identity structured; these strings are the portable human/prompt representation. */
-export function formatPromptReference(reference) {
+/**
+ * A line that is one reference and nothing else — a file's absolute path and the ids in it, as a
+ * copied reference is written (`/models/base.step#base/face 3`) — as that reference; null for any other.
+ */
+export function parsePromptReference(text) {
+  const line = String(text || '').trim();
+  const board = line ? parseBoardRefToken(line) : null;
+  if (board && isBoardRefPath(board.path) && board.selectors.length) {
+    try { return validatePromptReference({ resource: { kind: 'workspace-file', path: board.path }, target: { kind: 'cad-selector', selectors: board.selectors } }); }
+    catch { return null; }
+  }
+  const schematic = line ? parseSchematicRefToken(line) : null;
+  if (schematic && isSchematicRefPath(schematic.path)) {
+    try { return validatePromptReference({ resource: { kind: 'workspace-file', path: schematic.path }, target: { kind: 'cad-selector', selectors: schematic.selectors } }); }
+    catch { return null; }
+  }
+  const parsed = line ? parseCadRefToken(line) : null;
+  if (!parsed || parsed.token.trim() !== line || !parsed.selectors.length) return null;
+  try { return validatePromptReference({ resource: { kind: isDocumentId(parsed.cadPath) ? 'cad-model' : 'workspace-file', path: parsed.cadPath }, target: { kind: 'cad-selector', selectors: parsed.selectors } }); }
+  catch { return null; }
+}
+
+// A folder as `displayPath` compares it: `/`-separated, without a trailing `/`, a drive's letter in either case.
+const folderOf = folder => String(folder || '').replace(/\\/g, '/').replace(/\/+$/, '');
+const drive = path => /^[A-Za-z]:\//.test(path);
+const same = (a, b) => (drive(a) ? a.toLowerCase() === b.toLowerCase() : a === b);
+// What `path` is below `folder`, or null where it is not below it.
+function below(path, folder) {
+  const base = folderOf(folder);
+  if (!base) return null;
+  const fold = drive(base) ? text => text.toLowerCase() : text => text;
+  return fold(path).startsWith(`${fold(base)}/`) ? path.slice(base.length + 1) || null : null;
+}
+
+/**
+ * A file's absolute path as a message names it, with no part of the person's home in it: relative to the
+ * workspace (`folders.start`, where the agent reading it works) when the file is inside it, else `~/...`
+ * inside their home, else as it is. A workspace that is the root, the home or a folder above it names
+ * nothing (`/Users/a.step` is not `a.step` of `/`). An id, a URL or a relative path is as it is.
+ * @param {string} path
+ * @param {{ start?: string, home?: string } | null} [folders]
+ */
+export function displayPath(path, folders) {
+  const text = String(path || '');
+  if (!folders || !/^(?:[A-Za-z]:)?\//.test(text)) return text;
+  const home = folderOf(folders.home);
+  const start = folderOf(folders.start);
+  // A drive's root (`C:`) or the root (``) is no workspace; nor is the home, or a folder it is below.
+  const workspace = Boolean(start) && !/^[A-Za-z]:$/.test(start) && !(home && (same(start, home) || below(home, start) !== null));
+  const inside = workspace ? below(text, start) : null;
+  if (inside) return inside;
+  const inHome = home ? below(text, home) : null;
+  return inHome ? `~/${inHome}` : text;
+}
+
+/**
+ * Keep machine identity structured; these strings are the portable human/prompt representation. A file
+ * by its absolute path; `folders` names it as `displayPath` does instead, for a message a person reads.
+ */
+export function formatPromptReference(reference, folders = null) {
   validatePromptReference(reference);
-  // A file by its absolute path, a URL as it is.
-  const path = reference.resource.kind === 'url' ? reference.resource.url : reference.resource.path;
+  // A file by its absolute path (or as `displayPath` names it), a URL as it is.
+  const path = reference.resource.kind === 'url' ? reference.resource.url
+    : reference.resource.kind === 'workspace-file' ? displayPath(reference.resource.path, folders) : reference.resource.path;
   requireValue(path.length > 0, 'a reference names its file or URL');
-  if (reference.target.kind === 'cad-selector') return buildCadRefToken({ cadPath: path, selectors: [...reference.target.selectors] });
+  if (reference.target.kind === 'cad-selector') {
+    const selectors = [...reference.target.selectors];
+    return isBoardRefPath(path) ? buildBoardRefToken({ path, selectors })
+      : isSchematicRefPath(path) ? buildSchematicRefToken({ path, selectors }) : buildCadRefToken({ cadPath: path, selectors });
+  }
   const quoted = /[\s#"\\]/.test(path) ? JSON.stringify(path) : path;
   if (reference.target.kind === 'text-range') {
     const { start, end } = reference.target;
@@ -110,24 +191,56 @@ export function formatPromptContextText(context) {
 }
 
 /**
+ * Where each attachment that is already saved is (`part.path`: a path, or the promise of one), by
+ * part id: what a message names when it carries the attachment as a file.
+ * @returns {Promise<Map<string, string>>}
+ */
+export async function resolveAttachmentPaths(context) {
+  const saved = new Map();
+  for (const part of context.parts) {
+    if (part.kind === 'attachment' && part.path !== undefined) saved.set(part.id, String(await part.path));
+  }
+  return saved;
+}
+
+/**
  * A context as one message, the way a person would write it: what they said, then what it is
  * about — each whole file on a `File:` line, the selections in it under `References:`, one per
  * line — then each attachment that travels as a file, by its label and path (`attachmentPath`;
  * one sent beside the text is left out). One spelling, whether the message is sent, queued or copied.
  */
-export function formatPromptMessage(context, { attachmentPath } = {}) {
+export function formatPromptMessage(context, { attachmentPath, attachmentText, folders = null } = {}) {
   validatePromptContext(context);
   const said = context.parts.filter(part => part.kind === 'text').map(part => part.text.trim()).filter(Boolean);
   const files = [], references = [], attachments = [];
   for (const part of context.parts) {
-    if (part.kind === 'reference') (part.reference.target.kind === 'whole-resource' ? files : references).push(formatPromptReference(part.reference));
+    if (part.kind === 'reference') (part.reference.target.kind === 'whole-resource' ? files : references).push(formatPromptReference(part.reference, folders));
     else if (part.kind === 'attachment') {
+      const inline = attachmentText?.(part);
+      if (inline) { attachments.push(inline); continue; }
       const path = attachmentPath?.(part);
-      if (path) attachments.push(`${part.label || 'Attachment'}: ${path}`);
+      if (path) attachments.push(`${part.label || 'Attachment'}: ${displayPath(path, folders)}`);
     }
   }
   const about = [...files.map(file => `File: ${file}`), ...(references.length ? ['References:', ...references] : []), ...attachments];
   return [said.join('\n\n'), about.join('\n')].filter(Boolean).join('\n\n');
+}
+
+/**
+ * Resolve a prompt's inline text or file paths after the host has bound its destination, and its
+ * `folders` (a file the host could not say them for is named by its absolute path).
+ */
+export async function resolvePromptMessage(context) {
+  validatePromptContext(context);
+  const folders = await Promise.resolve(context.folders).catch(() => null);
+  const inline = new Map(), paths = new Map();
+  await Promise.all(context.parts.filter(part => part.kind === 'attachment').map(async part => {
+    const text = await part.inlineText;
+    if (text) inline.set(part.id, text);
+    else if (part.path !== undefined) paths.set(part.id, String(await part.path));
+  }));
+  return formatPromptMessage(context, { attachmentText: part => inline.get(part.id), attachmentPath: part => paths.get(part.id),
+    folders: folders && typeof folders === 'object' ? folders : null });
 }
 
 const failureMessage = error => error instanceof Error ? error.message : String(error);

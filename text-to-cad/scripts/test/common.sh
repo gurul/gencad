@@ -12,48 +12,31 @@ if [ -z "${PYTHON_BIN:-}" ]; then
     PYTHON_BIN="python3"
   fi
 fi
-export PYTHON_BIN  # the bundler builds the file tracer with this interpreter's zig
+export PYTHON_BIN
+
+# A test's engine takes any free HTTP port, never the default (3245) that the person's own engine
+# keeps: one that found it held would move off it for good. A test of the default clears this.
+export CAD_ENGINE_PORT=0
+# Nor does it keep a standby worker (``daemon.standby``): each daemon a test starts would load the
+# kernel twice over (2.4 s and 440 MB a standby) on runners short of memory. Its own tests set it on.
+export CAD_ENGINE_STANDBY=0
+# A test's process that dies in native code (a worker's access violation as it loads the kernel)
+# prints its Python stack before it goes: workers inherit it from the run, so the model log the
+# client prints, and so the failing test's output, says where.
+export PYTHONFAULTHANDLER=1
+# The CAD MCP server's development switch forces how every session a test opens is served
+# (cad_server/mcp/host.py): the tests that want it set it.
+unset CAD_MCP_PRESENTATION
+
+# The one distribution's source tree (the library, the server and the shim): every suite runs on this
+# checkout's own packages, never on whatever the interpreter has installed (a worktree's venv may point at another).
+PACKAGE_SOURCES=(packages/cad/src)
 
 # The paths a run is narrowed to: test-python.sh and test-global.sh take them as arguments,
 # and only the test files at or under one of them run. Empty, the default, runs every file.
 # CI passes what scripts/github-workflows/select_checks.py selected for a change.
 TEST_PATHS=()
 SELECTED_TEST_FILES=0
-
-# The packaged runtime (packages/cadgen/src/cadgen/_runtime) is BUILT, never committed,
-# so a fresh checkout has none of it -- the snapshot suites drive the browser bundle, the
-# policy suite reads the emitted Node builders, and every build loads the file tracer.
-# Building it is idempotent and fast once the pinned toolchains are in place, but it is
-# not free, so this only runs when an output is missing (or the tracer's source is newer).
-#
-# The stages are asked for by name rather than going through bundle.sh: the tests read
-# exactly these, and the viewer stage is a vite build of apps/web that needs that app's
-# node_modules -- which a Python-only checkout has no reason to install.
-ensure_packaged_runtime() {
-  local runtime="$REPO_ROOT/packages/cadgen/src/cadgen/_runtime"
-  local name
-  # PYTHON_TEST_RUNTIME=0: the selected tests read none of it, and the interpreter may lack
-  # what building it takes. A test that does read it then fails on the missing file.
-  if [ "${PYTHON_TEST_RUNTIME:-1}" = "0" ]; then
-    return 0
-  fi
-  for name in node/mesh-export.mjs browser/snapshot-render.js browser/render.html; do
-    if [ ! -f "$runtime/$name" ]; then
-      section "Building cadgen's packaged runtime (missing $name)"
-      "$REPO_ROOT/scripts/bundle/cadgen-runtime.sh" --node --browser
-      break
-    fi
-  done
-  # Every build loads the file tracer, so every suite that builds needs the one this
-  # interpreter loads, rebuilt when its source is newer.
-  local tracer
-  tracer="$runtime/native/$(PYTHONPATH="$REPO_ROOT/packages/cadgen/src" "$PYTHON_BIN" -c \
-    "from cadgen._internal.filetrace import _library_name; print(_library_name())")"
-  if [ ! -f "$tracer" ] || [ "$REPO_ROOT/packages/cadgen/native/filetrace.c" -nt "$tracer" ]; then
-    section "Building cadgen's file tracer"
-    "$REPO_ROOT/scripts/bundle/cadgen-runtime.sh" --native-host
-  fi
-}
 
 section() {
   # A log line, not a result: --print-weights writes the per-file costs to stdout.
@@ -101,19 +84,34 @@ run_python_unittest() {
   # `_FailedTest.test_cli`. unittest_files.py loads each file under its full dotted
   # path relative to the repo root and names an import failure by that path + file.
   #
-  # Each test FILE runs in its own interpreter with its own fresh store, CADGEN_TEST_JOBS
-  # at a time (default: the machine's cores). Modules cannot see one another's builds,
-  # and a module that spawns workers or a daemon does not hold the rest of the suite.
+  # Each test FILE runs in its own interpreter, CAD_TEST_JOBS at a time (default: the
+  # machine's cores), with an engine directory of its own: a build it asks for without naming
+  # a daemon runs on one of that file's alone, stopped when the file ends, so a module that
+  # starts workers or a daemon does not hold the rest of the suite.
   # PYTHON_TEST_PRINT_WEIGHTS is how --print-weights reaches the runner without every
-  # caller growing a flag.
+  # caller growing a flag; PYTHON_TEST_NO_SKIPS, --no-skips, for a suite that must run whole;
+  # CAD_TEST_SHARD=I/N, --shard: shard I of N of this call's selected files, which CI splits a
+  # suite across jobs by. SELECTED_TEST_FILES counts the files before the shard is taken, so a
+  # narrowed run whose files all fall to other shards is not one that selected nothing.
   local extra=()
   if [ -n "${PYTHON_TEST_PRINT_WEIGHTS:-}" ]; then
     extra+=(--print-weights)
   fi
+  if [ -n "${PYTHON_TEST_NO_SKIPS:-}" ]; then
+    extra+=(--no-skips)
+  fi
+  if [ -n "${CAD_TEST_SHARD:-}" ]; then
+    extra+=(--shard "$CAD_TEST_SHARD")
+  fi
+  # CAD_TEST_FILE_BUDGET=<seconds>, --file-budget: the files that took longer are named after the
+  # summary (CI sets it; a run never fails for it).
+  if [ -n "${CAD_TEST_FILE_BUDGET:-}" ]; then
+    extra+=(--file-budget "$CAD_TEST_FILE_BUDGET")
+  fi
 
   PYTHONPATH="$python_path${PYTHONPATH:+:$PYTHONPATH}" \
     "$PYTHON_BIN" "$SCRIPT_DIR/unittest_files.py" --top "$REPO_ROOT" \
-      --jobs "${CADGEN_TEST_JOBS:-$(test_jobs)}" ${extra[@]+"${extra[@]}"} "${test_files[@]}"
+      --jobs "${CAD_TEST_JOBS:-$(test_jobs)}" ${extra[@]+"${extra[@]}"} "${test_files[@]}"
 }
 
 is_selected_test() {

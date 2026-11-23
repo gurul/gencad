@@ -1,8 +1,9 @@
-import { TooltipHint } from "@text-to-cad/ui/primitives/tooltip";
-import { RotateCcw, Spline } from "lucide-react";
-import { Button } from "@text-to-cad/ui/primitives/button";
-import { cn } from "@text-to-cad/ui/utils";
-import { FILE_SHEET_FIELD_LABEL_CLASSES, FileSheetSelectRow } from "./FileSheet.js";
+import { Button } from "@cad/ui/primitives/button";
+import { PanelSelectRow } from "./panelRows.jsx";
+import { PANEL_ACTION_CLASS, PanelActions } from "./PanelActions.jsx";
+import { useControlUsage } from "../../../usage/controls.js";
+import { useI18n } from "@cad/ui/i18n";
+import { FlatPanelChanged } from "../shell/FlatPanel.jsx";
 
 export const NO_PRESET_VALUE = "__none__";
 export const DEFAULT_POSE_VALUE = "__default__";
@@ -16,41 +17,51 @@ export function positionValuesAreDefault(values, defaults) {
 }
 
 /**
- * The Pose row of a Position panel: a "Pose" label beside its dropdown, drawn only when there is a
- * named pose to choose; Default leads the options when the panel can reset. Without a named pose
- * there is no row: Reset is the panel heading's (`MotionResetButton`).
+ * Joints' Pose, the first row of its body, over the joints (under the motion and its hairline, where the tab holds
+ * one): a panel settings row (`PanelSelectRow`, `panelRows.jsx`, the panel's 28px) — its label, **Position**, on the
+ * panel's 16px line, and the pose in hand as a dropdown half the row wide (wider only where its value needs it), ending
+ * on the right 16px line, as every settings row's control does ("Custom" while the joints are set by hand):
+ * Default first where the section can reset, then the named poses. Reset, the way back to the default
+ * pose, is the tab's ONE Reset, at its bottom right in its actions row (`KinematicsResetRow`). Nothing where there
+ * is neither to choose. Never disabled: a motion holding the model is let go of by a choice here (one motion at a time).
  */
 export function KinematicsPoseRow({ poses = [], activeValue, onSelect, onReset }) {
-  if (!poses.length) return null;
-  const options = [...(onReset ? [{ value: DEFAULT_POSE_VALUE, label: "Default" }] : []), ...poses];
+  const usage = useControlUsage();
+  const { t } = useI18n();
+  if (!poses.length && !onReset) return null;
+  const reset = () => { usage.used("position_reset"); onReset?.(); };
+  const options = [...(onReset ? [{ value: DEFAULT_POSE_VALUE, label: t("pose.default") }] : []), ...poses];
   const active = options.find(pose => pose.value === activeValue);
-  return <div data-position-header="" className="flex min-w-0 items-center gap-2 px-2">
-    <span className={cn(FILE_SHEET_FIELD_LABEL_CLASSES, "shrink-0")}>Pose</span>
-    {/* Compact and at the row's right end, the size of the joint value boxes under it. */}
-    <FileSheetSelectRow hideLabel className="ml-auto min-w-0 px-0" triggerClassName="!h-6 w-auto max-w-full gap-1 !px-1.5 text-tiny" value={active?.value || NO_PRESET_VALUE}
-      onValueChange={value => value === DEFAULT_POSE_VALUE ? onReset?.() : onSelect?.(value)}
-      ariaLabel="Pose" triggerContent={<span className="truncate">{active?.label || "Custom"}</span>}
-      options={options} />
-  </div>;
+  const label = active?.label || t("pose.custom");
+  return <PanelSelectRow label={t("pose.label")} value={active?.value || NO_PRESET_VALUE} options={options} fallback={t("pose.custom")}
+    triggerLabel={t("pose.current", { pose: label })} className="mb-2" rowProps={{ "data-pose-row": "" }} labelProps={{ "data-pose-label": "" }}
+    triggerProps={{ "data-pose-menu": "" }}
+    onChange={value => { if (value === DEFAULT_POSE_VALUE) { reset(); return; } usage.used("position_preset"); onSelect?.(value); }} />;
 }
 
 /**
- * The Position tool's icon: the spline, with a small dot at its top-left while the pose is not the
- * default one (a joint moved, or a named pose applied), so a person can see that from the strip.
+ * Joints' actions row, last in the tab, where Params has its Reset and Save (`PanelActions`): Reset alone,
+ * the way back to the default pose, off while the model is there. Where the tab holds its mechanism's motion too
+ * (`routine`: `{ away, reset }`), the ONE Reset puts back both — the motion to its start, the joints to their default —
+ * and is on while either is off it.
  */
-export function PositionToolIcon({ custom = false }) {
-  return <span className="relative inline-flex" data-position-custom={custom ? "" : undefined}>
-    <Spline className="size-3" strokeWidth={2} aria-hidden="true" />
-    {/* The size of the spline's own end dots and in its colour: a note, not a badge. */}
-    {custom ? <span aria-hidden="true" className="absolute -left-px -top-px size-1 rounded-full bg-current" /> : null}
-  </span>;
-}
-
-/** A Position panel's Reset: in its heading, before the fold chevron. */
-export function MotionResetButton({ onReset }) {
+export function KinematicsResetRow({ activeValue, onReset, routine = null }) {
+  const usage = useControlUsage();
+  const { t } = useI18n();
   if (!onReset) return null;
-  return <TooltipHint content="Reset motion"><Button variant="ghost" size="icon-xs" className="size-5 shrink-0 text-muted-foreground"
-    onClick={onReset} aria-label="Reset">
-    <RotateCcw className="size-3" aria-hidden="true" />
-  </Button></TooltipHint>;
+  const posed = activeValue !== DEFAULT_POSE_VALUE;
+  const changed = posed || Boolean(routine?.away);
+  const reset = () => {
+    if (routine?.away) routine.reset();
+    if (posed || !routine) { usage.used("position_reset"); onReset(); }
+  };
+  return <PanelActions data-pose-actions="">
+    {/* Its word Params' Reset's, its name the joints' ("Reset joints"). */}
+    <Button type="button" variant="ghost" size="xs" className={PANEL_ACTION_CLASS} data-pose-reset="" aria-label={t("pose.reset")}
+      disabled={!changed} onClick={reset}>
+      {t("parameters.reset")}
+    </Button>
+    {/* The tab's dot: on exactly while Reset is. */}
+    <FlatPanelChanged on={changed} />
+  </PanelActions>;
 }
